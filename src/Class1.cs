@@ -64,7 +64,6 @@ namespace DeadCoreEditor
                     NativeLogsMenuHijacker.OpenNativeMenu();
                 }
 
-                // Locate active LogsMenu in scene
                 LogsMenu activeMenu = null;
                 LogsMenu[] menus = Resources.FindObjectsOfTypeAll<LogsMenu>();
                 for (int i = 0; i < menus.Length; i++)
@@ -121,9 +120,16 @@ namespace DeadCoreEditor
         {
             string currentScene = SceneManager.GetActiveScene().name.ToLower();
 
-            if (EditorSessionManager.IsCustomSessionActive && EditorSessionManager.IsEditModeActive)
+            if (EditorSessionManager.IsCustomSessionActive)
             {
-                EditorSessionManager.DrawEditorGUI();
+                if (EditorSessionManager.IsEditModeActive)
+                {
+                    EditorSessionManager.DrawEditorGUI();
+                }
+                else
+                {
+                    EditorSessionManager.DrawPlaytestHUD();
+                }
             }
         }
 
@@ -150,6 +156,8 @@ namespace DeadCoreEditor
         public AssetCategory Category;
         public bool IsJumper;
         public bool IsCheckPoint;
+        public bool IsSpawnGate; // Orange Entry Checkpoint
+        public bool IsGoalGate;  // Blue Exit/Finish Checkpoint
         public bool IsTurret;
         public bool IsHelix;
         public float DefaultScale;
@@ -870,6 +878,10 @@ namespace DeadCoreEditor
         private static Vector3 _currentBoostVelocity = Vector3.zero;
         private static float _jumperTriggerCooldown = 0f;
 
+        // --- GAMEPLAY TIMING & FINISH TRIGGER STATE ---
+        public static float LevelTimer = 0f;
+        public static bool IsLevelCompleted = false;
+
         public static Camera PlayerCameraInstance = null;
         public static CharacterController PlayerControllerInstance = null;
         public static Vector3 FrozenPlayerPosition = Vector3.zero;
@@ -909,6 +921,8 @@ namespace DeadCoreEditor
             IsCustomSessionActive = false;
             IsEditModeActive = false;
             IsLevelInitialized = false;
+            IsLevelCompleted = false;
+            LevelTimer = 0f;
 
             EditorViewportCamera.DestroyCamera();
             PlacementHologramController.DestroyPreview();
@@ -962,6 +976,12 @@ namespace DeadCoreEditor
                 CheckVoidFall();
                 CheckJumperBoostPhysics();
                 CheckHelixWindPushing();
+                CheckGoalTriggerArrival();
+
+                if (!IsLevelCompleted)
+                {
+                    LevelTimer += Time.deltaTime;
+                }
             }
             else
             {
@@ -984,6 +1004,36 @@ namespace DeadCoreEditor
                 HandleGhostRotationOnly();
                 HandleMouseWheel();
                 HandleObjectDeletion();
+            }
+        }
+
+        private static void CheckGoalTriggerArrival()
+        {
+            if (IsLevelCompleted) return;
+
+            GameObject player = FindPlayerEntity();
+            if (player == null) return;
+
+            Vector3 pPos = player.transform.position;
+
+            for (int i = 0; i < PlacedObjects.Count; i++)
+            {
+                GameObject obj = PlacedObjects[i];
+                if (obj == null || !obj.activeSelf) continue;
+
+                if (obj.name.ToLower().Contains("goal"))
+                {
+                    Vector3 gPos = obj.transform.position;
+                    float horizDist = Vector2.Distance(new Vector2(pPos.x, pPos.z), new Vector2(gPos.x, gPos.z));
+                    float vertDist = Mathf.Abs(pPos.y - gPos.y);
+
+                    if (horizDist < 3.2f && vertDist < 2.5f)
+                    {
+                        IsLevelCompleted = true;
+                        MelonLogger.Msg($">> [VICTORY] Level completed in {LevelTimer:F2} seconds!");
+                        break;
+                    }
+                }
             }
         }
 
@@ -1265,7 +1315,6 @@ namespace DeadCoreEditor
                 PerformRedo();
             }
 
-            // F5 now writes strictly into UserData/MyLevels/{SelectedMapName}.txt
             if (Input.GetKeyDown(KeyCode.F5))
             {
                 LevelPersistenceService.SaveLevel(MapBrowserService.SelectedMapName);
@@ -1759,6 +1808,32 @@ namespace DeadCoreEditor
             MelonLogger.Msg($">> [Turret Settings] Fire Delay: {fireDelay:F2}s, Power: 1000 on '{turretObj.name}'");
         }
 
+        public static void ApplyGateVisualTint(GameObject gateObj, Color tintColor)
+        {
+            if (gateObj == null) return;
+
+            Renderer[] renderers = gateObj.GetComponentsInChildren<Renderer>(true);
+            for (int i = 0; i < renderers.Length; i++)
+            {
+                Renderer r = renderers[i];
+                if (r == null) continue;
+
+                Material[] mats = r.materials;
+                for (int m = 0; m < mats.Length; m++)
+                {
+                    Material mat = mats[m];
+                    if (mat == null) continue;
+
+                    mat.color = tintColor;
+                    if (mat.HasProperty("_EmissionColor"))
+                    {
+                        mat.SetColor("_EmissionColor", tintColor * 1.6f);
+                        mat.EnableKeyword("_EMISSION");
+                    }
+                }
+            }
+        }
+
         public static void DrawEditorGUI()
         {
             Camera cam = EditorViewportCamera.ViewportCamera;
@@ -1812,19 +1887,44 @@ namespace DeadCoreEditor
                     }
                 }
 
-                CheckPointScript cp = obj.GetComponentInChildren<CheckPointScript>();
-                if (cp != null)
+                if (obj.name.ToLower().Contains("spawn"))
                 {
                     Vector3 worldPos = obj.transform.position + Vector3.up * 2.2f;
                     Vector3 screenPos = cam.WorldToScreenPoint(worldPos);
-
                     if (screenPos.z > 0.5f)
                     {
-                        bool isActive = (CheckPointScript.LastCheckPoint == cp);
                         float y = Screen.height - screenPos.y;
-                        GUI.color = isActive ? Color.green : new Color(0.4f, 0.8f, 1f);
-                        string cpText = isActive ? "[Active Checkpoint]" : "[Checkpoint]";
-                        GUI.Box(new Rect(screenPos.x - 75f, y - 14f, 150f, 26f), cpText);
+                        GUI.color = new Color(1.0f, 0.45f, 0.05f); // Orange
+                        GUI.Box(new Rect(screenPos.x - 85f, y - 14f, 170f, 26f), "[Entry / Spawn Point]");
+                    }
+                }
+                else if (obj.name.ToLower().Contains("goal"))
+                {
+                    Vector3 worldPos = obj.transform.position + Vector3.up * 2.2f;
+                    Vector3 screenPos = cam.WorldToScreenPoint(worldPos);
+                    if (screenPos.z > 0.5f)
+                    {
+                        float y = Screen.height - screenPos.y;
+                        GUI.color = new Color(0.1f, 0.65f, 1.0f); // Electric Blue
+                        GUI.Box(new Rect(screenPos.x - 85f, y - 14f, 170f, 26f), "[Goal / Finish Line]");
+                    }
+                }
+                else
+                {
+                    CheckPointScript cp = obj.GetComponentInChildren<CheckPointScript>();
+                    if (cp != null)
+                    {
+                        Vector3 worldPos = obj.transform.position + Vector3.up * 2.2f;
+                        Vector3 screenPos = cam.WorldToScreenPoint(worldPos);
+
+                        if (screenPos.z > 0.5f)
+                        {
+                            bool isActive = (CheckPointScript.LastCheckPoint == cp);
+                            float y = Screen.height - screenPos.y;
+                            GUI.color = isActive ? Color.green : new Color(0.4f, 0.8f, 1f);
+                            string cpText = isActive ? "[Active Checkpoint]" : "[Checkpoint]";
+                            GUI.Box(new Rect(screenPos.x - 75f, y - 14f, 150f, 26f), cpText);
+                        }
                     }
                 }
             }
@@ -1885,6 +1985,64 @@ namespace DeadCoreEditor
             GUI.color = originalColor;
         }
 
+        public static void DrawPlaytestHUD()
+        {
+            Color origColor = GUI.color;
+
+            // 1. Playtest Speedrun Timer
+            GUI.color = new Color(0.04f, 0.08f, 0.14f, 0.85f);
+            GUI.Box(new Rect(20f, 20f, 220f, 42f), "");
+            GUI.color = Color.cyan;
+            int minutes = Mathf.FloorToInt(LevelTimer / 60F);
+            int seconds = Mathf.FloorToInt(LevelTimer % 60F);
+            int fraction = Mathf.FloorToInt((LevelTimer * 100) % 100);
+            GUI.Label(new Rect(35f, 30f, 190f, 25f), $"TIME:  {minutes:00}:{seconds:00}.{fraction:00}");
+
+            // 2. Victory Finish Dialog
+            if (IsLevelCompleted)
+            {
+                float w = 460f;
+                float h = 260f;
+                float x = (Screen.width - w) * 0.5f;
+                float y = (Screen.height - h) * 0.5f;
+
+                GUI.color = new Color(0.03f, 0.06f, 0.1f, 0.95f);
+                GUI.Box(new Rect(x, y, w, h), "");
+                GUI.color = new Color(0.12f, 0.75f, 0.95f, 0.9f);
+                GUI.Box(new Rect(x + 2, y + 2, w - 4, h - 4), "");
+
+                GUI.color = Color.white;
+                GUI.Label(new Rect(x + 30, y + 30, 400, 30), "=== COURSE COMPLETED! ===");
+                GUI.color = Color.cyan;
+                GUI.Label(new Rect(x + 30, y + 70, 400, 25), $"Final Time:  {minutes:00}:{seconds:00}.{fraction:00}");
+                GUI.color = Color.gray;
+                GUI.Label(new Rect(x + 30, y + 105, 400, 25), $"Course:  {MapBrowserService.SelectedMapName}");
+
+                GUI.color = new Color(0.2f, 0.85f, 0.4f, 1f);
+                if (GUI.Button(new Rect(x + 30, y + 150, 125, 42), "Restart"))
+                {
+                    GameObject p = FindPlayerEntity();
+                    if (p != null) RespawnPlayer(p);
+                    LevelTimer = 0f;
+                    IsLevelCompleted = false;
+                }
+
+                GUI.color = new Color(0.2f, 0.7f, 1f, 1f);
+                if (GUI.Button(new Rect(x + 165, y + 150, 130, 42), "Edit (F1)"))
+                {
+                    ToggleEditMode();
+                }
+
+                GUI.color = new Color(0.85f, 0.3f, 0.3f, 1f);
+                if (GUI.Button(new Rect(x + 305, y + 150, 125, 42), "Main Menu"))
+                {
+                    SceneLoader.LoadLevel("MainMenu", false, true);
+                }
+            }
+
+            GUI.color = origColor;
+        }
+
         public static void InitializeCustomLevel()
         {
             GameObject player = FindPlayerEntity();
@@ -1908,6 +2066,18 @@ namespace DeadCoreEditor
             {
                 MelonLogger.Msg($">> Auto-loading selected map: '{MapBrowserService.SelectedMapName}'...");
                 LevelPersistenceService.LoadLevelByFullPath(MapBrowserService.SelectedMapPath);
+            }
+
+            // Find if a custom Spawn Gate was placed in the level
+            foreach (var obj in PlacedObjects)
+            {
+                if (obj != null && obj.name.ToLower().Contains("spawn"))
+                {
+                    LevelSpawnPosition = obj.transform.position + Vector3.up * 0.2f;
+                    startPos = LevelSpawnPosition;
+                    MelonLogger.Msg($">> Set player start position to custom Entry Checkpoint at {startPos}!");
+                    break;
+                }
             }
 
             // Platform Safeguard: Verify if a solid platform exists within 30m of spawn
@@ -1945,6 +2115,9 @@ namespace DeadCoreEditor
                 if (cc != null) cc.enabled = true;
             }
 
+            LevelTimer = 0f;
+            IsLevelCompleted = false;
+
             UnfreezePlayerControls();
             IsLevelInitialized = true;
             MelonLogger.Msg(">> Custom Level Initialized & Ready!");
@@ -1964,9 +2137,11 @@ namespace DeadCoreEditor
 
             if (found == null)
             {
-                if (clean.Contains("platform") || clean.Contains("floor")) found = AllAssets.Find(a => a.DisplayName.ToLower().Contains("platform") || a.DisplayName.ToLower().Contains("floor"));
+                if (clean.Contains("spawn") || clean.Contains("entry")) found = AllAssets.Find(a => a.IsSpawnGate);
+                else if (clean.Contains("goal") || clean.Contains("finish") || clean.Contains("end")) found = AllAssets.Find(a => a.IsGoalGate);
+                else if (clean.Contains("platform") || clean.Contains("floor")) found = AllAssets.Find(a => a.DisplayName.ToLower().Contains("platform") || a.DisplayName.ToLower().Contains("floor"));
                 else if (clean.Contains("jumper")) found = AllAssets.Find(a => a.IsJumper);
-                else if (clean.Contains("checkpoint")) found = AllAssets.Find(a => a.IsCheckPoint);
+                else if (clean.Contains("checkpoint")) found = AllAssets.Find(a => a.IsCheckPoint && !a.IsSpawnGate && !a.IsGoalGate);
                 else if (clean.Contains("turret")) found = AllAssets.Find(a => a.IsTurret);
                 else if (clean.Contains("helix") || clean.Contains("turbine")) found = AllAssets.Find(a => a.IsHelix);
                 else if (clean.Contains("crate")) found = AllAssets.Find(a => a.DisplayName.ToLower().Contains("crate"));
@@ -1992,7 +2167,20 @@ namespace DeadCoreEditor
             obj.transform.localScale = Vector3.one * scale;
             obj.SetActive(true);
 
-            if (asset.IsCheckPoint)
+            if (asset.IsSpawnGate)
+            {
+                obj.name = "Custom_Spawn_Gate";
+                ApplyGateVisualTint(obj, new Color(1.0f, 0.45f, 0.05f)); // Orange Tint
+            }
+            else if (asset.IsGoalGate)
+            {
+                obj.name = "Custom_Goal_Gate";
+                ApplyGateVisualTint(obj, new Color(0.1f, 0.65f, 1.0f)); // Electric Blue Tint
+
+                Collider col = obj.GetComponentInChildren<Collider>();
+                if (col != null) col.isTrigger = true;
+            }
+            else if (asset.IsCheckPoint)
             {
                 CheckPointScript cp = obj.GetComponentInChildren<CheckPointScript>();
                 if (cp != null)
@@ -2162,6 +2350,15 @@ namespace DeadCoreEditor
             }
 
             EditorSessionManager.StripParticlesAndLights(_ghostInstance);
+
+            if (asset.IsSpawnGate)
+            {
+                EditorSessionManager.ApplyGateVisualTint(_ghostInstance, new Color(1.0f, 0.45f, 0.05f));
+            }
+            else if (asset.IsGoalGate)
+            {
+                EditorSessionManager.ApplyGateVisualTint(_ghostInstance, new Color(0.1f, 0.65f, 1.0f));
+            }
 
             Bounds b = CalculateLocalBounds(_ghostInstance);
 
@@ -2531,6 +2728,15 @@ namespace DeadCoreEditor
 
                 EditorSessionManager.StripParticlesAndLights(icon);
 
+                if (asset.IsSpawnGate)
+                {
+                    EditorSessionManager.ApplyGateVisualTint(icon, new Color(1.0f, 0.45f, 0.05f));
+                }
+                else if (asset.IsGoalGate)
+                {
+                    EditorSessionManager.ApplyGateVisualTint(icon, new Color(0.1f, 0.65f, 1.0f));
+                }
+
                 icon.SetActive(true);
                 _spawnedIcons.Add(icon);
             }
@@ -2553,13 +2759,11 @@ namespace DeadCoreEditor
     // Persistence Service
     public static class LevelPersistenceService
     {
-        // F5 now writes strictly into UserData/MyLevels/
         public static void SaveLevel(string filename)
         {
             string saveDir = MapBrowserService.MyLevelsDir;
             if (!Directory.Exists(saveDir)) Directory.CreateDirectory(saveDir);
 
-            // Strip path or extension if passed
             string cleanName = Path.GetFileNameWithoutExtension(filename);
             if (string.IsNullOrWhiteSpace(cleanName)) cleanName = "Default_Level";
 
@@ -2684,6 +2888,7 @@ namespace DeadCoreEditor
 
             GameObject ld = GameObject.Find("_LD");
 
+            // 1. Native Jumper Pad
             try
             {
                 EditorSessionManager.PrefabJumper = GameObject.FindObjectOfType<Jumper>();
@@ -2709,6 +2914,7 @@ namespace DeadCoreEditor
                 });
             }
 
+            // 2. Native Checkpoint Gate, Entry Gate, and Finish Gate
             try
             {
                 EditorSessionManager.PrefabCheckPoint = GameObject.FindObjectOfType<CheckPointScript>();
@@ -2722,6 +2928,7 @@ namespace DeadCoreEditor
 
             if (EditorSessionManager.PrefabCheckPoint != null)
             {
+                // Native Standard Checkpoint
                 EditorSessionManager.AllAssets.Add(new CatalogAsset
                 {
                     DisplayName = "Checkpoint Gate",
@@ -2732,8 +2939,35 @@ namespace DeadCoreEditor
                     VerticalOffset = -0.32f,
                     BaseRotation = Quaternion.identity
                 });
+
+                // Entry Checkpoint (Spawn Point - Orange Tint)
+                EditorSessionManager.AllAssets.Add(new CatalogAsset
+                {
+                    DisplayName = "Entry Checkpoint (Start)",
+                    SourceTemplate = EditorSessionManager.PrefabCheckPoint.gameObject,
+                    Category = AssetCategory.Essentials,
+                    IsCheckPoint = true,
+                    IsSpawnGate = true,
+                    DefaultScale = 1.0f,
+                    VerticalOffset = -0.32f,
+                    BaseRotation = Quaternion.identity
+                });
+
+                // Goal Checkpoint (Level Finish - Electric Blue Tint)
+                EditorSessionManager.AllAssets.Add(new CatalogAsset
+                {
+                    DisplayName = "Goal Checkpoint (Finish)",
+                    SourceTemplate = EditorSessionManager.PrefabCheckPoint.gameObject,
+                    Category = AssetCategory.Essentials,
+                    IsCheckPoint = true,
+                    IsGoalGate = true,
+                    DefaultScale = 1.0f,
+                    VerticalOffset = -0.32f,
+                    BaseRotation = Quaternion.identity
+                });
             }
 
+            // 3. Native Turret Enemy
             try
             {
                 TurretScript nativeTurret = GameObject.FindObjectOfType<TurretScript>();
@@ -2782,6 +3016,7 @@ namespace DeadCoreEditor
                 });
             }
 
+            // 4. Native Helix Turbine Fan
             try
             {
                 Helix nativeHelix = GameObject.FindObjectOfType<Helix>();
