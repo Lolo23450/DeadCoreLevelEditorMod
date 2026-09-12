@@ -19,7 +19,7 @@ A real-time, in-game 3D level editor and custom map manager for **DeadCore Redux
    * Download and run the **MelonLoader.Installer.exe** from the official GitHub releases.
    * Select your **DeadCore Redux** executable (`DeadCoreRedux.exe`) in your Steam game directory:
      ```text
-     Steam/steamapps/common/DeadCore/
+     Steam/steamapps/common/DeadCoreRedux/
      ```
    * Click **Install**.
 2. **Install the Mod**:
