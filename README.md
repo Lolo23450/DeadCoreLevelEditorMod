@@ -8,8 +8,8 @@ A real-time, in-game 3D level editor and custom map manager for **DeadCore Redux
 
 ## Requirements
 
-* **[DeadCore Redux](https://store.steampowered.com/app/284460/DeadCore/)** (Steam)
-* **[MelonLoader](https://github.com/LavaGang/MelonLoader/releases)** (`v0.6.0` or newer recommended)
+* **[DeadCore Redux](/)** (Steam)
+* **[MelonLoader](https://github.com/LavaGang/MelonLoader/releases)** (`v0.6.0` or newer)
 
 ---
 
@@ -17,13 +17,13 @@ A real-time, in-game 3D level editor and custom map manager for **DeadCore Redux
 
 1. **Install MelonLoader**:
    * Download and run the **MelonLoader.Installer.exe** from the official GitHub releases.
-   * Select your **DeadCore Redux** executable (`DeadCore.exe` / `DeadCoreRedux.exe`) in your Steam game directory:
+   * Select your **DeadCore Redux** executable (`DeadCoreRedux.exe`) in your Steam game directory:
      ```text
      Steam/steamapps/common/DeadCore/
      ```
    * Click **Install**.
 2. **Install the Mod**:
-   * Download the latest `DeadCoreLevelEditorMod.dll` from this repository’s **Releases** tab.
+   * Download the latest `DeadCoreLevelEditorMod.dll` from this repository’s **Releases** folder.
    * Place the `.dll` file into the newly generated `Mods/` folder in your game directory:
      ```text
      Steam/steamapps/common/DeadCore/Mods/DeadCoreLevelEditorMod.dll
