@@ -8,7 +8,7 @@ A real-time, in-game 3D level editor and custom map manager for **DeadCore Redux
 
 ## Requirements
 
-* **[DeadCore Redux](/)** (Steam)
+* **[DeadCore Redux](https://store.steampowered.com/app/3484260/DeadCore_Redux)** (Steam)
 * **[MelonLoader](https://github.com/LavaGang/MelonLoader/releases)** (`v0.6.0` or newer)
 
 ---
