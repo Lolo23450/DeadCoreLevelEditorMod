@@ -36,7 +36,7 @@ A real-time, in-game 3D level editor and custom map manager for **DeadCore Redux
 ## Quick Start Guide
 
 1. **Launch the Browser**: On the Main Menu, click the native **Level Editor** button (or press `F2`).
-2. **Create a Course**: Click **`+ New`** at the bottom bar to generate a fresh map with a starter floor platform.
+2. **Create a Course**: Click **`+ New`** at the bottom bar to generate a fresh map with a starter floor platform (Add another Platform right next to it rotated properly and delete the original).
 3. **Launch**: Click **`Play`** to load into the level.
 4. **Build**: Press `F1` to toggle into the 3D Freecam Editor and start placing assets.
 5. **Playtest**: Press `F1` again to immediately drop into First-Person Playtest Mode.
