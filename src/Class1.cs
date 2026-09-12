@@ -981,6 +981,7 @@ namespace DeadCoreEditor
                 CheckJumperBoostPhysics();
                 CheckHelixWindPushing();
                 CheckGoalTriggerArrival();
+                UpdateTurretTrackingAndAiming
 
                 if (!IsLevelCompleted)
                 {
@@ -1899,21 +1900,108 @@ namespace DeadCoreEditor
             MelonLogger.Msg($">> [Turbine Speed] Set to {speed:F1} on '{turbineObj.name}'");
         }
 
-        public static void ApplyTurretSettings(GameObject turretObj, float fireDelay, float firePower = 1000f)
+        // --- TURRET SYSTEM ---
+
+        public static void ApplyTurretSettings(GameObject turretObj, float fireDelay, float firePower = 800f)
         {
             if (turretObj == null) return;
 
             TurretFireDelays[turretObj] = fireDelay;
 
-            TurretScript ts = turretObj.GetComponentInChildren<TurretScript>();
-            if (ts != null)
+            // 1. Remove any accidental root MeshCollider that obstructs the barrel
+            Collider[] colliders = turretObj.GetComponents<Collider>();
+            for (int i = 0; i < colliders.Length; i++)
             {
-                ts._fireDelay = fireDelay;
-                ts._firePower = 1000f;
-                ts.enabled = true;
+                if (colliders[i] is MeshCollider)
+                {
+                    GameObject.DestroyImmediate(colliders[i]);
+                }
             }
 
-            MelonLogger.Msg($">> [Turret Settings] Fire Delay: {fireDelay:F2}s, Power: 1000 on '{turretObj.name}'");
+            // 2. Ensure all child components, animations, and renderers are active
+            TurretScript ts = turretObj.GetComponentInChildren<TurretScript>(true);
+            if (ts != null)
+            {
+                ts.enabled = true;
+                ts.gameObject.SetActive(true);
+
+                // Safe fire delay and sensible projectile speed (35 - 45 m/s)
+                ts._fireDelay = Mathf.Clamp(fireDelay, 0.2f, 6.0f);
+                ts._firePower = Mathf.Clamp(firePower, 20f, 60f);
+
+                // Re-assign target to player transform
+                GameObject player = FindPlayerEntity();
+                if (player != null)
+                {
+                    AssignTurretTarget(ts, player.transform);
+                }
+            }
+
+            MelonLogger.Msg($">> [Turret] Repaired & Active! Fire Delay: {fireDelay:F2}s, Speed: {firePower:F1} on '{turretObj.name}'");
+        }
+
+        private static void AssignTurretTarget(TurretScript ts, Transform playerTarget)
+        {
+            if (ts == null || playerTarget == null) return;
+
+            try
+            {
+                // Check common target fields on TurretScript via Il2Cpp reflection
+                IntPtr classPtr = Il2CppClassPointerStore<TurretScript>.NativeClassPtr;
+                string[] targetFieldNames = new string[] { "_target", "target", "_player", "player", "_playerTransform", "_targetTransform" };
+
+                foreach (var fieldName in targetFieldNames)
+                {
+                    IntPtr field = IL2CPP.GetIl2CppField(classPtr, fieldName);
+                    if (field != IntPtr.Zero)
+                    {
+                        IntPtr targetPtr = IL2CPP.Il2CppObjectBaseToPtr(playerTarget);
+                        IL2CPP.il2cpp_gc_wbarrier_set_field(
+                            IL2CPP.Il2CppObjectBaseToPtr(ts),
+                            IL2CPP.Il2CppObjectBaseToPtr(ts) + (int)IL2CPP.il2cpp_field_get_offset(field),
+                            targetPtr
+                        );
+                        break;
+                    }
+                }
+            }
+            catch { }
+        }
+
+        // Continuously maintains turret aiming and tracking during playtest mode
+        public static void UpdateTurretTrackingAndAiming()
+        {
+            GameObject player = FindPlayerEntity();
+            if (player == null) return;
+
+            Vector3 playerEyePos = player.transform.position + Vector3.up * 1.5f;
+
+            for (int i = 0; i < PlacedObjects.Count; i++)
+            {
+                GameObject obj = PlacedObjects[i];
+                if (obj == null || !obj.activeSelf || !obj.name.ToLower().Contains("turret")) continue;
+
+                TurretScript ts = obj.GetComponentInChildren<TurretScript>();
+                if (ts == null) continue;
+
+                float dist = Vector3.Distance(obj.transform.position, playerEyePos);
+
+                // Within active turret engagement range (45m)
+                if (dist < 45f)
+                {
+                    if (!ts.enabled) ts.enabled = true;
+
+                    // Rotate the turret body/head towards the player if not aiming
+                    Vector3 aimDir = (playerEyePos - obj.transform.position).normalized;
+                    aimDir.y = 0f; // Keep base level
+
+                    if (aimDir.sqrMagnitude > 0.01f)
+                    {
+                        Quaternion targetRot = Quaternion.LookRotation(aimDir, Vector3.up);
+                        obj.transform.rotation = Quaternion.Slerp(obj.transform.rotation, targetRot, Time.deltaTime * 3.5f);
+                    }
+                }
+            }
         }
 
         // Tints every visual, particle system, emitter, light, and trail on the gate
@@ -2346,7 +2434,19 @@ namespace DeadCoreEditor
 
             if (asset.IsTurret)
             {
-                ApplyTurretSettings(obj, ActiveTurretFireDelay, 1000f);
+                // Sensible native projectile velocity (40f) instead of tunneling 1000f
+                ApplyTurretSettings(obj, ActiveTurretFireDelay, 40.0f);
+            }
+
+            // Only add fallback colliders to generic static blocks (NEVER to turrets or hazards)
+            if (!asset.IsTurret && !asset.IsCheckPoint && !asset.IsHelix && obj.GetComponentInChildren<Collider>() == null)
+            {
+                MeshFilter mf = obj.GetComponentInChildren<MeshFilter>();
+                if (mf != null && mf.sharedMesh != null)
+                {
+                    MeshCollider mc = obj.AddComponent<MeshCollider>();
+                    mc.sharedMesh = mf.sharedMesh;
+                }
             }
 
             if (asset.IsJumper)
