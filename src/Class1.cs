@@ -3,6 +3,7 @@ using System.IO;
 using System.Collections;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Globalization;
 using System.Runtime.InteropServices;
 using MelonLoader;
 using HarmonyLib;
@@ -14,6 +15,10 @@ using Il2CppInterop.Runtime;
 using Il2CppTMPro;
 using Il2CppDeadCore;
 using Il2CppDeadCore.UI;
+
+using File = System.IO.File;
+using Directory = System.IO.Directory;
+using Path = System.IO.Path;
 
 [assembly: MelonInfo(typeof(DeadCoreEditor.DeadCoreLevelEditorMod), "DeadCore Level Editor Suite", "5.4.0", "Trufa")]
 [assembly: MelonGame(null, null)]
@@ -64,7 +69,6 @@ namespace DeadCoreEditor
                     NativeLogsMenuHijacker.OpenNativeMenu();
                 }
 
-                // Locate active LogsMenu in scene
                 LogsMenu activeMenu = null;
                 LogsMenu[] menus = Resources.FindObjectsOfTypeAll<LogsMenu>();
                 for (int i = 0; i < menus.Length; i++)
@@ -119,8 +123,6 @@ namespace DeadCoreEditor
 
         public override void OnGUI()
         {
-            string currentScene = SceneManager.GetActiveScene().name.ToLower();
-
             if (EditorSessionManager.IsCustomSessionActive)
             {
                 if (EditorSessionManager.IsEditModeActive)
@@ -157,10 +159,12 @@ namespace DeadCoreEditor
         public AssetCategory Category;
         public bool IsJumper;
         public bool IsCheckPoint;
-        public bool IsSpawnGate; // Orange Entry Checkpoint
-        public bool IsGoalGate;  // Blue Exit/Finish Checkpoint
+        public bool IsSpawnGate;
+        public bool IsGoalGate;
         public bool IsTurret;
         public bool IsHelix;
+        public bool IsSpotlight;
+        public bool IsLaser;
         public float DefaultScale;
         public float VerticalOffset;
         public Quaternion BaseRotation;
@@ -184,6 +188,23 @@ namespace DeadCoreEditor
         public float CustomParameter;
     }
 
+    public class LightConfig
+    {
+        public Color Color = Color.cyan;
+        public float Range = 50f;
+        public float SpotAngle = 60f;
+        public float Intensity = 3.0f;
+        public float VolumetricDimmer = 1.5f;
+    }
+
+    public class LevelMetadata
+    {
+        public string Title = "Untitled Level";
+        public string Author = "Unknown";
+        public string Difficulty = "Normal";
+        public string Description = "No description provided.";
+    }
+
     // --- NATIVE LOGSMENU HIJACKER ---
     public static class NativeLogsMenuHijacker
     {
@@ -194,6 +215,38 @@ namespace DeadCoreEditor
 
         private static Toggle _cachedMyLevelsToggle = null;
         private static Toggle _cachedCommunityToggle = null;
+
+        public static LevelMetadata ReadLevelMetadata(string fullPath, string fallbackTitle)
+        {
+            LevelMetadata meta = new LevelMetadata();
+            meta.Title = fallbackTitle;
+
+            if (!File.Exists(fullPath)) return meta;
+
+            try
+            {
+                string[] lines = File.ReadAllLines(fullPath);
+                foreach (string line in lines)
+                {
+                    if (string.IsNullOrWhiteSpace(line)) continue;
+                    string trimmed = line.Trim();
+
+                    if (trimmed.StartsWith("#TITLE:", StringComparison.OrdinalIgnoreCase))
+                        meta.Title = trimmed.Substring(7).Trim();
+                    else if (trimmed.StartsWith("#AUTHOR:", StringComparison.OrdinalIgnoreCase))
+                        meta.Author = trimmed.Substring(8).Trim();
+                    else if (trimmed.StartsWith("#DIFFICULTY:", StringComparison.OrdinalIgnoreCase))
+                        meta.Difficulty = trimmed.Substring(12).Trim();
+                    else if (trimmed.StartsWith("#DESC:", StringComparison.OrdinalIgnoreCase))
+                        meta.Description = trimmed.Substring(6).Trim();
+                    else if (!trimmed.StartsWith("#"))
+                        break;
+                }
+            }
+            catch { }
+
+            return meta;
+        }
 
         public static void ReplaceTitleScreenLogsButton()
         {
@@ -310,7 +363,7 @@ namespace DeadCoreEditor
             menu._logPrefab.gameObject.SetActive(false);
 
             List<string> fileList = new List<string>();
-            if (currentTab == 0) // My Levels
+            if (currentTab == 0)
             {
                 if (Directory.Exists(MapBrowserService.MyLevelsDir))
                     fileList.AddRange(Directory.GetFiles(MapBrowserService.MyLevelsDir, "*.txt"));
@@ -321,12 +374,12 @@ namespace DeadCoreEditor
                     if (!File.Exists(def))
                     {
                         Vector3 spawn = EditorSessionManager.LevelSpawnPosition;
-                        File.WriteAllText(def, $"Floor_Platform_16x16;{spawn.x:F4};{(spawn.y - 1.2f):F4};{spawn.z:F4};0.5500;0.0000;0.0000;0.0000;1.0000;0.00\n");
+                        File.WriteAllText(def, $"#TITLE: Default Level\n#AUTHOR: Community\n#DIFFICULTY: Normal\n#DESC: Starter platform.\nFloor_Platform_16x16;{spawn.x:F4};{(spawn.y - 1.2f):F4};{spawn.z:F4};0.5500;0.0000;0.0000;0.0000;1.0000;0.00\n");
                     }
                     fileList.Add(def);
                 }
             }
-            else // Community
+            else
             {
                 if (Directory.Exists(MapBrowserService.DownloadedLevelsDir))
                     fileList.AddRange(Directory.GetFiles(MapBrowserService.DownloadedLevelsDir, "*.txt"));
@@ -342,12 +395,18 @@ namespace DeadCoreEditor
                     menu._shortDesc.text = "NO LEVELS FOUND IN THIS TAB";
                     DisableLocalizationScripts(menu._shortDesc.gameObject);
                 }
+                if (menu._longDesc != null)
+                {
+                    menu._longDesc.text = "";
+                    DisableLocalizationScripts(menu._longDesc.gameObject);
+                }
             }
 
             for (int i = 0; i < fileList.Count; i++)
             {
                 string filePath = fileList[i];
                 string fileName = Path.GetFileNameWithoutExtension(filePath);
+                LevelMetadata meta = ReadLevelMetadata(filePath, fileName);
 
                 GameObject itemObj = GameObject.Instantiate(menu._logPrefab.gameObject, menu._logsButtonRoot.transform);
                 itemObj.name = $"CustomMap_{fileName}";
@@ -365,7 +424,7 @@ namespace DeadCoreEditor
                     }
                     if (lt._nameLabel != null)
                     {
-                        lt._nameLabel.text = fileName;
+                        lt._nameLabel.text = meta.Title;
                         lt._nameLabel.enableWordWrapping = false;
                     }
                     GameObject.DestroyImmediate(lt);
@@ -377,7 +436,7 @@ namespace DeadCoreEditor
                     tmps[0].text = (i + 1).ToString("D2");
                     tmps[0].enableWordWrapping = false;
 
-                    tmps[1].text = fileName;
+                    tmps[1].text = meta.Title;
                     tmps[1].enableWordWrapping = false;
                 }
 
@@ -431,7 +490,6 @@ namespace DeadCoreEditor
 
                 string clean = t.text.Trim().ToLower();
 
-                // 1. T-Logs -> My Levels
                 if (clean.Contains("t-log") || clean == "my levels")
                 {
                     t.text = "My Levels";
@@ -446,7 +504,6 @@ namespace DeadCoreEditor
                         }));
                     }
                 }
-                // 2. M-Logs -> Community
                 else if (clean.Contains("m-log") || clean == "community")
                 {
                     t.text = "Community";
@@ -461,7 +518,6 @@ namespace DeadCoreEditor
                         }));
                     }
                 }
-                // 3. D-Logs -> Hide
                 else if (clean.Contains("d-log"))
                 {
                     Toggle dToggle = t.GetComponentInParent<Toggle>();
@@ -483,7 +539,18 @@ namespace DeadCoreEditor
             MapBrowserService.SelectedMapName = fileName;
 
             int objectCount = 0;
-            try { objectCount = File.ReadAllLines(fullPath).Length; } catch { }
+            try
+            {
+                string[] lines = File.ReadAllLines(fullPath);
+                for (int l = 0; l < lines.Length; l++)
+                {
+                    if (!string.IsNullOrWhiteSpace(lines[l]) && !lines[l].Trim().StartsWith("#"))
+                        objectCount++;
+                }
+            }
+            catch { }
+
+            LevelMetadata meta = ReadLevelMetadata(fullPath, fileName);
 
             for (int i = 0; i < _spawnedRowObjects.Count; i++)
             {
@@ -499,13 +566,13 @@ namespace DeadCoreEditor
 
             if (menu._shortDesc != null)
             {
-                menu._shortDesc.text = $"LEVEL: {fileName}\nOBJECTS: {objectCount}";
+                menu._shortDesc.text = $"<b>{meta.Title.ToUpper()}</b>\nBY: {meta.Author.ToUpper()}  |  [{meta.Difficulty.ToUpper()}]  |  OBJECTS: {objectCount}";
                 DisableLocalizationScripts(menu._shortDesc.gameObject);
             }
 
             if (menu._longDesc != null)
             {
-                menu._longDesc.text = "";
+                menu._longDesc.text = meta.Description;
                 DisableLocalizationScripts(menu._longDesc.gameObject);
             }
 
@@ -525,7 +592,7 @@ namespace DeadCoreEditor
                 menu._logBigPicture.color = new Color(0.08f, 0.45f, 0.75f, 0.35f);
             }
 
-            MelonLogger.Msg($">> [Native UI] Selected Level: '{fileName}' ({objectCount} objects)");
+            MelonLogger.Msg($">> [Native UI] Selected: '{meta.Title}' by '{meta.Author}' ({objectCount} objects)");
         }
 
         private static void SetupBottomBarButtons(LogsMenu menu)
@@ -543,7 +610,7 @@ namespace DeadCoreEditor
             float nativeFontSize = (backTmp != null && backTmp.fontSize > 15f) ? backTmp.fontSize : 34f;
             float spacing = 15f;
 
-            // --- 1. [ PLAY LEVEL ] BUTTON (Cyan Accent) ---
+            // [ PLAY LEVEL ] BUTTON
             if (_nativePlayButton == null || _nativePlayButton.Equals(null))
             {
                 _nativePlayButton = GameObject.Instantiate(nativeBack.gameObject, parentBar);
@@ -576,7 +643,7 @@ namespace DeadCoreEditor
                 }
             }));
 
-            // --- 2. [ + NEW LEVEL ] BUTTON (Green Accent) ---
+            // [ + NEW LEVEL ] BUTTON
             if (_nativeCreateButton == null || _nativeCreateButton.Equals(null))
             {
                 _nativeCreateButton = GameObject.Instantiate(nativeBack.gameObject, parentBar);
@@ -605,7 +672,7 @@ namespace DeadCoreEditor
                 CreateNewLevel(menu);
             }));
 
-            // --- 3. [ DELETE LEVEL ] BUTTON (Red Accent) ---
+            // [ DELETE LEVEL ] BUTTON
             if (_nativeDeleteButton == null || _nativeDeleteButton.Equals(null))
             {
                 _nativeDeleteButton = GameObject.Instantiate(nativeBack.gameObject, parentBar);
@@ -677,7 +744,8 @@ namespace DeadCoreEditor
             }
 
             Vector3 spawn = EditorSessionManager.LevelSpawnPosition;
-            string starterContent = $"Floor_Platform_16x16;{spawn.x:F4};{(spawn.y - 1.2f):F4};{spawn.z:F4};0.5500;0.0000;0.0000;0.0000;1.0000;0.00\n";
+            string starterContent = $"#TITLE: New Level {idx}\n#AUTHOR: Player\n#DIFFICULTY: Normal\n#DESC: Custom level created with DeadCore Level Editor.\n" +
+                                   $"Floor_Platform_16x16;{spawn.x:F4};{(spawn.y - 1.2f):F4};{spawn.z:F4};0.5500;0.0000;0.0000;0.0000;1.0000;0.00\n";
             File.WriteAllText(newPath, starterContent);
 
             MelonLogger.Msg($">> Created new level with solid floor platform: '{newName}.txt'");
@@ -796,7 +864,7 @@ namespace DeadCoreEditor
             if (!File.Exists(defaultMyPath))
             {
                 Vector3 spawn = EditorSessionManager.LevelSpawnPosition;
-                File.WriteAllText(defaultMyPath, $"Floor_Platform_16x16;{spawn.x:F4};{(spawn.y - 1.2f):F4};{spawn.z:F4};0.5500;0.0000;0.0000;0.0000;1.0000;0.00\n");
+                File.WriteAllText(defaultMyPath, $"#TITLE: Default Level\n#AUTHOR: Community\n#DIFFICULTY: Normal\n#DESC: Starter platform.\nFloor_Platform_16x16;{spawn.x:F4};{(spawn.y - 1.2f):F4};{spawn.z:F4};0.5500;0.0000;0.0000;0.0000;1.0000;0.00\n");
             }
 
             RefreshFiles();
@@ -843,13 +911,14 @@ namespace DeadCoreEditor
         public static int SelectedAssetIndex = 0;
         public static bool IsBlockSelected = false;
 
-        public static float ActiveJumperForce = 20.0f;
+        // UNRESTRICTED DEFAULT VALUES
+        public static float ActiveJumperForce = 25.0f;
         public static float ActiveTurbineSpeed = 35.0f;
-        public static float ActiveTurretFireDelay = 1.2f;
+        public static float ActiveTurretFireDelay = 1.0f;
         public static float ActivePlacementScale = 0.55f;
         public static float CurrentGridSnap = 1.0f;
 
-        // --- ENHANCED ROTATION STATE ---
+        // ROTATION STATE
         public static float TargetPitch = 0f;
         public static float TargetYaw = 0f;
         public static float TargetRoll = 0f;
@@ -857,6 +926,12 @@ namespace DeadCoreEditor
         private static KeyCode _lastHeldKey = KeyCode.None;
         private static float _keyHoldDuration = 0f;
         private static float _keyRepeatTimer = 0f;
+        private static float _lightRefreshTimer = 0f;
+
+        // SPOTLIGHT STATE
+        public static bool ShowParamsWindow = true;
+        public static GameObject SelectedLightObject = null;
+        public static Dictionary<GameObject, LightConfig> PlacedLights = new Dictionary<GameObject, LightConfig>();
 
         public static Material CachedSceneMaterial = null;
 
@@ -882,7 +957,6 @@ namespace DeadCoreEditor
         private static Vector3 _currentBoostVelocity = Vector3.zero;
         private static float _jumperTriggerCooldown = 0f;
 
-        // --- GAMEPLAY TIMING & FINISH TRIGGER STATE ---
         public static float LevelTimer = 0f;
         public static bool IsLevelCompleted = false;
 
@@ -891,7 +965,49 @@ namespace DeadCoreEditor
         public static Vector3 FrozenPlayerPosition = Vector3.zero;
         public static Quaternion FrozenPlayerRotation = Quaternion.identity;
         public static Vector3 LevelSpawnPosition = new Vector3(-241f, -95f, -6f);
-        public static float VoidDeathY = -140f;
+
+        public static void ForceRefreshAllLights()
+        {
+            foreach (var kvp in PlacedLights)
+            {
+                GameObject obj = kvp.Key;
+                LightConfig cfg = kvp.Value;
+                if (obj == null || !obj.activeSelf || cfg == null) continue;
+
+                Light l = obj.GetComponentInChildren<Light>();
+                if (l != null)
+                {
+                    // 1. Nudge the values to trigger Unity & HDRP internal dirty flags
+                    l.range = cfg.Range + 1.0f;
+                    l.spotAngle = cfg.SpotAngle + 1.0f;
+                    l.intensity = (cfg.Intensity + 0.5f) * 1200f;
+                    l.enabled = false;
+                }
+
+                // 2. Re-apply the real loaded settings
+                ApplyLightConfig(obj, cfg);
+            }
+
+            MelonLogger.Msg($">> [Lights] Automatically nudged and synced {PlacedLights.Count} spotlights!");
+        }
+
+        // Dynamic Void Death Floor (adapts to lowest block)
+        public static float VoidDeathY
+        {
+            get
+            {
+                float lowest = -140f;
+                for (int i = 0; i < PlacedObjects.Count; i++)
+                {
+                    if (PlacedObjects[i] != null && PlacedObjects[i].activeSelf)
+                    {
+                        float y = PlacedObjects[i].transform.position.y - 60f;
+                        if (y < lowest) lowest = y;
+                    }
+                }
+                return lowest;
+            }
+        }
 
         public static List<CatalogAsset> ActiveTabAssets
         {
@@ -912,6 +1028,14 @@ namespace DeadCoreEditor
                 int idx = Mathf.Clamp(SelectedAssetIndex, 0, list.Count - 1);
                 return list[idx];
             }
+        }
+
+        public static bool IsMouseOverUI()
+        {
+            if (!ShowParamsWindow) return false;
+            Vector2 mouse = new Vector2(Input.mousePosition.x, Screen.height - Input.mousePosition.y);
+            Rect winRect = new Rect(Screen.width - 340f, 20f, 340f, 420f);
+            return winRect.Contains(mouse);
         }
 
         public static void ShowNotification(string msg)
@@ -946,6 +1070,8 @@ namespace DeadCoreEditor
             PrefabTurret = null;
 
             PlacedObjects.Clear();
+            PlacedLights.Clear();
+            SelectedLightObject = null;
             LastPlacedObject = null;
             JumperForces.Clear();
             TurbineSpeeds.Clear();
@@ -964,9 +1090,9 @@ namespace DeadCoreEditor
             _keyHoldDuration = 0f;
             _keyRepeatTimer = 0f;
 
-            ActiveJumperForce = 20.0f;
+            ActiveJumperForce = 25.0f;
             ActiveTurbineSpeed = 35.0f;
-            ActiveTurretFireDelay = 1.2f;
+            ActiveTurretFireDelay = 1.0f;
             ActivePlacementScale = 0.55f;
             CurrentGridSnap = 1.0f;
         }
@@ -975,11 +1101,22 @@ namespace DeadCoreEditor
         {
             if (!IsLevelInitialized) return;
 
+            // Delayed light refresh pass to force HDRP GPU cluster to wake up
+            if (_lightRefreshTimer > 0f)
+            {
+                _lightRefreshTimer -= Time.deltaTime;
+                if (_lightRefreshTimer <= 0f)
+                {
+                    ForceRefreshAllLights();
+                }
+            }
+
             if (!IsEditModeActive)
             {
                 CheckVoidFall();
                 CheckJumperBoostPhysics();
                 CheckHelixWindPushing();
+                CheckLaserBarriers();
                 CheckGoalTriggerArrival();
 
                 if (!IsLevelCompleted)
@@ -1002,6 +1139,11 @@ namespace DeadCoreEditor
                 ToggleEditMode();
             }
 
+            if (Input.GetKeyDown(KeyCode.F3))
+            {
+                ShowParamsWindow = !ShowParamsWindow;
+            }
+
             if (_notificationTimer > 0f) _notificationTimer -= Time.deltaTime;
 
             if (IsEditModeActive)
@@ -1015,7 +1157,6 @@ namespace DeadCoreEditor
                 HandleObjectDeletion();
             }
 
-            // Tag intermediate checkpoints when stepped on
             GameObject p = FindPlayerEntity();
             if (p != null && !IsEditModeActive)
             {
@@ -1038,6 +1179,50 @@ namespace DeadCoreEditor
                             }
                         }
                     }
+                }
+            }
+        }
+
+        private static void CheckLaserBarriers()
+        {
+            GameObject player = FindPlayerEntity();
+            if (player == null) return;
+
+            CharacterController cc = player.GetComponentInChildren<CharacterController>();
+            if (cc == null) return;
+
+            Vector3 playerCenter = player.transform.position + cc.center;
+            float playerRadius = cc.radius + 0.1f;
+            float playerHalfHeight = cc.height * 0.5f;
+
+            for (int i = 0; i < PlacedObjects.Count; i++)
+            {
+                GameObject obj = PlacedObjects[i];
+                if (obj == null || !obj.activeSelf) continue;
+                if (!obj.name.ToLower().Contains("laser")) continue;
+
+                BoxCollider bc = obj.GetComponentInChildren<BoxCollider>();
+                if (bc == null) continue;
+
+                // Transform player into local coordinate space of the laser
+                Vector3 localPlayer = obj.transform.InverseTransformPoint(playerCenter);
+                Vector3 boxSize = bc.size;
+                Vector3 boxCenter = bc.center;
+
+                float dx = Mathf.Abs(localPlayer.x - boxCenter.x);
+                float dy = Mathf.Abs(localPlayer.y - boxCenter.y);
+                float dz = Mathf.Abs(localPlayer.z - boxCenter.z);
+
+                Vector3 lossy = obj.transform.lossyScale;
+                float limitX = (boxSize.x * 0.5f) + (playerRadius / Mathf.Max(0.001f, lossy.x));
+                float limitY = (boxSize.y * 0.5f) + (playerHalfHeight / Mathf.Max(0.001f, lossy.y));
+                float limitZ = (boxSize.z * 0.5f) + (playerRadius / Mathf.Max(0.001f, lossy.z));
+
+                if (dx <= limitX && dy <= limitY && dz <= limitZ)
+                {
+                    MelonLogger.Msg(">> [LASER] Player touched deadly laser barrier! Respawning...");
+                    RespawnPlayer(player);
+                    break;
                 }
             }
         }
@@ -1074,6 +1259,7 @@ namespace DeadCoreEditor
             }
         }
 
+        // UNRESTRICTED JUMPER PHYSICS
         private static void CheckJumperBoostPhysics()
         {
             if (_jumperTriggerCooldown > 0f) _jumperTriggerCooldown -= Time.deltaTime;
@@ -1124,22 +1310,23 @@ namespace DeadCoreEditor
                         Vector3 horizDir = new Vector3(padForward.x, 0f, padForward.z).normalized;
                         if (horizDir.sqrMagnitude < 0.01f) horizDir = new Vector3(padUp.x, 0f, padUp.z).normalized;
 
+                        // No arbitrary cap on launch lift
                         float forwardSpeed = force * 1.6f;
-                        float upwardLift = Mathf.Clamp(force * 0.42f, 6.0f, 13.5f);
+                        float upwardLift = force * 0.45f;
 
                         launchVelocity = (horizDir * forwardSpeed) + (Vector3.up * upwardLift);
                     }
                     else
                     {
-                        float upwardSpeed = Mathf.Clamp(force * 0.65f, 7.0f, 15.0f);
-                        launchVelocity = Vector3.up * upwardSpeed;
+                        // True direct upward speed without 15.0 cap
+                        launchVelocity = Vector3.up * (force * 0.85f);
                     }
 
                     _currentBoostVelocity = launchVelocity;
                     _isBoostActive = true;
-                    _jumperTriggerCooldown = 0.40f;
+                    _jumperTriggerCooldown = 0.35f;
 
-                    MelonLogger.Msg($">> [BOOST] Launched! Speed: {force:F1} m/s");
+                    MelonLogger.Msg($">> [BOOST] Launched! Uncapped Speed: {launchVelocity.magnitude:F1} m/s");
                     break;
                 }
             }
@@ -1173,12 +1360,12 @@ namespace DeadCoreEditor
                 Vector3 toPlayer = pPos - hPos;
 
                 float forwardDist = Vector3.Dot(toPlayer, forward);
-                float windRange = 14.0f * obj.transform.localScale.z;
+                float windRange = 16.0f * obj.transform.localScale.z;
 
                 if (forwardDist > 0.2f && forwardDist < windRange)
                 {
                     Vector3 perp = toPlayer - forward * forwardDist;
-                    float radius = 2.8f * obj.transform.localScale.x;
+                    float radius = 3.0f * obj.transform.localScale.x;
 
                     if (perp.magnitude < radius)
                     {
@@ -1215,10 +1402,8 @@ namespace DeadCoreEditor
             }
         }
 
-        // Tracks the active checkpoint for custom runs
         public static CheckPointScript ActiveCustomCheckpoint = null;
 
-        // Clears the internal native LastCheckPoint backing field via Il2Cpp
         public static void ClearLastCheckpoint()
         {
             ActiveCustomCheckpoint = null;
@@ -1251,13 +1436,9 @@ namespace DeadCoreEditor
             CharacterController cc = player.GetComponentInChildren<CharacterController>();
             if (cc != null) cc.enabled = false;
 
-            // 1. Wipe checkpoints so we return to true start
             ClearLastCheckpoint();
-
-            // 2. Teleport directly to the actual level spawn
             player.transform.position = LevelSpawnPosition + Vector3.up * 0.2f;
 
-            // Align rotation to Entry Checkpoint if present
             foreach (var obj in PlacedObjects)
             {
                 if (obj != null && obj.name.ToLower().Contains("spawn"))
@@ -1269,14 +1450,12 @@ namespace DeadCoreEditor
 
             if (cc != null) cc.enabled = true;
 
-            // 3. Reset physics, cooldowns, and timer
             _isBoostActive = false;
             _currentBoostVelocity = Vector3.zero;
             _jumperTriggerCooldown = 0f;
             LevelTimer = 0f;
             IsLevelCompleted = false;
 
-            // 4. Lock cursor back into first-person mode
             Cursor.lockState = CursorLockMode.Locked;
             Cursor.visible = false;
 
@@ -1312,6 +1491,7 @@ namespace DeadCoreEditor
             if (cc != null) cc.enabled = true;
             UnfreezePlayerControls();
         }
+
         public static void UnfreezePlayerControls()
         {
             GameObject player = FindPlayerEntity();
@@ -1565,6 +1745,7 @@ namespace DeadCoreEditor
             TargetRoll = (TargetRoll % 360f + 360f) % 360f;
         }
 
+        // UNRESTRICTED PARAMETER SCROLLING
         private static void HandleMouseWheel()
         {
             float scroll = Input.GetAxis("Mouse ScrollWheel");
@@ -1574,8 +1755,8 @@ namespace DeadCoreEditor
             {
                 if (CurrentAsset != null && CurrentAsset.IsJumper)
                 {
-                    ActiveJumperForce += Mathf.Sign(scroll) * 1.0f;
-                    ActiveJumperForce = Mathf.Clamp(ActiveJumperForce, 2.0f, 300.0f);
+                    ActiveJumperForce += Mathf.Sign(scroll) * 2.5f;
+                    ActiveJumperForce = Mathf.Max(1.0f, ActiveJumperForce);
                     MelonLogger.Msg($">> [Jumper Force] Set: {ActiveJumperForce:F1}");
 
                     GameObject aimed = GetAimedPlacedObject();
@@ -1586,8 +1767,8 @@ namespace DeadCoreEditor
                 }
                 else if (CurrentAsset != null && CurrentAsset.IsHelix)
                 {
-                    ActiveTurbineSpeed += Mathf.Sign(scroll) * 2.5f;
-                    ActiveTurbineSpeed = Mathf.Clamp(ActiveTurbineSpeed, 5.0f, 150.0f);
+                    ActiveTurbineSpeed += Mathf.Sign(scroll) * 5.0f;
+                    ActiveTurbineSpeed = Mathf.Max(1.0f, ActiveTurbineSpeed);
                     MelonLogger.Msg($">> [Turbine Speed] Set: {ActiveTurbineSpeed:F1}");
 
                     GameObject aimed = GetAimedPlacedObject();
@@ -1598,20 +1779,21 @@ namespace DeadCoreEditor
                 }
                 else if (CurrentAsset != null && CurrentAsset.IsTurret)
                 {
-                    ActiveTurretFireDelay -= Mathf.Sign(scroll) * 0.15f;
-                    ActiveTurretFireDelay = Mathf.Clamp(ActiveTurretFireDelay, 0.2f, 6.0f);
+                    ActiveTurretFireDelay -= Mathf.Sign(scroll) * 0.1f;
+                    ActiveTurretFireDelay = Mathf.Max(0.05f, ActiveTurretFireDelay);
                     MelonLogger.Msg($">> [Turret Fire Delay] Set: {ActiveTurretFireDelay:F2}s");
 
                     GameObject aimed = GetAimedPlacedObject();
                     if (aimed != null && (TurretFireDelays.ContainsKey(aimed) || aimed.name.ToLower().Contains("turret")))
                     {
-                        ApplyTurretSettings(aimed, ActiveTurretFireDelay, 1000f);
+                        ApplyTurretSettings(aimed, ActiveTurretFireDelay, 1500f);
                     }
                 }
                 else
                 {
+                    // Scale unrestricted up to 50.0x
                     ActivePlacementScale += Mathf.Sign(scroll) * 0.05f;
-                    ActivePlacementScale = Mathf.Clamp(ActivePlacementScale, 0.05f, 10.0f);
+                    ActivePlacementScale = Mathf.Clamp(ActivePlacementScale, 0.01f, 50.0f);
                     PlacementHologramController.ApplyScaleToPreview();
                 }
             }
@@ -1650,7 +1832,7 @@ namespace DeadCoreEditor
 
             int mask = ~LayerMask.GetMask("Ignore Raycast");
             RaycastHit hit;
-            if (Physics.Raycast(ray, out hit, 300f, mask))
+            if (Physics.Raycast(ray, out hit, 1000f, mask))
             {
                 GameObject hitObj = hit.collider.gameObject;
                 foreach (var obj in PlacedObjects)
@@ -1671,12 +1853,15 @@ namespace DeadCoreEditor
             if (target != null)
             {
                 PlacedObjects.Remove(target);
+                if (PlacedLights.ContainsKey(target)) PlacedLights.Remove(target);
+                if (SelectedLightObject == target) SelectedLightObject = null;
                 target.SetActive(false);
 
                 float param = 0f;
                 if (JumperForces.ContainsKey(target)) param = JumperForces[target];
                 else if (TurbineSpeeds.ContainsKey(target)) param = TurbineSpeeds[target];
                 else if (TurretFireDelays.ContainsKey(target)) param = TurretFireDelays[target];
+                else if (PlacedLights.ContainsKey(target)) param = PlacedLights[target].Range;
 
                 UndoHistory.Push(new HistoryRecord
                 {
@@ -1711,6 +1896,7 @@ namespace DeadCoreEditor
                 {
                     record.TargetObject.SetActive(false);
                     PlacedObjects.Remove(record.TargetObject);
+                    if (SelectedLightObject == record.TargetObject) SelectedLightObject = null;
                 }
                 RedoHistory.Push(record);
                 ShowNotification($"Undid placement of {record.AssetName}");
@@ -1733,7 +1919,12 @@ namespace DeadCoreEditor
                         {
                             if (record.AssetName.ToLower().Contains("jumper")) ApplyJumperForce(recreated, record.CustomParameter);
                             if (record.AssetName.ToLower().Contains("helix")) ApplyTurbineSpeed(recreated, record.CustomParameter);
-                            if (record.AssetName.ToLower().Contains("turret")) ApplyTurretSettings(recreated, record.CustomParameter, 1000f);
+                            if (record.AssetName.ToLower().Contains("turret")) ApplyTurretSettings(recreated, record.CustomParameter, 1500f);
+                            if (record.AssetName.ToLower().Contains("spotlight") && PlacedLights.ContainsKey(recreated))
+                            {
+                                PlacedLights[recreated].Range = record.CustomParameter;
+                                ApplyLightConfig(recreated, PlacedLights[recreated]);
+                            }
                         }
                         PlacedObjects.Add(recreated);
                     }
@@ -1770,6 +1961,7 @@ namespace DeadCoreEditor
                 {
                     record.TargetObject.SetActive(false);
                     PlacedObjects.Remove(record.TargetObject);
+                    if (SelectedLightObject == record.TargetObject) SelectedLightObject = null;
                 }
                 UndoHistory.Push(record);
                 ShowNotification($"Re-deleted {record.AssetName}");
@@ -1801,7 +1993,8 @@ namespace DeadCoreEditor
         {
             if (CurrentGridSnap == 1.0f) CurrentGridSnap = 2.0f;
             else if (CurrentGridSnap == 2.0f) CurrentGridSnap = 4.0f;
-            else if (CurrentGridSnap == 4.0f) CurrentGridSnap = 0.0f;
+            else if (CurrentGridSnap == 4.0f) CurrentGridSnap = 0.5f;
+            else if (CurrentGridSnap == 0.5f) CurrentGridSnap = 0.0f;
             else CurrentGridSnap = 1.0f;
 
             string status = (CurrentGridSnap > 0.01f) ? $"{CurrentGridSnap}m" : "OFF";
@@ -1816,6 +2009,8 @@ namespace DeadCoreEditor
                 if (obj != null) GameObject.Destroy(obj);
             }
             PlacedObjects.Clear();
+            PlacedLights.Clear();
+            SelectedLightObject = null;
             LastPlacedObject = null;
             JumperForces.Clear();
             TurbineSpeeds.Clear();
@@ -1840,7 +2035,7 @@ namespace DeadCoreEditor
                 if (comp == null || comp is Transform) continue;
 
                 string typeName = comp.GetType().Name.ToLower();
-                if (typeName.Contains("particle") || typeName.Contains("light") || typeName.Contains("emitter") || typeName.Contains("trail") || typeName.Contains("flare") || typeName.Contains("halo"))
+                if (typeName.Contains("particle") || typeName.Contains("emitter") || typeName.Contains("trail") || typeName.Contains("flare") || typeName.Contains("halo"))
                 {
                     GameObject.DestroyImmediate(comp);
                 }
@@ -1851,13 +2046,14 @@ namespace DeadCoreEditor
             {
                 if (tr == null || tr.gameObject == root) continue;
                 string objName = tr.gameObject.name.ToLower();
-                if (objName.Contains("particle") || objName.Contains("flame") || objName.Contains("fx") || objName.Contains("fire") || objName.Contains("glow") || objName.Contains("light") || objName.Contains("flare") || objName.Contains("beam") || objName.Contains("laser") || objName.Contains("anneau"))
+                if (objName.Contains("particle") || objName.Contains("flame") || objName.Contains("fx") || objName.Contains("fire") || objName.Contains("glow") || objName.Contains("flare") || objName.Contains("beam") || objName.Contains("laser") || objName.Contains("anneau"))
                 {
                     GameObject.DestroyImmediate(tr.gameObject);
                 }
             }
         }
 
+        // UNRESTRICTED JUMPER FORCE
         public static void ApplyJumperForce(GameObject jumperObj, float force)
         {
             if (jumperObj == null) return;
@@ -1875,6 +2071,7 @@ namespace DeadCoreEditor
             MelonLogger.Msg($">> [Jumper Force] Set to {force:F1} on '{jumperObj.name}'");
         }
 
+        // UNRESTRICTED TURBINE SPEED
         public static void ApplyTurbineSpeed(GameObject turbineObj, float speed)
         {
             if (turbineObj == null) return;
@@ -1886,37 +2083,32 @@ namespace DeadCoreEditor
             {
                 zone.enabled = true;
                 zone._maxForce = speed;
-                zone._maxVelocity = speed * 1.5f;
+                zone._maxVelocity = speed * 2.0f;
             }
 
             Helix h = turbineObj.GetComponentInChildren<Helix>();
             if (h != null)
             {
                 h.enabled = true;
-                h._maximumVelocity = speed * 10f;
+                h._maximumVelocity = speed * 20f;
             }
 
             MelonLogger.Msg($">> [Turbine Speed] Set to {speed:F1} on '{turbineObj.name}'");
         }
 
-        // --- TURRET SYSTEM ---
-        public static void ApplyTurretSettings(GameObject turretObj, float fireDelay, float firePower = 40f)
+        // UNRESTRICTED TURRET SPEED & FIRE DELAY
+        public static void ApplyTurretSettings(GameObject turretObj, float fireDelay, float firePower = 1500f)
         {
             if (turretObj == null) return;
 
             TurretFireDelays[turretObj] = fireDelay;
 
-            // 1. Remove any synthetic collider attached to the root that blocks bullets at the nozzle
             Collider[] rootColliders = turretObj.GetComponents<Collider>();
             for (int i = 0; i < rootColliders.Length; i++)
             {
-                if (rootColliders[i] is MeshCollider)
-                {
-                    GameObject.DestroyImmediate(rootColliders[i]);
-                }
+                GameObject.DestroyImmediate(rootColliders[i]);
             }
 
-            // 2. Activate native TurretScript without touching the root transform
             TurretScript[] turretScripts = turretObj.GetComponentsInChildren<TurretScript>(true);
             for (int i = 0; i < turretScripts.Length; i++)
             {
@@ -1926,12 +2118,10 @@ namespace DeadCoreEditor
                 ts.gameObject.SetActive(true);
                 ts.enabled = true;
 
-                // Native forward firing parameters
-                ts._fireDelay = Mathf.Clamp(fireDelay, 0.2f, 6.0f);
-                ts._firePower = Mathf.Clamp(firePower, 1100f, 1200f); // Balanced native projectile speed
+                ts._fireDelay = Mathf.Max(0.05f, fireDelay);
+                ts._firePower = firePower;
             }
 
-            // 3. Ensure any native switch on the turret is active/powered on
             foreach (var mb in turretObj.GetComponentsInChildren<MonoBehaviour>(true))
             {
                 if (mb == null) continue;
@@ -1942,80 +2132,92 @@ namespace DeadCoreEditor
                 }
             }
 
-            MelonLogger.Msg($">> [Turret] Stationary & Active! Locked to placed angle. Fire Delay: {fireDelay:F2}s");
+            MelonLogger.Msg($">> [Turret] Stationary & Active! Fire Delay: {fireDelay:F2}s, Power: {firePower:F0}");
         }
 
-        private static void AssignTurretTarget(TurretScript ts, Transform playerTarget)
+        // BOXING HELPERS FOR IL2CPP LIGHT DATA
+        private static Il2CppSystem.Object BoxFloat(float val)
         {
-            if (ts == null || playerTarget == null) return;
+            unsafe
+            {
+                IntPtr raw = IL2CPP.il2cpp_value_box(Il2CppClassPointerStore<float>.NativeClassPtr, (IntPtr)(&val));
+                return new Il2CppSystem.Object(raw);
+            }
+        }
 
+        private static void SetLightMember(Il2CppSystem.Type t, Component comp, string name, float val)
+        {
             try
             {
-                // Check common target fields on TurretScript via Il2Cpp reflection
-                IntPtr classPtr = Il2CppClassPointerStore<TurretScript>.NativeClassPtr;
-                string[] targetFieldNames = new string[] { "_target", "target", "_player", "player", "_playerTransform", "_targetTransform" };
+                var p = t.GetProperty(name);
+                if (p != null) { try { p.SetValue(comp, val); } catch { p.SetValue(comp, BoxFloat(val)); } return; }
+            }
+            catch { }
+            try
+            {
+                var f = t.GetField(name);
+                if (f != null) { try { f.SetValue(comp, val); } catch { f.SetValue(comp, BoxFloat(val)); } }
+            }
+            catch { }
+        }
 
-                foreach (var fieldName in targetFieldNames)
+        public static void ApplyLightConfig(GameObject lightObj, LightConfig cfg)
+        {
+            if (lightObj == null || cfg == null) return;
+
+            PlacedLights[lightObj] = cfg;
+
+            Light l = lightObj.GetComponentInChildren<Light>();
+            if (l != null)
+            {
+                // Force HDRP light cluster to rebuild bounds by toggling enabled
+                l.enabled = false;
+                l.range = Mathf.Max(1f, cfg.Range);
+                l.spotAngle = Mathf.Clamp(cfg.SpotAngle, 1f, 175f);
+                l.color = cfg.Color;
+                l.intensity = cfg.Intensity * 1200f;
+                l.enabled = true;
+            }
+
+            // Sync with HDRP HDAdditionalLightData
+            try
+            {
+                Component[] comps = lightObj.GetComponentsInChildren<Component>(true);
+                for (int i = 0; i < comps.Length; i++)
                 {
-                    IntPtr field = IL2CPP.GetIl2CppField(classPtr, fieldName);
-                    if (field != IntPtr.Zero)
+                    if (comps[i] != null && comps[i].GetIl2CppType().Name.Contains("HDAdditionalLightData"))
                     {
-                        IntPtr targetPtr = IL2CPP.Il2CppObjectBaseToPtr(playerTarget);
-                        IL2CPP.il2cpp_gc_wbarrier_set_field(
-                            IL2CPP.Il2CppObjectBaseToPtr(ts),
-                            IL2CPP.Il2CppObjectBaseToPtr(ts) + (int)IL2CPP.il2cpp_field_get_offset(field),
-                            targetPtr
-                        );
-                        break;
+                        var t = comps[i].GetIl2CppType();
+                        SetLightMember(t, comps[i], "range", cfg.Range);
+                        SetLightMember(t, comps[i], "intensity", cfg.Intensity * 1200f);
+                        SetLightMember(t, comps[i], "volumetricDimmer", cfg.VolumetricDimmer);
+                        SetLightMember(t, comps[i], "useVolumetric", cfg.VolumetricDimmer > 0.01f ? 1f : 0f);
+                    }
+                }
+            }
+            catch { }
+
+            // Update bulb glow emission
+            try
+            {
+                MeshRenderer mr = lightObj.GetComponentInChildren<MeshRenderer>();
+                if (mr != null && mr.material != null)
+                {
+                    mr.material.color = cfg.Color;
+                    if (mr.material.HasProperty("_EmissionColor"))
+                    {
+                        mr.material.SetColor("_EmissionColor", cfg.Color * Mathf.Max(1.5f, cfg.Intensity));
+                        mr.material.EnableKeyword("_EMISSION");
                     }
                 }
             }
             catch { }
         }
 
-        // Continuously maintains turret aiming and tracking during playtest mode
-        public static void UpdateTurretTrackingAndAiming()
-        {
-            GameObject player = FindPlayerEntity();
-            if (player == null) return;
-
-            Vector3 playerEyePos = player.transform.position + Vector3.up * 1.5f;
-
-            for (int i = 0; i < PlacedObjects.Count; i++)
-            {
-                GameObject obj = PlacedObjects[i];
-                if (obj == null || !obj.activeSelf || !obj.name.ToLower().Contains("turret")) continue;
-
-                TurretScript ts = obj.GetComponentInChildren<TurretScript>();
-                if (ts == null) continue;
-
-                float dist = Vector3.Distance(obj.transform.position, playerEyePos);
-
-                // Within active turret engagement range (45m)
-                if (dist < 45f)
-                {
-                    if (!ts.enabled) ts.enabled = true;
-
-                    // Rotate the turret body/head towards the player if not aiming
-                    Vector3 aimDir = (playerEyePos - obj.transform.position).normalized;
-                    aimDir.y = 0f; // Keep base level
-
-                    if (aimDir.sqrMagnitude > 0.01f)
-                    {
-                        Quaternion targetRot = Quaternion.LookRotation(aimDir, Vector3.up);
-                        obj.transform.rotation = Quaternion.Slerp(obj.transform.rotation, targetRot, Time.deltaTime * 3.5f);
-                    }
-                }
-            }
-        }
-
-        // Tints every visual, particle system, emitter, light, and trail on the gate
-        // Tints all meshes, particle materials, emission shaders, lights, and trails without ParticleSystemModule
         public static void ApplyGateVisualTint(GameObject gateObj, Color tintColor)
         {
             if (gateObj == null) return;
 
-            // 1. All Renderers (MeshRenderer, ParticleSystemRenderer, SpriteRenderer, etc. all inherit from Renderer)
             Renderer[] renderers = gateObj.GetComponentsInChildren<Renderer>(true);
             for (int i = 0; i < renderers.Length; i++)
             {
@@ -2030,7 +2232,7 @@ namespace DeadCoreEditor
 
                     mat.color = tintColor;
                     if (mat.HasProperty("_Color")) mat.SetColor("_Color", tintColor);
-                    if (mat.HasProperty("_TintColor")) mat.SetColor("_TintColor", tintColor); // Primary particle shader property
+                    if (mat.HasProperty("_TintColor")) mat.SetColor("_TintColor", tintColor);
                     if (mat.HasProperty("_EmissionColor"))
                     {
                         mat.SetColor("_EmissionColor", tintColor * 2.2f);
@@ -2039,7 +2241,6 @@ namespace DeadCoreEditor
                 }
             }
 
-            // 2. Native Lights
             Light[] lights = gateObj.GetComponentsInChildren<Light>(true);
             for (int i = 0; i < lights.Length; i++)
             {
@@ -2049,7 +2250,6 @@ namespace DeadCoreEditor
                 }
             }
 
-            // 3. Native Trails
             TrailRenderer[] trails = gateObj.GetComponentsInChildren<TrailRenderer>(true);
             for (int i = 0; i < trails.Length; i++)
             {
@@ -2136,6 +2336,30 @@ namespace DeadCoreEditor
                         GUI.Box(new Rect(screenPos.x - 85f, y - 14f, 170f, 26f), "[Goal / Finish Line]");
                     }
                 }
+                else if (obj.name.ToLower().Contains("spotlight"))
+                {
+                    Vector3 worldPos = obj.transform.position + Vector3.up * 1.2f;
+                    Vector3 screenPos = cam.WorldToScreenPoint(worldPos);
+                    if (screenPos.z > 0.5f)
+                    {
+                        float y = Screen.height - screenPos.y;
+                        bool isSel = (obj == SelectedLightObject);
+                        GUI.color = isSel ? Color.green : Color.yellow;
+                        string badge = isSel ? "★ [Selected Spotlight] ★" : "[Tech Spotlight]";
+                        GUI.Box(new Rect(screenPos.x - 90f, y - 14f, 180f, 26f), badge);
+                    }
+                }
+                else if (obj.name.ToLower().Contains("laser"))
+                {
+                    Vector3 worldPos = obj.transform.position + Vector3.up * 1.5f;
+                    Vector3 screenPos = cam.WorldToScreenPoint(worldPos);
+                    if (screenPos.z > 0.5f)
+                    {
+                        float y = Screen.height - screenPos.y;
+                        GUI.color = Color.red;
+                        GUI.Box(new Rect(screenPos.x - 75f, y - 14f, 150f, 26f), "[Laser Barrier]");
+                    }
+                }
                 else
                 {
                     CheckPointScript cp = obj.GetComponentInChildren<CheckPointScript>();
@@ -2156,50 +2380,13 @@ namespace DeadCoreEditor
                 }
             }
 
-            if (IsBlockSelected && CurrentAsset != null && PlacementHologramController.GhostInstance != null)
-            {
-                if (CurrentAsset.IsJumper)
-                {
-                    Vector3 worldPos = PlacementHologramController.GhostInstance.transform.position + Vector3.up * 1.4f;
-                    Vector3 screenPos = cam.WorldToScreenPoint(worldPos);
-                    if (screenPos.z > 0.5f)
-                    {
-                        float y = Screen.height - screenPos.y;
-                        GUI.color = Color.yellow;
-                        GUI.Box(new Rect(screenPos.x - 100f, y - 14f, 200f, 26f), $"[Set Force: {ActiveJumperForce:F1}] (Shift+Scroll)");
-                    }
-                }
-                else if (CurrentAsset.IsHelix)
-                {
-                    Vector3 worldPos = PlacementHologramController.GhostInstance.transform.position + Vector3.up * 2.2f;
-                    Vector3 screenPos = cam.WorldToScreenPoint(worldPos);
-                    if (screenPos.z > 0.5f)
-                    {
-                        float y = Screen.height - screenPos.y;
-                        GUI.color = Color.green;
-                        GUI.Box(new Rect(screenPos.x - 105f, y - 14f, 210f, 26f), $"[Set Speed: {ActiveTurbineSpeed:F1}] (Shift+Scroll)");
-                    }
-                }
-                else if (CurrentAsset.IsTurret)
-                {
-                    Vector3 worldPos = PlacementHologramController.GhostInstance.transform.position + Vector3.up * 1.8f;
-                    Vector3 screenPos = cam.WorldToScreenPoint(worldPos);
-                    if (screenPos.z > 0.5f)
-                    {
-                        float y = Screen.height - screenPos.y;
-                        GUI.color = Color.red;
-                        GUI.Box(new Rect(screenPos.x - 105f, y - 14f, 210f, 26f), $"[Set Fire Delay: {ActiveTurretFireDelay:F2}s] (Shift+Scroll)");
-                    }
-                }
-            }
-
             GUI.color = Color.white;
             string tabName = CurrentTab == AssetCategory.Essentials ? "1: ESSENTIALS" : (CurrentTab == AssetCategory.Extracted ? "2: EXTRACTED" : "3: MISC");
             string gridName = (CurrentGridSnap > 0.01f) ? $"{CurrentGridSnap}m" : "OFF";
 
             string status = IsBlockSelected
                 ? $"[{tabName}] | PLACING: '{CurrentAsset?.DisplayName}' | Rot: [P:{TargetPitch:0}° Y:{TargetYaw:0}° R:{TargetRoll:0}°] | Snap: {gridName} (G) | T: 90° Snap | R: Reset"
-                : $"[{tabName}] | MAP: '{MapBrowserService.SelectedMapName}' | F5: Save | F6: Load | Z: Undo | Y: Redo";
+                : $"[{tabName}] | MAP: '{MapBrowserService.SelectedMapName}' | F3: Spotlights | F5: Save | F6: Load | Z: Undo | Y: Redo";
 
             GUI.Box(new Rect(Screen.width * 0.5f - 430f, 15f, 860f, 32f), status);
 
@@ -2209,14 +2396,172 @@ namespace DeadCoreEditor
                 GUI.Box(new Rect(Screen.width * 0.5f - 220f, Screen.height - 85f, 440f, 34f), _notificationMessage);
             }
 
+            if (ShowParamsWindow)
+            {
+                DrawParametersWindow();
+            }
+
             GUI.color = originalColor;
+        }
+
+        private static void DrawParametersWindow()
+        {
+            float winW = 320f;
+            float winH = 390f;
+            float winX = Screen.width - winW - 20f;
+            float winY = 20f;
+            Rect winRect = new Rect(winX, winY, winW, winH);
+
+            Color orig = GUI.color;
+
+            GUI.color = new Color(0.04f, 0.07f, 0.12f, 0.94f);
+            GUI.Box(winRect, "");
+            GUI.color = new Color(0.12f, 0.65f, 0.95f, 0.85f);
+            GUI.Box(new Rect(winX + 2, winY + 2, winW - 4, winH - 4), "");
+
+            GUI.color = new Color(0.08f, 0.14f, 0.22f, 1f);
+            GUI.Box(new Rect(winX + 8, winY + 8, winW - 16, 32), "");
+            GUI.color = Color.yellow;
+            GUI.Label(new Rect(winX + 20, winY + 14, 250, 25), "SPOTLIGHT INSPECTOR (F3)");
+
+            float curY = winY + 48f;
+
+            if (!IsMouseOverUI())
+            {
+                GameObject aimed = GetAimedPlacedObject();
+                if (aimed != null && (PlacedLights.ContainsKey(aimed) || aimed.name.ToLower().Contains("spotlight")))
+                {
+                    SelectedLightObject = aimed;
+                }
+            }
+
+            if (SelectedLightObject != null && !SelectedLightObject.activeSelf)
+            {
+                SelectedLightObject = null;
+            }
+
+            List<GameObject> allLights = new List<GameObject>();
+            foreach (var kvp in PlacedLights)
+            {
+                if (kvp.Key != null && kvp.Key.activeSelf) allLights.Add(kvp.Key);
+            }
+
+            if (allLights.Count > 0)
+            {
+                int curIdx = SelectedLightObject != null ? allLights.IndexOf(SelectedLightObject) : -1;
+                string lightLabel = curIdx >= 0 ? $"Light {curIdx + 1} of {allLights.Count}" : "None Selected";
+
+                GUI.color = new Color(0.2f, 0.55f, 0.85f);
+                if (GUI.Button(new Rect(winX + 15, curY, 40, 24), "<"))
+                {
+                    curIdx = (curIdx - 1 + allLights.Count) % allLights.Count;
+                    SelectedLightObject = allLights[curIdx];
+                }
+
+                GUI.color = Color.white;
+                GUI.Label(new Rect(winX + 62, curY + 3, 120, 20), lightLabel);
+
+                GUI.color = new Color(0.2f, 0.55f, 0.85f);
+                if (GUI.Button(new Rect(winX + 185, curY, 40, 24), ">"))
+                {
+                    curIdx = (curIdx + 1) % allLights.Count;
+                    SelectedLightObject = allLights[curIdx];
+                }
+
+                GUI.color = new Color(0.8f, 0.3f, 0.3f);
+                if (GUI.Button(new Rect(winX + 235, curY, 70, 24), "Deselect"))
+                {
+                    SelectedLightObject = null;
+                }
+                curY += 32f;
+            }
+
+            if (SelectedLightObject != null && PlacedLights.ContainsKey(SelectedLightObject))
+            {
+                LightConfig cfg = PlacedLights[SelectedLightObject];
+                bool changed = false;
+
+                // 1. Unrestricted Range (1m to 1000m)
+                GUI.color = Color.white;
+                GUI.Label(new Rect(winX + 15, curY, 200, 18), $"Light Range: {cfg.Range:F0}m");
+                curY += 18f;
+                float newRange = GUI.HorizontalSlider(new Rect(winX + 15, curY, winW - 30, 16), cfg.Range, 1f, 1000f);
+                if (Mathf.Abs(newRange - cfg.Range) > 0.5f)
+                {
+                    cfg.Range = newRange;
+                    changed = true;
+                }
+                curY += 22f;
+
+                // 2. Unrestricted Beam Angle (1° to 175°)
+                GUI.Label(new Rect(winX + 15, curY, 200, 18), $"Beam Angle: {cfg.SpotAngle:F0}°");
+                curY += 18f;
+                float newAngle = GUI.HorizontalSlider(new Rect(winX + 15, curY, winW - 30, 16), cfg.SpotAngle, 1f, 175f);
+                if (Mathf.Abs(newAngle - cfg.SpotAngle) > 0.5f)
+                {
+                    cfg.SpotAngle = newAngle;
+                    changed = true;
+                }
+                curY += 22f;
+
+                GUI.Label(new Rect(winX + 15, curY, 200, 18), $"Intensity: {cfg.Intensity:F1}x");
+                curY += 18f;
+                float newInt = GUI.HorizontalSlider(new Rect(winX + 15, curY, winW - 30, 16), cfg.Intensity, 0.1f, 150f);
+                if (Mathf.Abs(newInt - cfg.Intensity) > 0.05f)
+                {
+                    cfg.Intensity = newInt;
+                    changed = true;
+                }
+                curY += 22f;
+
+                GUI.color = new Color(0.4f, 0.9f, 1f);
+                GUI.Label(new Rect(winX + 15, curY, 200, 18), $"Volumetric Beam: {cfg.VolumetricDimmer:F1}x");
+                curY += 18f;
+                float newVol = GUI.HorizontalSlider(new Rect(winX + 15, curY, winW - 30, 16), cfg.VolumetricDimmer, 0.0f, 50.0f);
+                if (Mathf.Abs(newVol - cfg.VolumetricDimmer) > 0.05f)
+                {
+                    cfg.VolumetricDimmer = newVol;
+                    changed = true;
+                }
+                curY += 24f;
+
+                // 5. Colors
+                GUI.color = Color.white;
+                GUI.Label(new Rect(winX + 15, curY, 150, 18), "Beam Color:");
+                curY += 20f;
+                float cW = (winW - 50) / 5f;
+
+                GUI.color = Color.cyan;
+                if (GUI.Button(new Rect(winX + 15, curY, cW, 22), "Cyan")) { cfg.Color = Color.cyan; changed = true; }
+                GUI.color = new Color(1f, 0.5f, 0.1f);
+                if (GUI.Button(new Rect(winX + 15 + cW + 4, curY, cW, 22), "Amber")) { cfg.Color = new Color(1f, 0.5f, 0.1f); changed = true; }
+                GUI.color = new Color(0.2f, 1f, 0.35f);
+                if (GUI.Button(new Rect(winX + 15 + (cW + 4) * 2, curY, cW, 22), "Green")) { cfg.Color = Color.green; changed = true; }
+                GUI.color = new Color(1f, 0.25f, 0.25f);
+                if (GUI.Button(new Rect(winX + 15 + (cW + 4) * 3, curY, cW, 22), "Red")) { cfg.Color = Color.red; changed = true; }
+                GUI.color = Color.white;
+                if (GUI.Button(new Rect(winX + 15 + (cW + 4) * 4, curY, cW, 22), "White")) { cfg.Color = Color.white; changed = true; }
+
+                if (changed)
+                {
+                    ApplyLightConfig(SelectedLightObject, cfg);
+                }
+            }
+            else
+            {
+                GUI.color = Color.gray;
+                GUI.Label(new Rect(winX + 15, curY + 25, 290, 60), allLights.Count > 0
+                    ? "Click '<' or '>' above to select a light,\nor aim at any Tech Spotlight in the world."
+                    : "No Tech Spotlights placed yet.\nSelect 'Tech Spotlight' from Essentials to place one.");
+            }
+
+            GUI.color = orig;
         }
 
         public static void DrawPlaytestHUD()
         {
             Color origColor = GUI.color;
 
-            // 1. Playtest Speedrun Timer (Positioned in the Bottom-Left)
             float timerW = 220f;
             float timerH = 42f;
             float timerX = 20f;
@@ -2230,7 +2575,6 @@ namespace DeadCoreEditor
             int fraction = Mathf.FloorToInt((LevelTimer * 100) % 100);
             GUI.Label(new Rect(timerX + 15f, timerY + 10f, 190f, 25f), $"TIME:  {minutes:00}:{seconds:00}.{fraction:00}");
 
-            // 2. Victory Finish Dialog with Cursor Auto-Unlocked
             if (IsLevelCompleted)
             {
                 Cursor.lockState = CursorLockMode.None;
@@ -2253,7 +2597,6 @@ namespace DeadCoreEditor
                 GUI.color = Color.gray;
                 GUI.Label(new Rect(x + 30, y + 105, 400, 25), $"Course:  {MapBrowserService.SelectedMapName}");
 
-                // Restart brings the player to the ACTUAL start position
                 GUI.color = new Color(0.2f, 0.85f, 0.4f, 1f);
                 if (GUI.Button(new Rect(x + 30, y + 150, 125, 42), "Restart"))
                 {
@@ -2294,14 +2637,12 @@ namespace DeadCoreEditor
             SceneHarvestingService.HarvestAllSceneModels();
             SceneHarvestingService.HideVanillaLevelGeometry();
 
-            // Auto-load selected map from browser
             if (!string.IsNullOrEmpty(MapBrowserService.SelectedMapPath) && File.Exists(MapBrowserService.SelectedMapPath))
             {
                 MelonLogger.Msg($">> Auto-loading selected map: '{MapBrowserService.SelectedMapName}'...");
                 LevelPersistenceService.LoadLevelByFullPath(MapBrowserService.SelectedMapPath);
             }
 
-            // Find if a custom Entry Checkpoint exists
             foreach (var obj in PlacedObjects)
             {
                 if (obj != null && obj.name.ToLower().Contains("spawn"))
@@ -2313,13 +2654,12 @@ namespace DeadCoreEditor
                 }
             }
 
-            // Platform Safeguard: Verify if a solid platform exists within 30m of spawn
             bool hasStartingPlatform = false;
             foreach (var obj in PlacedObjects)
             {
-                if (obj != null && (obj.name.ToLower().Contains("platform") || obj.name.ToLower().Contains("floor")))
+                if (obj != null && (obj.name.ToLower().Contains("platform") || obj.name.ToLower().Contains("floor") || obj.name.ToLower().Contains("plateforme")))
                 {
-                    if (Vector3.Distance(obj.transform.position, startPos) < 30f)
+                    if (Vector3.Distance(obj.transform.position, startPos) < 50f)
                     {
                         hasStartingPlatform = true;
                         break;
@@ -2351,6 +2691,8 @@ namespace DeadCoreEditor
             LevelTimer = 0f;
             IsLevelCompleted = false;
 
+            _lightRefreshTimer = 0.35f;
+
             UnfreezePlayerControls();
             IsLevelInitialized = true;
             MelonLogger.Msg(">> Custom Level Initialized & Ready!");
@@ -2361,24 +2703,39 @@ namespace DeadCoreEditor
             if (string.IsNullOrEmpty(partialName)) return null;
 
             string clean = partialName.Replace("_", " ").Trim().ToLower();
+            string raw = partialName.Trim().ToLower();
 
-            CatalogAsset found = AllAssets.Find(a => a.DisplayName.ToLower() == clean);
+            CatalogAsset found = AllAssets.Find(a =>
+                a.DisplayName.ToLower() == clean ||
+                (a.FilterMesh != null && a.FilterMesh.name.ToLower() == raw) ||
+                (a.SourceTemplate != null && a.SourceTemplate.name.ToLower() == raw)
+            );
+
             if (found == null)
             {
-                found = AllAssets.Find(a => a.DisplayName.ToLower().Contains(clean) || clean.Contains(a.DisplayName.ToLower()));
+                found = AllAssets.Find(a =>
+                    a.DisplayName.ToLower().Contains(clean) || clean.Contains(a.DisplayName.ToLower()) ||
+                    (a.FilterMesh != null && a.FilterMesh.name.ToLower().Contains(raw))
+                );
             }
 
             if (found == null)
             {
                 if (clean.Contains("spawn") || clean.Contains("entry")) found = AllAssets.Find(a => a.IsSpawnGate);
                 else if (clean.Contains("goal") || clean.Contains("finish") || clean.Contains("end")) found = AllAssets.Find(a => a.IsGoalGate);
-                else if (clean.Contains("platform") || clean.Contains("floor")) found = AllAssets.Find(a => a.DisplayName.ToLower().Contains("platform") || a.DisplayName.ToLower().Contains("floor"));
-                else if (clean.Contains("jumper")) found = AllAssets.Find(a => a.IsJumper);
+                else if (clean.Contains("spotlight") || clean.Contains("light")) found = AllAssets.Find(a => a.IsSpotlight);
+                else if (clean.Contains("platform") || clean.Contains("floor") || clean.Contains("plateforme"))
+                    found = AllAssets.Find(a => a.DisplayName.ToLower().Contains("platform") || a.DisplayName.ToLower().Contains("floor"));
+                else if (clean.Contains("jumper") || clean.Contains("launch")) found = AllAssets.Find(a => a.IsJumper);
                 else if (clean.Contains("checkpoint")) found = AllAssets.Find(a => a.IsCheckPoint && !a.IsSpawnGate && !a.IsGoalGate);
-                else if (clean.Contains("turret")) found = AllAssets.Find(a => a.IsTurret);
-                else if (clean.Contains("helix") || clean.Contains("turbine")) found = AllAssets.Find(a => a.IsHelix);
+                else if (clean.Contains("turret") || clean.Contains("defense")) found = AllAssets.Find(a => a.IsTurret);
+                else if (clean.Contains("helix") || clean.Contains("turbine") || clean.Contains("fan")) found = AllAssets.Find(a => a.IsHelix);
                 else if (clean.Contains("crate")) found = AllAssets.Find(a => a.DisplayName.ToLower().Contains("crate"));
-                else if (clean.Contains("pillar")) found = AllAssets.Find(a => a.DisplayName.ToLower().Contains("pillar"));
+                else if (clean.Contains("laser") || clean.Contains("barrier")) found = AllAssets.Find(a => a.IsLaser);
+                else if (clean.Contains("pillar") || clean.Contains("monolith")) found = AllAssets.Find(a => a.DisplayName.ToLower().Contains("pillar") || a.DisplayName.ToLower().Contains("monolith"));
+                else if (clean.Contains("gate") || clean.Contains("bar")) found = AllAssets.Find(a => a.FilterMesh != null && a.FilterMesh.name.ToLower().Contains("gate"));
+                else if (clean.Contains("wall")) found = AllAssets.Find(a => a.DisplayName.ToLower().Contains("wall") || (a.FilterMesh != null && a.FilterMesh.name.ToLower().Contains("wall")));
+                else if (clean.Contains("cube")) found = AllAssets.Find(a => a.DisplayName.ToLower().Contains("cube") || (a.FilterMesh != null && a.FilterMesh.name.ToLower().Contains("cube")));
             }
 
             if (found != null)
@@ -2403,15 +2760,36 @@ namespace DeadCoreEditor
             if (asset.IsSpawnGate)
             {
                 obj.name = "Custom_Spawn_Gate";
-                ApplyGateVisualTint(obj, new Color(1.0f, 0.45f, 0.05f)); // Orange Tint on all visuals and particles
+                ApplyGateVisualTint(obj, new Color(1.0f, 0.45f, 0.05f));
             }
             else if (asset.IsGoalGate)
             {
                 obj.name = "Custom_Goal_Gate";
-                ApplyGateVisualTint(obj, new Color(0.1f, 0.65f, 1.0f)); // Electric Blue Tint on all visuals and particles
+                ApplyGateVisualTint(obj, new Color(0.1f, 0.65f, 1.0f));
 
                 Collider col = obj.GetComponentInChildren<Collider>();
                 if (col != null) col.isTrigger = true;
+            }
+            else if (asset.IsSpotlight)
+            {
+                Light l = obj.GetComponentInChildren<Light>();
+                if (l != null)
+                {
+                    l.enabled = true;
+                    if (!PlacedLights.ContainsKey(obj)) PlacedLights[obj] = new LightConfig();
+                    ApplyLightConfig(obj, PlacedLights[obj]);
+                }
+            }
+            else if (asset.IsLaser)
+            {
+                obj.name = "Custom_Laser_Barrier";
+                BoxCollider bc = obj.GetComponentInChildren<BoxCollider>();
+                if (bc != null) bc.isTrigger = true;
+
+                if (obj.GetComponentInChildren<LaserScript>() == null)
+                {
+                    obj.AddComponent<LaserScript>();
+                }
             }
             else if (asset.IsCheckPoint)
             {
@@ -2439,19 +2817,7 @@ namespace DeadCoreEditor
 
             if (asset.IsTurret)
             {
-                // Sensible native projectile velocity (40f) instead of tunneling 1000f
-                ApplyTurretSettings(obj, ActiveTurretFireDelay, 40.0f);
-            }
-
-            // Only add fallback colliders to generic static blocks (NEVER to turrets or hazards)
-            if (!asset.IsTurret && !asset.IsCheckPoint && !asset.IsHelix && obj.GetComponentInChildren<Collider>() == null)
-            {
-                MeshFilter mf = obj.GetComponentInChildren<MeshFilter>();
-                if (mf != null && mf.sharedMesh != null)
-                {
-                    MeshCollider mc = obj.AddComponent<MeshCollider>();
-                    mc.sharedMesh = mf.sharedMesh;
-                }
+                ApplyTurretSettings(obj, ActiveTurretFireDelay, 1500f);
             }
 
             if (asset.IsJumper)
@@ -2459,13 +2825,16 @@ namespace DeadCoreEditor
                 ApplyJumperForce(obj, ActiveJumperForce);
             }
 
-            if (obj.GetComponentInChildren<Collider>() == null)
+            if (!asset.IsTurret && !asset.IsCheckPoint && !asset.IsHelix && !asset.IsSpawnGate && !asset.IsGoalGate && !asset.IsSpotlight)
             {
-                MeshFilter mf = obj.GetComponentInChildren<MeshFilter>();
-                if (mf != null && mf.sharedMesh != null)
+                if (obj.GetComponentInChildren<Collider>() == null)
                 {
-                    MeshCollider mc = obj.AddComponent<MeshCollider>();
-                    mc.sharedMesh = mf.sharedMesh;
+                    MeshFilter mf = obj.GetComponentInChildren<MeshFilter>();
+                    if (mf != null && mf.sharedMesh != null)
+                    {
+                        MeshCollider mc = obj.AddComponent<MeshCollider>();
+                        mc.sharedMesh = mf.sharedMesh;
+                    }
                 }
             }
 
@@ -2486,7 +2855,7 @@ namespace DeadCoreEditor
         }
     }
 
-    // 3D Viewport FreeCam
+    // 3D Viewport FreeCam (Unrestricted Speed)
     public static class EditorViewportCamera
     {
         private static GameObject _camInstance = null;
@@ -2494,7 +2863,7 @@ namespace DeadCoreEditor
 
         private static float _yaw = 0f;
         private static float _pitch = 0f;
-        private static float _baseSpeed = 18f;
+        private static float _baseSpeed = 22f;
 
         public static void InitializeCamera(Camera sourceCam)
         {
@@ -2537,7 +2906,8 @@ namespace DeadCoreEditor
             }
 
             float speed = _baseSpeed;
-            if (Input.GetKey(KeyCode.LeftShift)) speed *= 2.5f;
+            if (Input.GetKey(KeyCode.LeftShift)) speed *= 3.5f;
+            else if (Input.GetKey(KeyCode.LeftControl)) speed *= 0.25f;
 
             Vector3 move = Vector3.zero;
             if (Input.GetKey(KeyCode.W)) move += _camInstance.transform.forward;
@@ -2545,7 +2915,7 @@ namespace DeadCoreEditor
             if (Input.GetKey(KeyCode.D)) move += _camInstance.transform.right;
             if (Input.GetKey(KeyCode.A)) move -= _camInstance.transform.right;
             if (Input.GetKey(KeyCode.E) || Input.GetKey(KeyCode.Space)) move += Vector3.up;
-            if (Input.GetKey(KeyCode.Q) || Input.GetKey(KeyCode.LeftControl)) move -= Vector3.up;
+            if (Input.GetKey(KeyCode.Q)) move -= Vector3.up;
 
             _camInstance.transform.position += move * speed * Time.deltaTime;
         }
@@ -2675,13 +3045,15 @@ namespace DeadCoreEditor
         {
             if (!EditorSessionManager.IsBlockSelected || _ghostInstance == null || EditorViewportCamera.ViewportCamera == null) return;
 
+            if (EditorSessionManager.IsMouseOverUI()) return;
+
             Ray ray = Input.GetMouseButton(1)
                 ? EditorViewportCamera.ViewportCamera.ViewportPointToRay(new Vector3(0.5f, 0.5f, 0f))
                 : EditorViewportCamera.ViewportCamera.ScreenPointToRay(Input.mousePosition);
 
             int raycastMask = ~LayerMask.GetMask("Ignore Raycast");
             RaycastHit hit;
-            bool hasHit = Physics.Raycast(ray, out hit, 300f, raycastMask);
+            bool hasHit = Physics.Raycast(ray, out hit, 1000f, raycastMask);
 
             Vector3 hitNormal = Vector3.up;
             Vector3 rawTargetPos;
@@ -2826,6 +3198,7 @@ namespace DeadCoreEditor
                 if (asset.IsJumper) param = EditorSessionManager.ActiveJumperForce;
                 else if (asset.IsHelix) param = EditorSessionManager.ActiveTurbineSpeed;
                 else if (asset.IsTurret) param = EditorSessionManager.ActiveTurretFireDelay;
+                else if (asset.IsSpotlight && EditorSessionManager.PlacedLights.ContainsKey(placed)) param = EditorSessionManager.PlacedLights[placed].Range;
 
                 EditorSessionManager.UndoHistory.Push(new HistoryRecord
                 {
@@ -2919,7 +3292,6 @@ namespace DeadCoreEditor
                 }
             }
 
-            // Updates the bright glow on the selected icon whenever index changes
             if (_lastHighlightedIndex != EditorSessionManager.SelectedAssetIndex)
             {
                 _lastHighlightedIndex = EditorSessionManager.SelectedAssetIndex;
@@ -2934,6 +3306,8 @@ namespace DeadCoreEditor
 
             if (Input.GetMouseButtonDown(0) && !Input.GetMouseButton(1) && !EditorSessionManager.IsBlockSelected)
             {
+                if (EditorSessionManager.IsMouseOverUI()) return;
+
                 Ray ray = EditorViewportCamera.ViewportCamera.ScreenPointToRay(Input.mousePosition);
                 RaycastHit hit;
                 if (Physics.Raycast(ray, out hit, 2.5f, 1 << 2))
@@ -3055,9 +3429,43 @@ namespace DeadCoreEditor
         }
     }
 
-    // Persistence Service
+    // --- LEVEL PERSISTENCE SERVICE ---
     public static class LevelPersistenceService
     {
+        private static string ColorToHex(Color c)
+        {
+            byte r = (byte)Mathf.Clamp(Mathf.RoundToInt(c.r * 255f), 0, 255);
+            byte g = (byte)Mathf.Clamp(Mathf.RoundToInt(c.g * 255f), 0, 255);
+            byte b = (byte)Mathf.Clamp(Mathf.RoundToInt(c.b * 255f), 0, 255);
+            return $"{r:X2}{g:X2}{b:X2}";
+        }
+
+        private static Color HexToColor(string hex)
+        {
+            if (string.IsNullOrWhiteSpace(hex)) return Color.cyan;
+            hex = hex.Trim().TrimStart('#');
+            if (hex.Length >= 6 &&
+                byte.TryParse(hex.Substring(0, 2), NumberStyles.HexNumber, CultureInfo.InvariantCulture, out byte r) &&
+                byte.TryParse(hex.Substring(2, 2), NumberStyles.HexNumber, CultureInfo.InvariantCulture, out byte g) &&
+                byte.TryParse(hex.Substring(4, 2), NumberStyles.HexNumber, CultureInfo.InvariantCulture, out byte b))
+            {
+                return new Color(r / 255f, g / 255f, b / 255f, 1f);
+            }
+            return Color.cyan;
+        }
+
+        private static float ParseFloat(string str)
+        {
+            if (string.IsNullOrWhiteSpace(str)) return 0f;
+            str = str.Trim().Replace(',', '.');
+            float val;
+            if (float.TryParse(str, NumberStyles.Float, CultureInfo.InvariantCulture, out val))
+            {
+                return val;
+            }
+            return 0f;
+        }
+
         public static void SaveLevel(string filename)
         {
             string saveDir = MapBrowserService.MyLevelsDir;
@@ -3068,6 +3476,13 @@ namespace DeadCoreEditor
 
             string path = Path.Combine(saveDir, $"{cleanName}.txt");
             List<string> lines = new List<string>();
+            var inv = CultureInfo.InvariantCulture;
+
+            LevelMetadata existingMeta = NativeLogsMenuHijacker.ReadLevelMetadata(path, cleanName);
+            lines.Add($"#TITLE: {existingMeta.Title}");
+            lines.Add($"#AUTHOR: {existingMeta.Author}");
+            lines.Add($"#DIFFICULTY: {existingMeta.Difficulty}");
+            lines.Add($"#DESC: {existingMeta.Description}");
 
             foreach (var obj in EditorSessionManager.PlacedObjects)
             {
@@ -3078,16 +3493,34 @@ namespace DeadCoreEditor
                 string name = obj.name.StartsWith("Custom_") ? obj.name.Substring(7) : obj.name;
 
                 float param = 0f;
-                if (EditorSessionManager.JumperForces.ContainsKey(obj)) param = EditorSessionManager.JumperForces[obj];
-                else if (EditorSessionManager.TurbineSpeeds.ContainsKey(obj)) param = EditorSessionManager.TurbineSpeeds[obj];
-                else if (EditorSessionManager.TurretFireDelays.ContainsKey(obj)) param = EditorSessionManager.TurretFireDelays[obj];
+                string extraParams = "";
 
-                lines.Add($"{name};{pos.x:F4};{pos.y:F4};{pos.z:F4};{scale:F4};{rot.x:F4};{rot.y:F4};{rot.z:F4};{rot.w:F4};{param:F2}");
+                if (EditorSessionManager.JumperForces.ContainsKey(obj))
+                {
+                    param = EditorSessionManager.JumperForces[obj];
+                }
+                else if (EditorSessionManager.TurbineSpeeds.ContainsKey(obj))
+                {
+                    param = EditorSessionManager.TurbineSpeeds[obj];
+                }
+                else if (EditorSessionManager.TurretFireDelays.ContainsKey(obj))
+                {
+                    param = EditorSessionManager.TurretFireDelays[obj];
+                }
+                else if (EditorSessionManager.PlacedLights.ContainsKey(obj))
+                {
+                    LightConfig cfg = EditorSessionManager.PlacedLights[obj];
+                    param = cfg.Range;
+                    string hexColor = ColorToHex(cfg.Color);
+                    extraParams = $";{cfg.SpotAngle.ToString("F1", inv)};{cfg.Intensity.ToString("F2", inv)};{hexColor};{cfg.VolumetricDimmer.ToString("F2", inv)}";
+                }
+
+                lines.Add($"{name};{pos.x.ToString("F4", inv)};{pos.y.ToString("F4", inv)};{pos.z.ToString("F4", inv)};{scale.ToString("F4", inv)};{rot.x.ToString("F4", inv)};{rot.y.ToString("F4", inv)};{rot.z.ToString("F4", inv)};{rot.w.ToString("F4", inv)};{param.ToString("F2", inv)}{extraParams}");
             }
 
             File.WriteAllLines(path, lines.ToArray());
-            EditorSessionManager.ShowNotification($"Saved {lines.Count} objects to {cleanName}.txt!");
-            MelonLogger.Msg($">> Saved {lines.Count} objects to {path}!");
+            EditorSessionManager.ShowNotification($"Saved {lines.Count - 4} objects to {cleanName}.txt!");
+            MelonLogger.Msg($">> Saved {lines.Count - 4} objects with full parameters to {path}!");
 
             MapBrowserService.SelectedMapPath = path;
             MapBrowserService.SelectedMapName = cleanName;
@@ -3117,45 +3550,96 @@ namespace DeadCoreEditor
             if (!File.Exists(fullPath)) return;
 
             string[] lines = File.ReadAllLines(fullPath);
-
             EditorSessionManager.ClearAllPlacedObjects();
 
             int count = 0;
             foreach (string line in lines)
             {
-                string[] p = line.Split(';');
+                if (string.IsNullOrWhiteSpace(line)) continue;
+                string trimmed = line.Trim();
+                if (trimmed.StartsWith("#")) continue;
+
+                string[] p = trimmed.Split(';');
                 if (p.Length < 5) continue;
 
                 string rawName = p[0];
-                Vector3 pos = new Vector3(float.Parse(p[1]), float.Parse(p[2]), float.Parse(p[3]));
-                float scale = float.Parse(p[4]);
+                Vector3 pos = new Vector3(ParseFloat(p[1]), ParseFloat(p[2]), ParseFloat(p[3]));
+                float scale = ParseFloat(p[4]);
+                if (scale <= 0.0001f) scale = 0.55f;
 
                 Quaternion rot = Quaternion.identity;
                 if (p.Length >= 9)
                 {
-                    rot = new Quaternion(float.Parse(p[5]), float.Parse(p[6]), float.Parse(p[7]), float.Parse(p[8]));
+                    rot = new Quaternion(ParseFloat(p[5]), ParseFloat(p[6]), ParseFloat(p[7]), ParseFloat(p[8]));
+                    if (rot.x == 0f && rot.y == 0f && rot.z == 0f && rot.w == 0f) rot = Quaternion.identity;
                 }
 
-                float customParam = (p.Length >= 10) ? float.Parse(p[9]) : 0f;
+                float customParam = (p.Length >= 10) ? ParseFloat(p[9]) : 0f;
 
                 GameObject obj = EditorSessionManager.SpawnAssetByName(rawName, pos, scale, rot);
                 if (obj != null)
                 {
+                    string lowName = rawName.ToLower();
+
                     if (customParam > 0f)
                     {
-                        if (rawName.ToLower().Contains("jumper") || obj.name.ToLower().Contains("jumper"))
+                        if (lowName.Contains("jumper") || obj.name.ToLower().Contains("jumper"))
                         {
                             EditorSessionManager.ApplyJumperForce(obj, customParam);
                         }
-                        else if (rawName.ToLower().Contains("helix") || obj.name.ToLower().Contains("helix"))
+                        else if (lowName.Contains("helix") || obj.name.ToLower().Contains("helix"))
                         {
                             EditorSessionManager.ApplyTurbineSpeed(obj, customParam);
                         }
-                        else if (rawName.ToLower().Contains("turret") || obj.name.ToLower().Contains("turret"))
+                        else if (lowName.Contains("turret") || obj.name.ToLower().Contains("turret"))
                         {
-                            EditorSessionManager.ApplyTurretSettings(obj, customParam, 1000f);
+                            EditorSessionManager.ApplyTurretSettings(obj, customParam, 1500f);
                         }
                     }
+
+                    if (lowName.Contains("spotlight") || obj.name.ToLower().Contains("spotlight"))
+                    {
+                        LightConfig cfg = new LightConfig();
+
+                        // 1. Range
+                        if (customParam > 0f) cfg.Range = customParam;
+
+                        // 2. Beam Angle (fallback to 60 if missing)
+                        if (p.Length >= 11)
+                        {
+                            float angle = ParseFloat(p[10]);
+                            cfg.SpotAngle = angle > 0.5f ? angle : 60f;
+                        }
+
+                        // 3. Intensity (fallback to 3.0 if missing)
+                        if (p.Length >= 12)
+                        {
+                            float intens = ParseFloat(p[11]);
+                            cfg.Intensity = intens > 0.01f ? intens : 3.0f;
+                        }
+
+                        // 4. Color
+                        if (p.Length >= 13)
+                        {
+                            cfg.Color = HexToColor(p[12]);
+                        }
+
+                        // 5. Volumetric Dimmer
+                        if (p.Length >= 14)
+                        {
+                            cfg.VolumetricDimmer = ParseFloat(p[13]);
+                        }
+
+                        // Apply directly and lock active selection
+                        EditorSessionManager.ApplyLightConfig(obj, cfg);
+                        if (EditorSessionManager.SelectedLightObject == null)
+                        {
+                            EditorSessionManager.SelectedLightObject = obj;
+                        }
+
+                        MelonLogger.Msg($">> Restored Spotlight: Range={cfg.Range}m, Angle={cfg.SpotAngle}°, Intensity={cfg.Intensity:F1}x, Vol={cfg.VolumetricDimmer:F1}x");
+                    }
+
                     EditorSessionManager.PlacedObjects.Add(obj);
                     count++;
                 }
@@ -3164,10 +3648,13 @@ namespace DeadCoreEditor
             string fName = Path.GetFileNameWithoutExtension(fullPath);
             EditorSessionManager.ShowNotification($"Loaded {count} objects from {fName}.txt!");
             MelonLogger.Msg($">> Loaded {count} objects from {fullPath}!");
+
+            // Trigger automatic light refresh after file load
+            EditorSessionManager.ForceRefreshAllLights();
         }
     }
 
-    // Scene Harvesting Service
+    // --- SCENE HARVESTING SERVICE ---
     public static class SceneHarvestingService
     {
         public static void HarvestAllSceneModels()
@@ -3178,7 +3665,7 @@ namespace DeadCoreEditor
             MeshRenderer[] renderers = GameObject.FindObjectsOfType<MeshRenderer>();
             foreach (var r in renderers)
             {
-                if (r.material != null)
+                if (r != null && r.material != null)
                 {
                     EditorSessionManager.CachedSceneMaterial = r.material;
                     break;
@@ -3213,7 +3700,7 @@ namespace DeadCoreEditor
                 });
             }
 
-            // 2. Native Checkpoint Gate, Entry Gate, and Finish Gate
+            // 2. Native Checkpoints
             try
             {
                 EditorSessionManager.PrefabCheckPoint = GameObject.FindObjectOfType<CheckPointScript>();
@@ -3263,7 +3750,35 @@ namespace DeadCoreEditor
                 });
             }
 
-            // 3. Native Turret Enemy
+            // 3. Dynamic Tech Spotlight
+            GameObject spotTemplate = new GameObject("Template_Spotlight");
+            Light spotLight = spotTemplate.AddComponent<Light>();
+            spotLight.type = LightType.Spot;
+            spotLight.range = 50f;
+            spotLight.spotAngle = 60f;
+            spotLight.color = Color.cyan;
+            spotLight.intensity = 3.0f;
+
+            GameObject bulb = GameObject.CreatePrimitive(PrimitiveType.Sphere);
+            bulb.transform.SetParent(spotTemplate.transform, false);
+            bulb.transform.localScale = Vector3.one * 0.35f;
+            Collider bulbCol = bulb.GetComponent<Collider>();
+            if (bulbCol != null) bulbCol.isTrigger = true;
+
+            spotTemplate.SetActive(false);
+
+            EditorSessionManager.AllAssets.Add(new CatalogAsset
+            {
+                DisplayName = "Tech Spotlight",
+                SourceTemplate = spotTemplate,
+                Category = AssetCategory.Essentials,
+                IsSpotlight = true,
+                DefaultScale = 1.0f,
+                VerticalOffset = 0f,
+                BaseRotation = Quaternion.identity
+            });
+
+            // 4. Native Turret
             try
             {
                 TurretScript nativeTurret = GameObject.FindObjectOfType<TurretScript>();
@@ -3312,7 +3827,7 @@ namespace DeadCoreEditor
                 });
             }
 
-            // 4. Native Helix Turbine Fan
+            // 5. Native Helix Turbine Fan
             try
             {
                 Helix nativeHelix = GameObject.FindObjectOfType<Helix>();
@@ -3342,6 +3857,80 @@ namespace DeadCoreEditor
                     BaseRotation = Quaternion.identity
                 });
             }
+
+            // 4. Dynamic Deadly Laser Barrier
+            Material laserMat = null;
+
+            // Try to acquire authentic material from native LaserManager
+            LaserManager lm = GameObject.FindObjectOfType<LaserManager>();
+            if (lm == null)
+            {
+                LaserManager[] lms = Resources.FindObjectsOfTypeAll<LaserManager>();
+                if (lms.Length > 0) lm = lms[0];
+            }
+            if (lm != null && lm._sharedMaterial != null)
+            {
+                laserMat = lm._sharedMaterial;
+            }
+
+            // Fallback: look for any laser material in scene
+            if (laserMat == null)
+            {
+                MeshRenderer[] allRends = Resources.FindObjectsOfTypeAll<MeshRenderer>();
+                for (int r = 0; r < allRends.Length; r++)
+                {
+                    if (allRends[r] != null && allRends[r].sharedMaterial != null && allRends[r].sharedMaterial.name.ToLower().Contains("laser"))
+                    {
+                        laserMat = allRends[r].sharedMaterial;
+                        break;
+                    }
+                }
+            }
+
+            // Vibrant glowing red fallback if scene has no materials loaded
+            if (laserMat == null)
+            {
+                Shader s = Shader.Find("Unlit/Color") ?? Shader.Find("Particles/Standard Unlit") ?? Shader.Find("HDRP/Unlit");
+                if (s != null)
+                {
+                    laserMat = new Material(s);
+                    laserMat.color = new Color(1f, 0.05f, 0.05f, 0.9f);
+                    if (laserMat.HasProperty("_Color")) laserMat.SetColor("_Color", new Color(1f, 0.05f, 0.05f, 0.9f));
+                    if (laserMat.HasProperty("_EmissionColor"))
+                    {
+                        laserMat.SetColor("_EmissionColor", new Color(3.0f, 0.1f, 0.1f, 1f));
+                        laserMat.EnableKeyword("_EMISSION");
+                    }
+                }
+            }
+
+            GameObject laserTemplate = new GameObject("Template_Laser_Barrier");
+            Mesh laserMesh = CreateDoubleSidedPlaneMesh(8f, 4f);
+
+            MeshFilter laserMf = laserTemplate.AddComponent<MeshFilter>();
+            laserMf.sharedMesh = laserMesh;
+
+            MeshRenderer laserMr = laserTemplate.AddComponent<MeshRenderer>();
+            if (laserMat != null) laserMr.sharedMaterial = laserMat;
+
+            BoxCollider laserCol = laserTemplate.AddComponent<BoxCollider>();
+            laserCol.isTrigger = true;
+            laserCol.size = new Vector3(8f, 4f, 0.35f); // 0.35m thickness prevents clipping
+
+            laserTemplate.AddComponent<LaserScript>();
+            laserTemplate.SetActive(false);
+
+            EditorSessionManager.AllAssets.Add(new CatalogAsset
+            {
+                DisplayName = "Laser Barrier",
+                SourceTemplate = laserTemplate,
+                FilterMesh = laserMesh,
+                Category = AssetCategory.Essentials,
+                IsLaser = true,
+                DefaultScale = 1.0f,
+                VerticalOffset = 0f,
+                BaseRotation = Quaternion.identity
+            });
 
             MeshFilter[] allFilters = GameObject.FindObjectsOfType<MeshFilter>();
 
@@ -3383,6 +3972,48 @@ namespace DeadCoreEditor
             }
         }
 
+        public static Mesh CreateDoubleSidedPlaneMesh(float width, float height)
+        {
+            Mesh m = new Mesh();
+            m.name = "Laser_DoubleSided_Mesh";
+
+            float hw = width * 0.5f;
+            float hh = height * 0.5f;
+
+            // 8 vertices: 4 for front face, 4 for back face
+            Vector3[] vertices = new Vector3[]
+            {
+                // Front
+                new Vector3(-hw, -hh, 0), new Vector3(hw, -hh, 0), new Vector3(hw, hh, 0), new Vector3(-hw, hh, 0),
+                // Back
+                new Vector3(-hw, -hh, 0), new Vector3(hw, -hh, 0), new Vector3(hw, hh, 0), new Vector3(-hw, hh, 0)
+            };
+
+            Vector2[] uvs = new Vector2[]
+            {
+                new Vector2(0, 0), new Vector2(1, 0), new Vector2(1, 1), new Vector2(0, 1),
+                new Vector2(1, 0), new Vector2(0, 0), new Vector2(0, 1), new Vector2(1, 1)
+            };
+
+            Vector3[] normals = new Vector3[]
+            {
+                Vector3.forward, Vector3.forward, Vector3.forward, Vector3.forward,
+                -Vector3.forward, -Vector3.forward, -Vector3.forward, -Vector3.forward
+            };
+
+            int[] triangles = new int[]
+            {
+                0, 2, 1, 0, 3, 2,     // Front quad
+                4, 5, 6, 4, 6, 7      // Back quad
+            };
+
+            m.vertices = vertices;
+            m.uv = uvs;
+            m.normals = normals;
+            m.triangles = triangles;
+            m.RecalculateBounds();
+            return m;
+        }
         private static AssetCategory CategorizeAsset(string friendly, string goName, Vector3 size)
         {
             if (goName.Contains("16x2x16") || friendly.Contains("Platform")) return AssetCategory.Essentials;
@@ -3441,8 +4072,12 @@ namespace DeadCoreEditor
 
             foreach (GameObject root in activeScene.GetRootGameObjects())
             {
-                if (root.name == "_LA" || root.name == "_LD")
+                if (root == null) continue;
+                string r = root.name;
+                if (r == "_LA" || r == "_LD" || r == "L_A" || r == "L_D")
+                {
                     root.SetActive(false);
+                }
             }
         }
     }
