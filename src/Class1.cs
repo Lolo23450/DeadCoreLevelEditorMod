@@ -843,7 +843,7 @@ namespace DeadCoreEditor
         public static int SelectedAssetIndex = 0;
         public static bool IsBlockSelected = false;
 
-        public static float ActiveJumperForce = 18.0f;
+        public static float ActiveJumperForce = 20.0f;
         public static float ActiveTurbineSpeed = 35.0f;
         public static float ActiveTurretFireDelay = 1.2f;
         public static float ActivePlacementScale = 0.55f;
@@ -964,7 +964,7 @@ namespace DeadCoreEditor
             _keyHoldDuration = 0f;
             _keyRepeatTimer = 0f;
 
-            ActiveJumperForce = 18.0f;
+            ActiveJumperForce = 20.0f;
             ActiveTurbineSpeed = 35.0f;
             ActiveTurretFireDelay = 1.2f;
             ActivePlacementScale = 0.55f;
@@ -981,7 +981,6 @@ namespace DeadCoreEditor
                 CheckJumperBoostPhysics();
                 CheckHelixWindPushing();
                 CheckGoalTriggerArrival();
-                UpdateTurretTrackingAndAiming
 
                 if (!IsLevelCompleted)
                 {
@@ -1576,7 +1575,7 @@ namespace DeadCoreEditor
                 if (CurrentAsset != null && CurrentAsset.IsJumper)
                 {
                     ActiveJumperForce += Mathf.Sign(scroll) * 1.0f;
-                    ActiveJumperForce = Mathf.Clamp(ActiveJumperForce, 2.0f, 60.0f);
+                    ActiveJumperForce = Mathf.Clamp(ActiveJumperForce, 2.0f, 300.0f);
                     MelonLogger.Msg($">> [Jumper Force] Set: {ActiveJumperForce:F1}");
 
                     GameObject aimed = GetAimedPlacedObject();
@@ -1901,43 +1900,49 @@ namespace DeadCoreEditor
         }
 
         // --- TURRET SYSTEM ---
-
-        public static void ApplyTurretSettings(GameObject turretObj, float fireDelay, float firePower = 800f)
+        public static void ApplyTurretSettings(GameObject turretObj, float fireDelay, float firePower = 40f)
         {
             if (turretObj == null) return;
 
             TurretFireDelays[turretObj] = fireDelay;
 
-            // 1. Remove any accidental root MeshCollider that obstructs the barrel
-            Collider[] colliders = turretObj.GetComponents<Collider>();
-            for (int i = 0; i < colliders.Length; i++)
+            // 1. Remove any synthetic collider attached to the root that blocks bullets at the nozzle
+            Collider[] rootColliders = turretObj.GetComponents<Collider>();
+            for (int i = 0; i < rootColliders.Length; i++)
             {
-                if (colliders[i] is MeshCollider)
+                if (rootColliders[i] is MeshCollider)
                 {
-                    GameObject.DestroyImmediate(colliders[i]);
+                    GameObject.DestroyImmediate(rootColliders[i]);
                 }
             }
 
-            // 2. Ensure all child components, animations, and renderers are active
-            TurretScript ts = turretObj.GetComponentInChildren<TurretScript>(true);
-            if (ts != null)
+            // 2. Activate native TurretScript without touching the root transform
+            TurretScript[] turretScripts = turretObj.GetComponentsInChildren<TurretScript>(true);
+            for (int i = 0; i < turretScripts.Length; i++)
             {
-                ts.enabled = true;
+                TurretScript ts = turretScripts[i];
+                if (ts == null) continue;
+
                 ts.gameObject.SetActive(true);
+                ts.enabled = true;
 
-                // Safe fire delay and sensible projectile speed (35 - 45 m/s)
+                // Native forward firing parameters
                 ts._fireDelay = Mathf.Clamp(fireDelay, 0.2f, 6.0f);
-                ts._firePower = Mathf.Clamp(firePower, 20f, 60f);
+                ts._firePower = Mathf.Clamp(firePower, 1100f, 1200f); // Balanced native projectile speed
+            }
 
-                // Re-assign target to player transform
-                GameObject player = FindPlayerEntity();
-                if (player != null)
+            // 3. Ensure any native switch on the turret is active/powered on
+            foreach (var mb in turretObj.GetComponentsInChildren<MonoBehaviour>(true))
+            {
+                if (mb == null) continue;
+                string typeName = mb.GetType().Name.ToLower();
+                if (typeName.Contains("switch") || typeName.Contains("target") || typeName.Contains("activat"))
                 {
-                    AssignTurretTarget(ts, player.transform);
+                    mb.enabled = true;
                 }
             }
 
-            MelonLogger.Msg($">> [Turret] Repaired & Active! Fire Delay: {fireDelay:F2}s, Speed: {firePower:F1} on '{turretObj.name}'");
+            MelonLogger.Msg($">> [Turret] Stationary & Active! Locked to placed angle. Fire Delay: {fireDelay:F2}s");
         }
 
         private static void AssignTurretTarget(TurretScript ts, Transform playerTarget)
