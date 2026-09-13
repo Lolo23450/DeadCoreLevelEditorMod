@@ -1478,6 +1478,16 @@ namespace DeadCoreEditor
         public static Quaternion FrozenPlayerRotation = Quaternion.identity;
         public static Vector3 LevelSpawnPosition = new Vector3(-241f, -95f, -6f);
 
+        public static bool AutoAlignToSurface = false;
+
+        public static void ToggleAutoAlign()
+        {
+            AutoAlignToSurface = !AutoAlignToSurface;
+            string status = AutoAlignToSurface ? "ON (Wall/Ramp/Ceiling)" : "OFF (Manual Pitch/Roll)";
+            ShowNotification($"Surface Auto-Align: {status}");
+            MelonLogger.Msg($">> [Surface Align] Switched to: {status}");
+        }
+
         // Dynamic Kill Plane (calculated from lowest placed geometry)
         public static float VoidDeathY
         {
@@ -2059,8 +2069,11 @@ namespace DeadCoreEditor
 
         private static void HandleFlowShortcuts()
         {
-            // Category navigation: Numeric shortcuts (1 = Gameplay, 2 = Architecture, 3 = Props)
-            if (!Input.GetMouseButton(1))
+            bool isCtrlHeld = Input.GetKey(KeyCode.LeftControl) || Input.GetKey(KeyCode.RightControl);
+
+            // 1. Category Switching (1: Gameplay, 2: Architecture, 3: Props)
+            // Switching automatically equips the first item — no Enter key needed!
+            if (!Input.GetMouseButton(1) && !isCtrlHeld)
             {
                 if (Input.GetKeyDown(KeyCode.Alpha1) || Input.GetKeyDown(KeyCode.Keypad1)) SetCategory(AssetCategory.Gameplay);
                 else if (Input.GetKeyDown(KeyCode.Alpha2) || Input.GetKeyDown(KeyCode.Keypad2)) SetCategory(AssetCategory.Architecture);
@@ -2072,39 +2085,48 @@ namespace DeadCoreEditor
                 }
             }
 
-            if (Input.GetKeyDown(KeyCode.X) || Input.GetKeyDown(KeyCode.Backspace))
+            // 2. Deselect / Cancel Placement (Escape or X)
+            if (Input.GetKeyDown(KeyCode.Escape) || Input.GetKeyDown(KeyCode.X))
             {
                 if (IsBlockSelected)
                 {
                     IsBlockSelected = false;
                     PlacementHologramController.DestroyPreview();
-                    MelonLogger.Msg(">> [Deselect] Block unselected.");
+                    ShowNotification("Placement Cancelled");
+                    MelonLogger.Msg(">> [Deselect] Placement cancelled.");
                 }
             }
 
-            if ((Input.GetKeyDown(KeyCode.Return) || Input.GetKeyDown(KeyCode.KeypadEnter) || Input.GetKeyDown(KeyCode.Space)) && !Input.GetMouseButton(1))
+            // 3. Toggle Surface Normal Auto-Align (C Key)
+            if (Input.GetKeyDown(KeyCode.C) && !isCtrlHeld)
             {
-                if (!IsBlockSelected)
-                {
-                    SelectCurrentAsset();
-                }
+                ToggleAutoAlign();
+                PlacementHologramController.ApplyRotationToPreview();
             }
 
-            if (Input.GetKeyDown(KeyCode.G))
+            // 4. Cycle Grid Snap (G Key)
+            if (Input.GetKeyDown(KeyCode.G) && !isCtrlHeld)
             {
                 CycleGridSnap();
             }
 
-            if (Input.GetKeyDown(KeyCode.Z))
+            // 5. Standardized Undo / Redo (Ctrl+Z / Ctrl+Y / Ctrl+Shift+Z)
+            if (isCtrlHeld)
             {
-                PerformUndo();
+                if (Input.GetKeyDown(KeyCode.Z))
+                {
+                    if (Input.GetKey(KeyCode.LeftShift) || Input.GetKey(KeyCode.RightShift))
+                        PerformRedo();
+                    else
+                        PerformUndo();
+                }
+                else if (Input.GetKeyDown(KeyCode.Y))
+                {
+                    PerformRedo();
+                }
             }
 
-            if (Input.GetKeyDown(KeyCode.Y))
-            {
-                PerformRedo();
-            }
-
+            // 6. Quick Save / Load
             if (Input.GetKeyDown(KeyCode.F5))
             {
                 LevelPersistenceService.SaveLevel(MapBrowserService.SelectedMapName);
@@ -2124,13 +2146,8 @@ namespace DeadCoreEditor
 
             CarouselWheelToolbar.BuildCarouselIcons();
 
-            if (IsBlockSelected)
-            {
-                if (CurrentAsset != null)
-                    PlacementHologramController.SpawnHologram(CurrentAsset);
-                else
-                    PlacementHologramController.DestroyPreview();
-            }
+            // Instant equip first item in new category
+            SelectCurrentAsset();
 
             ShowNotification($"Category: [{CurrentTab}] ({ActiveTabAssets.Count} items)");
             MelonLogger.Msg($">> [CATEGORY] Switched to: [{CurrentTab}] ({ActiveTabAssets.Count} items)");
@@ -2266,52 +2283,29 @@ namespace DeadCoreEditor
 
             if (Input.GetKey(KeyCode.LeftShift))
             {
+                // Parameter Adjustments (Force, Speed, Turret Delays, Scale)...
                 if (CurrentAsset != null && CurrentAsset.IsJumper)
                 {
                     ActiveJumperForce += Mathf.Sign(scroll) * 2.5f;
                     ActiveJumperForce = Mathf.Max(1.0f, ActiveJumperForce);
                     MelonLogger.Msg($">> [Jumper Force] Set: {ActiveJumperForce:F1}");
-
-                    GameObject aimed = GetAimedPlacedObject();
-                    if (aimed != null && (JumperForces.ContainsKey(aimed) || aimed.name.ToLower().Contains("jumper")))
-                    {
-                        ApplyJumperForce(aimed, ActiveJumperForce);
-                    }
                 }
                 else if (CurrentAsset != null && CurrentAsset.IsHelix)
                 {
                     ActiveTurbineSpeed += Mathf.Sign(scroll) * 5.0f;
                     ActiveTurbineSpeed = Mathf.Max(1.0f, ActiveTurbineSpeed);
                     MelonLogger.Msg($">> [Turbine Speed] Set: {ActiveTurbineSpeed:F1}");
-
-                    GameObject aimed = GetAimedPlacedObject();
-                    if (aimed != null && (TurbineSpeeds.ContainsKey(aimed) || aimed.name.ToLower().Contains("helix")))
-                    {
-                        ApplyTurbineSpeed(aimed, ActiveTurbineSpeed);
-                    }
                 }
                 else if (CurrentAsset != null && CurrentAsset.IsRotatingLaser)
                 {
                     ActiveLaserRotationSpeed += Mathf.Sign(scroll) * 5.0f;
                     MelonLogger.Msg($">> [Rotating Laser Speed] Set: {ActiveLaserRotationSpeed:F1}°/s");
-
-                    GameObject aimed = GetAimedPlacedObject();
-                    if (aimed != null && aimed.name.ToLower().Contains("rotating"))
-                    {
-                        LaserRotationSpeeds[aimed] = ActiveLaserRotationSpeed;
-                    }
                 }
                 else if (CurrentAsset != null && CurrentAsset.IsTurret)
                 {
                     ActiveTurretFireDelay -= Mathf.Sign(scroll) * 0.1f;
                     ActiveTurretFireDelay = Mathf.Max(0.05f, ActiveTurretFireDelay);
                     MelonLogger.Msg($">> [Turret Fire Delay] Set: {ActiveTurretFireDelay:F2}s");
-
-                    GameObject aimed = GetAimedPlacedObject();
-                    if (aimed != null && (TurretFireDelays.ContainsKey(aimed) || aimed.name.ToLower().Contains("turret")))
-                    {
-                        ApplyTurretSettings(aimed, ActiveTurretFireDelay, 1500f);
-                    }
                 }
                 else
                 {
@@ -2322,6 +2316,7 @@ namespace DeadCoreEditor
             }
             else
             {
+                // Cycle assets: Automatically equips and spawns preview immediately
                 var list = ActiveTabAssets;
                 if (list.Count > 0)
                 {
@@ -2329,13 +2324,12 @@ namespace DeadCoreEditor
                     SelectedAssetIndex = (SelectedAssetIndex + step + list.Count) % list.Count;
                     CarouselWheelToolbar.SetTargetIndex(SelectedAssetIndex);
 
-                    if (IsBlockSelected)
-                    {
-                        PlacementHologramController.SpawnHologram(CurrentAsset);
-                    }
+                    // Instant equip — no Enter required
+                    SelectCurrentAsset();
                 }
             }
         }
+
 
         private static void HandleObjectDeletion()
         {
@@ -2997,12 +2991,14 @@ namespace DeadCoreEditor
 
             // Viewport Status and Shortcut Footer
             string gridName = (CurrentGridSnap > 0.01f) ? $"{CurrentGridSnap}m" : "OFF";
+            string alignMode = AutoAlignToSurface ? "<color=#69F0AE>SURFACE (C)</color>" : "<color=#FFB74D>MANUAL (C)</color>";
+
             string status = IsBlockSelected
-                ? $"PLACING: '{CurrentAsset?.DisplayName}' | Rot: [P:{TargetPitch:0}° Y:{TargetYaw:0}° R:{TargetRoll:0}°] | Snap: {gridName} (G) | T: 90° Snap | R: Reset"
-                : $"MAP: '{MapBrowserService.SelectedMapName}' | Tab / 1-3: Switch Tab | F3: Spotlights | F5: Save | F6: Load | Z: Undo | Y: Redo";
+                ? $"EQUIPPED: '{CurrentAsset?.DisplayName}' | Left-Click: Place | RMB (Tap) / Esc: Cancel | Align: {alignMode} | Snap: {gridName} (G)"
+                : $"MAP: '{MapBrowserService.SelectedMapName}' | Scroll / 1-3: Equip | Tab: Categories | C: Align | Ctrl+Z: Undo | Ctrl+Y: Redo";
 
             GUI.color = Color.white;
-            GUI.Box(new Rect(Screen.width * 0.5f - 430f, Screen.height - 40f, 860f, 28f), status);
+            GUI.Box(new Rect(Screen.width * 0.5f - 450f, Screen.height - 40f, 900f, 28f), status);
 
             if (_notificationTimer > 0f)
             {
@@ -3304,6 +3300,15 @@ namespace DeadCoreEditor
 
             _lightRefreshTimer = 0.35f;
 
+            // Attach simplified proxy box to all loaded objects
+            for (int i = 0; i < PlacedObjects.Count; i++)
+            {
+                if (PlacedObjects[i] != null)
+                {
+                    AttachEditorSnappingProxy(PlacedObjects[i]);
+                }
+            }
+
             UnfreezePlayerControls();
             IsLevelInitialized = true;
             MelonLogger.Msg(">> Custom Level Initialized & Ready!");
@@ -3435,6 +3440,7 @@ namespace DeadCoreEditor
                 ApplyJumperForce(obj, ActiveJumperForce);
             }
 
+            // 1. Full-detail MeshCollider for player walking & physics
             if (!asset.IsTurret && !asset.IsCheckPoint && !asset.IsHelix && !asset.IsSpawnGate && !asset.IsGoalGate && !asset.IsSpotlight && !asset.IsLaser)
             {
                 if (obj.GetComponentInChildren<Collider>() == null)
@@ -3448,9 +3454,32 @@ namespace DeadCoreEditor
                 }
             }
 
+            // 2. Attach clean 90°/45° simplified proxy box for editor snapping & overlap detection
+            AttachEditorSnappingProxy(obj);
+
             return obj;
         }
 
+        public static void AttachEditorSnappingProxy(GameObject obj)
+        {
+            if (obj == null) return;
+
+            Transform old = obj.transform.Find("Editor_Snapping_Proxy");
+            if (old != null) GameObject.DestroyImmediate(old.gameObject);
+
+            GameObject proxyObj = new GameObject("Editor_Snapping_Proxy");
+            proxyObj.transform.SetParent(obj.transform, false);
+            proxyObj.transform.localPosition = Vector3.zero;
+            proxyObj.transform.localRotation = Quaternion.identity;
+            proxyObj.transform.localScale = Vector3.one;
+            proxyObj.layer = 2; // Ignore Raycast (so placement raycasts hit the world surface, not this proxy)
+
+            Bounds proxyB = PlacementHologramController.CalculateOptimizedProxyBounds(obj);
+            BoxCollider bc = proxyObj.AddComponent<BoxCollider>();
+            bc.isTrigger = true; // Trigger: Player CharacterController ignores it completely
+            bc.center = proxyB.center;
+            bc.size = proxyB.size;
+        }
         public static GameObject FindPlayerEntity()
         {
             GameObject tagged = GameObject.FindWithTag("Player");
@@ -3477,6 +3506,10 @@ namespace DeadCoreEditor
         private static float _pitch = 0f;
         private static float _baseSpeed = 24f;
 
+        // Track RMB tap duration to distinguish tap-cancel from flycam hold
+        private static float _rmbDownTime = 0f;
+        private static Vector2 _rmbDownMousePos = Vector2.zero;
+
         public static void InitializeCamera(Camera sourceCam)
         {
             if (_camInstance != null) return;
@@ -3500,6 +3533,30 @@ namespace DeadCoreEditor
         {
             if (_camInstance == null) return;
 
+            // 1. Detect RMB Tap to deselect (Replaces Backspace)
+            if (Input.GetMouseButtonDown(1))
+            {
+                _rmbDownTime = Time.realtimeSinceStartup;
+                _rmbDownMousePos = Input.mousePosition;
+            }
+            if (Input.GetMouseButtonUp(1))
+            {
+                float duration = Time.realtimeSinceStartup - _rmbDownTime;
+                float dist = Vector2.Distance(Input.mousePosition, _rmbDownMousePos);
+
+                // Quick click without moving the mouse = cancel hand
+                if (duration < 0.25f && dist < 5f)
+                {
+                    if (EditorSessionManager.IsBlockSelected)
+                    {
+                        EditorSessionManager.IsBlockSelected = false;
+                        PlacementHologramController.DestroyPreview();
+                        EditorSessionManager.ShowNotification("Placement Cancelled");
+                    }
+                }
+            }
+
+            // 2. Hold RMB to Fly / Look around
             if (Input.GetMouseButton(1))
             {
                 Cursor.lockState = CursorLockMode.Locked;
@@ -3553,6 +3610,7 @@ namespace DeadCoreEditor
 
         private static BoxCollider _ghostBoxCollider = null;
         private static Vector3 _targetPosition = Vector3.zero;
+        private static Vector3 _currentSnappedNormal = Vector3.up;
 
         public static void SpawnHologram(CatalogAsset asset)
         {
@@ -3562,7 +3620,7 @@ namespace DeadCoreEditor
             _ghostInstance = GameObject.Instantiate(asset.SourceTemplate);
             _ghostInstance.name = "Holographic_Ghost_Preview";
 
-            _ghostInstance.layer = 2;
+            _ghostInstance.layer = 2; // Ignore Raycast
             foreach (var tr in _ghostInstance.GetComponentsInChildren<Transform>(true))
             {
                 tr.gameObject.layer = 2;
@@ -3589,7 +3647,8 @@ namespace DeadCoreEditor
                 EditorSessionManager.ApplyGateVisualTint(_ghostInstance, new Color(0.1f, 0.65f, 1.0f));
             }
 
-            Bounds b = CalculateLocalBounds(_ghostInstance);
+            // Generate clean, quantized box proxy bounds
+            Bounds b = CalculateOptimizedProxyBounds(_ghostInstance);
 
             _ghostBoxCollider = _ghostInstance.AddComponent<BoxCollider>();
             _ghostBoxCollider.isTrigger = true;
@@ -3602,9 +3661,10 @@ namespace DeadCoreEditor
             _ghostInstance.SetActive(true);
         }
 
-        public static Bounds CalculateLocalBounds(GameObject go)
+        // Quantizes raw model mesh bounds to clean multiples of 0.5m so geometry stacks flush
+        public static Bounds CalculateOptimizedProxyBounds(GameObject go)
         {
-            Bounds b = new Bounds(Vector3.zero, Vector3.zero);
+            Bounds raw = new Bounds(Vector3.zero, Vector3.zero);
             bool hasBounds = false;
 
             MeshFilter[] mfs = go.GetComponentsInChildren<MeshFilter>(true);
@@ -3618,25 +3678,88 @@ namespace DeadCoreEditor
 
                     if (!hasBounds)
                     {
-                        b = transformedB;
+                        raw = transformedB;
                         hasBounds = true;
                     }
                     else
                     {
-                        b.Encapsulate(transformedB);
+                        raw.Encapsulate(transformedB);
                     }
                 }
             }
 
-            if (!hasBounds) b = new Bounds(Vector3.zero, new Vector3(2f, 2f, 2f));
+            if (!hasBounds) raw = new Bounds(Vector3.zero, new Vector3(2f, 2f, 2f));
 
-            Vector3 size = b.size;
-            size.x = Mathf.Max(size.x, 0.2f);
-            size.y = Mathf.Max(size.y, 0.2f);
-            size.z = Mathf.Max(size.z, 0.2f);
-            b.size = size;
+            // Snap extents to clean 0.5m grid intervals to eliminate fractional mesh overhang
+            Vector3 size = raw.size;
+            size.x = Mathf.Max(0.5f, Mathf.Round(size.x * 2f) * 0.5f);
+            size.y = Mathf.Max(0.5f, Mathf.Round(size.y * 2f) * 0.5f);
+            size.z = Mathf.Max(0.5f, Mathf.Round(size.z * 2f) * 0.5f);
 
-            return b;
+            Vector3 center = raw.center;
+            center.x = Mathf.Round(center.x * 4f) * 0.25f;
+            center.y = Mathf.Round(center.y * 4f) * 0.25f;
+            center.z = Mathf.Round(center.z * 4f) * 0.25f;
+
+            return new Bounds(center, size);
+        }
+
+        // Snaps raw surface normals strictly to 90° cardinals or 45° diagonals
+        public static Vector3 SnapNormalToDiscreteAngles(Vector3 rawNormal)
+        {
+            if (rawNormal.sqrMagnitude < 0.01f) return Vector3.up;
+            rawNormal.Normalize();
+
+            // 1. Cardinal Snap (Floors, Ceilings, Flat Walls)
+            if (rawNormal.y > 0.85f) return Vector3.up;
+            if (rawNormal.y < -0.85f) return Vector3.down;
+            if (Mathf.Abs(rawNormal.y) < 0.25f)
+            {
+                if (Mathf.Abs(rawNormal.x) > Mathf.Abs(rawNormal.z))
+                    return new Vector3(Mathf.Sign(rawNormal.x), 0f, 0f);
+                else
+                    return new Vector3(0f, 0f, Mathf.Sign(rawNormal.z));
+            }
+
+            // 2. 45° Diagonal Ramp Snap
+            float signY = Mathf.Sign(rawNormal.y);
+            float signX = Mathf.Sign(rawNormal.x);
+            float signZ = Mathf.Sign(rawNormal.z);
+
+            if (Mathf.Abs(rawNormal.x) > Mathf.Abs(rawNormal.z))
+            {
+                return new Vector3(signX * 0.7071f, signY * 0.7071f, 0f);
+            }
+            else
+            {
+                return new Vector3(0f, signY * 0.7071f, signZ * 0.7071f);
+            }
+        }
+
+        public static Quaternion CalculateActiveRotation(CatalogAsset asset, Vector3 surfaceNormal)
+        {
+            if (EditorSessionManager.AutoAlignToSurface)
+            {
+                // Align base with the discrete surface normal
+                Quaternion alignRot = Quaternion.FromToRotation(Vector3.up, surfaceNormal);
+
+                // Apply user yaw around that surface normal (snapped to 45° intervals)
+                float snappedYaw = Mathf.Round(EditorSessionManager.TargetYaw / 45f) * 45f;
+                Quaternion yawRot = Quaternion.AngleAxis(snappedYaw, surfaceNormal);
+
+                Quaternion baseOffset = (asset != null) ? asset.BaseRotation : Quaternion.identity;
+                return yawRot * alignRot * baseOffset;
+            }
+
+            return EditorSessionManager.GetCurrentCombinedRotation(asset);
+        }
+
+        public static void ApplyRotationToPreview()
+        {
+            if (_ghostInstance != null)
+            {
+                _ghostInstance.transform.rotation = CalculateActiveRotation(EditorSessionManager.CurrentAsset, _currentSnappedNormal);
+            }
         }
 
         public static void ApplyScaleToPreview()
@@ -3647,18 +3770,9 @@ namespace DeadCoreEditor
             }
         }
 
-        public static void ApplyRotationToPreview()
-        {
-            if (_ghostInstance != null)
-            {
-                _ghostInstance.transform.rotation = EditorSessionManager.GetCurrentCombinedRotation(EditorSessionManager.CurrentAsset);
-            }
-        }
-
         public static void UpdatePlacement()
         {
             if (!EditorSessionManager.IsBlockSelected || _ghostInstance == null || EditorViewportCamera.ViewportCamera == null) return;
-
             if (EditorSessionManager.IsMouseOverUI()) return;
 
             Ray ray = Input.GetMouseButton(1)
@@ -3671,13 +3785,13 @@ namespace DeadCoreEditor
 
             Vector3 hitNormal = Vector3.up;
             Vector3 rawTargetPos;
-            Collider hitCol = null;
+            Collider hitCollider = null;
 
             if (hasHit)
             {
                 rawTargetPos = hit.point;
                 hitNormal = hit.normal;
-                hitCol = hit.collider;
+                hitCollider = hit.collider;
             }
             else
             {
@@ -3685,25 +3799,47 @@ namespace DeadCoreEditor
                 hitNormal = -ray.direction;
             }
 
-            Quaternion targetRot = EditorSessionManager.GetCurrentCombinedRotation(EditorSessionManager.CurrentAsset);
+            // Snap normal to discrete 90° or 45° angles
+            _currentSnappedNormal = SnapNormalToDiscreteAngles(hitNormal);
 
-            _targetPosition = CalculateDynamicPosition(rawTargetPos, targetRot, _ghostBoxCollider, hitNormal, hasHit, hitCol, EditorSessionManager.CurrentAsset);
+            Quaternion targetRot = CalculateActiveRotation(EditorSessionManager.CurrentAsset, _currentSnappedNormal);
+
+            // Compute position where Grid Snap is strictly preserved and overlaps resolve on the grid
+            _targetPosition = CalculateProxySnappedPosition(
+                rawTargetPos,
+                targetRot,
+                _ghostBoxCollider,
+                _currentSnappedNormal,
+                hasHit,
+                hitCollider,
+                EditorSessionManager.CurrentAsset
+            );
 
             _ghostInstance.transform.position = Vector3.Lerp(_ghostInstance.transform.position, _targetPosition, Time.deltaTime * 35f);
             _ghostInstance.transform.rotation = Quaternion.Slerp(_ghostInstance.transform.rotation, targetRot, Time.deltaTime * 24f);
 
             if (Input.GetMouseButtonDown(0) && !Input.GetMouseButton(1))
             {
-                CommitPlacement();
+                CommitPlacement(targetRot);
             }
         }
 
-        private static Vector3 CalculateDynamicPosition(Vector3 rawPos, Quaternion rot, BoxCollider ghostCol, Vector3 hitNormal, bool hasHit, Collider hitCol, CatalogAsset asset)
+        private static Vector3 CalculateProxySnappedPosition(
+    Vector3 rawPos,
+    Quaternion rot,
+    BoxCollider proxyCol,
+    Vector3 normal,
+    bool hasHit,
+    Collider hitCol,
+    CatalogAsset asset)
         {
-            if (ghostCol == null) return rawPos;
+            if (proxyCol == null) return rawPos;
 
-            Vector3 halfExtents = Vector3.Scale(ghostCol.size * 0.5f, ghostCol.transform.lossyScale);
-            Vector3 centerOffset = Vector3.Scale(ghostCol.center, ghostCol.transform.lossyScale);
+            Vector3 halfExtents = Vector3.Scale(proxyCol.size * 0.5f, proxyCol.transform.lossyScale);
+            Vector3 centerOffset = Vector3.Scale(proxyCol.center, proxyCol.transform.lossyScale);
+
+            float grid = EditorSessionManager.CurrentGridSnap;
+            bool isGridActive = grid > 0.01f;
 
             Vector3 targetPos = rawPos;
 
@@ -3713,41 +3849,80 @@ namespace DeadCoreEditor
                 Vector3 uY = rot * Vector3.up;
                 Vector3 uZ = rot * Vector3.forward;
 
-                float extentAlongNormal = halfExtents.x * Mathf.Abs(Vector3.Dot(uX, hitNormal))
-                                        + halfExtents.y * Mathf.Abs(Vector3.Dot(uY, hitNormal))
-                                        + halfExtents.z * Mathf.Abs(Vector3.Dot(uZ, hitNormal));
+                // Exact extent along the discrete snapped normal
+                float extentAlongNormal = halfExtents.x * Mathf.Abs(Vector3.Dot(uX, normal))
+                                        + halfExtents.y * Mathf.Abs(Vector3.Dot(uY, normal))
+                                        + halfExtents.z * Mathf.Abs(Vector3.Dot(uZ, normal));
 
                 float extraOffset = (asset != null) ? asset.VerticalOffset : 0f;
 
-                Vector3 worldCenter = rawPos + hitNormal * (extentAlongNormal + 0.002f + extraOffset);
-                targetPos = worldCenter - (rot * centerOffset);
+                // Base flush contact plane against the surface
+                Vector3 contactCenter = rawPos + normal * (extentAlongNormal + 0.001f + extraOffset);
+                targetPos = contactCenter - (rot * centerOffset);
 
-                if (EditorSessionManager.CurrentGridSnap > 0.01f)
+                // --- STEP 1: INITIAL STRICT GRID SNAP (ALL 3 AXES) ---
+                if (isGridActive)
                 {
-                    float grid = EditorSessionManager.CurrentGridSnap;
+                    targetPos = ApplyStrictGridSnap(targetPos, normal, grid);
+                }
 
-                    if (Mathf.Abs(hitNormal.y) > 0.65f)
+                // --- STEP 2: SIMPLIFIED PROXY OVERLAP CHECK ---
+                // Shrink probe by 3cm so flush adjacent grid faces NEVER false-alarm as overlapping
+                Vector3 probeHalfExtents = halfExtents - Vector3.one * 0.03f;
+                probeHalfExtents.x = Mathf.Max(0.04f, probeHalfExtents.x);
+                probeHalfExtents.y = Mathf.Max(0.04f, probeHalfExtents.y);
+                probeHalfExtents.z = Mathf.Max(0.04f, probeHalfExtents.z);
+
+                Vector3 currentWorldCenter = targetPos + (rot * centerOffset);
+                Collider[] overlaps = Physics.OverlapBox(currentWorldCenter, probeHalfExtents, rot, ~0, QueryTriggerInteraction.Collide);
+
+                Transform hitRoot = (hitCol != null) ? hitCol.transform.root : null;
+                Transform ghostRoot = _ghostInstance.transform;
+
+                for (int i = 0; i < overlaps.Length; i++)
+                {
+                    Collider col = overlaps[i];
+                    if (col == null || col == proxyCol) continue;
+                    if (col.transform.root == ghostRoot) continue;
+                    if (col.GetComponent<CharacterController>() != null) continue;
+
+                    // FIX: Completely ignore the object we are attaching TO (including all its children and proxies)
+                    if (hitRoot != null && col.transform.root == hitRoot) continue;
+
+                    // Only test against placed objects or their snapping proxies
+                    bool isPlaced = col.name.StartsWith("Custom_") ||
+                                    col.transform.root.name.StartsWith("Custom_") ||
+                                    col.name == "Editor_Snapping_Proxy";
+
+                    if (!isPlaced) continue;
+
+                    // FIX: Push along the ACTUAL direction of penetration, NEVER a blind macro-jump!
+                    if (Physics.ComputePenetration(
+                        proxyCol, targetPos, rot,
+                        col, col.transform.position, col.transform.rotation,
+                        out Vector3 pushDir, out float pushDist))
                     {
-                        targetPos.x = Mathf.Round(targetPos.x / grid) * grid;
-                        targetPos.z = Mathf.Round(targetPos.z / grid) * grid;
+                        // Only resolve if actual penetration exceeds the probe tolerance (3cm)
+                        if (pushDist > 0.03f)
+                        {
+                            targetPos += pushDir * pushDist;
+                            break;
+                        }
                     }
-                    else if (Mathf.Abs(hitNormal.x) > 0.65f)
-                    {
-                        targetPos.y = Mathf.Round(targetPos.y / grid) * grid;
-                        targetPos.z = Mathf.Round(targetPos.z / grid) * grid;
-                    }
-                    else if (Mathf.Abs(hitNormal.z) > 0.65f)
-                    {
-                        targetPos.x = Mathf.Round(targetPos.x / grid) * grid;
-                        targetPos.y = Mathf.Round(targetPos.y / grid) * grid;
-                    }
+                }
+
+                // --- STEP 3: MANDATORY FINAL ROUNDING (ROUNDING AFTER OVERLAP) ---
+                // Guarantees all 3 coordinates lock strictly to the grid after any push
+                if (isGridActive)
+                {
+                    targetPos = ApplyStrictGridSnap(targetPos, normal, grid);
                 }
             }
             else
             {
-                if (EditorSessionManager.CurrentGridSnap > 0.01f)
+                // Free air placement: direct grid snap on all 3 coordinates
+                if (isGridActive)
                 {
-                    float grid = EditorSessionManager.CurrentGridSnap;
                     targetPos = new Vector3(
                         Mathf.Round(targetPos.x / grid) * grid,
                         Mathf.Round(targetPos.y / grid) * grid,
@@ -3756,52 +3931,53 @@ namespace DeadCoreEditor
                 }
             }
 
-            int maxPasses = 12;
-            int mask = ~LayerMask.GetMask("Ignore Raycast");
-
-            for (int p = 0; p < maxPasses; p++)
-            {
-                Vector3 currentWorldCenter = targetPos + (rot * centerOffset);
-                Collider[] overlaps = Physics.OverlapBox(currentWorldCenter, halfExtents, rot, mask, QueryTriggerInteraction.Ignore);
-
-                bool hadOverlap = false;
-
-                foreach (var col in overlaps)
-                {
-                    if (col == null || col == ghostCol) continue;
-                    if (hasHit && col == hitCol) continue;
-                    if (ghostCol.transform.IsChildOf(col.transform) || col.transform.IsChildOf(ghostCol.transform)) continue;
-                    if (col.GetComponent<CharacterController>() != null) continue;
-
-                    if (Physics.ComputePenetration(
-                        ghostCol, targetPos, rot,
-                        col, col.transform.position, col.transform.rotation,
-                        out Vector3 pushDir, out float pushDist))
-                    {
-                        if (pushDist > 0.0005f)
-                        {
-                            targetPos += pushDir * (pushDist + 0.002f);
-                            hadOverlap = true;
-                            break;
-                        }
-                    }
-                }
-
-                if (!hadOverlap) break;
-            }
-
             return targetPos;
         }
 
-        private static void CommitPlacement()
+        // Snaps ALL THREE AXES strictly to clean grid/sub-grid intervals
+        private static Vector3 ApplyStrictGridSnap(Vector3 pos, Vector3 normal, float grid)
+        {
+            if (grid <= 0.01f) return pos;
+
+            Vector3 snapped = pos;
+            float depthStep = (grid > 0.5f) ? (grid * 0.5f) : grid;
+
+            if (Mathf.Abs(normal.y) > 0.65f) // Floor / Ceiling
+            {
+                snapped.x = Mathf.Round(snapped.x / grid) * grid;
+                snapped.z = Mathf.Round(snapped.z / grid) * grid;
+                snapped.y = Mathf.Round(snapped.y / depthStep) * depthStep; // Snaps vertical contact cleanly!
+            }
+            else if (Mathf.Abs(normal.x) > 0.65f) // X-Walls
+            {
+                snapped.y = Mathf.Round(snapped.y / grid) * grid;
+                snapped.z = Mathf.Round(snapped.z / grid) * grid;
+                snapped.x = Mathf.Round(snapped.x / depthStep) * depthStep;
+            }
+            else if (Mathf.Abs(normal.z) > 0.65f) // Z-Walls
+            {
+                snapped.x = Mathf.Round(snapped.x / grid) * grid;
+                snapped.y = Mathf.Round(snapped.y / grid) * grid;
+                snapped.z = Mathf.Round(snapped.z / depthStep) * depthStep;
+            }
+            else // Diagonal Ramps (45°)
+            {
+                snapped.x = Mathf.Round(snapped.x / grid) * grid;
+                snapped.y = Mathf.Round(snapped.y / depthStep) * depthStep;
+                snapped.z = Mathf.Round(snapped.z / grid) * grid;
+            }
+
+            return snapped;
+        }
+
+        private static void CommitPlacement(Quaternion placementRotation)
         {
             CatalogAsset asset = EditorSessionManager.CurrentAsset;
             if (asset == null) return;
 
-            Quaternion currentRot = EditorSessionManager.GetCurrentCombinedRotation(asset);
             float scale = EditorSessionManager.ActivePlacementScale;
 
-            GameObject placed = EditorSessionManager.SpawnCatalogObject(asset, _targetPosition, scale, currentRot);
+            GameObject placed = EditorSessionManager.SpawnCatalogObject(asset, _targetPosition, scale, placementRotation);
 
             if (placed != null)
             {
@@ -3821,13 +3997,13 @@ namespace DeadCoreEditor
                     Asset = asset,
                     AssetName = asset.DisplayName,
                     Position = _targetPosition,
-                    Rotation = currentRot,
+                    Rotation = placementRotation,
                     Scale = scale,
                     CustomParameter = param
                 });
                 EditorSessionManager.RedoHistory.Clear();
 
-                MelonLogger.Msg($">> Placed '{asset.DisplayName}' (Scale: {scale:F2}x, Grid: {EditorSessionManager.CurrentGridSnap}m)");
+                MelonLogger.Msg($">> Placed '{asset.DisplayName}' at {_targetPosition} (Snap: {EditorSessionManager.CurrentGridSnap}m, Align: {EditorSessionManager.AutoAlignToSurface})");
             }
         }
 
@@ -4335,7 +4511,7 @@ namespace DeadCoreEditor
                     IsJumper = true,
                     DefaultScale = 1.0f,
                     VerticalOffset = 0f,
-                    BaseRotation = Quaternion.Euler(35f, 0f, 0f)
+                    BaseRotation = Quaternion.Euler(0f, 0f, 0f)
                 });
             }
 
