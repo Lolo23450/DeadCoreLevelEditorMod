@@ -2114,28 +2114,6 @@ namespace DeadCoreEditor
         public static void ClearLastCheckpoint()
         {
             ActiveCustomCheckpoint = null;
-            {
-                // Graceful fallback to native pointer store if property setter is absent in interop
-                try
-                {
-                    IntPtr classPtr = Il2CppClassPointerStore<CheckPointScript>.NativeClassPtr;
-                    string[] possibleFields = new string[] { "<LastCheckPoint>k__BackingField", "_lastCheckPoint", "LastCheckPoint", "lastCheckPoint" };
-                    foreach (var fieldName in possibleFields)
-                    {
-                        IntPtr f = IL2CPP.GetIl2CppField(classPtr, fieldName);
-                        if (f != IntPtr.Zero)
-                        {
-                            IntPtr zero = IntPtr.Zero;
-                            unsafe
-                            {
-                                IL2CPP.il2cpp_field_static_set_value(f, (void*)(&zero));
-                            }
-                            break;
-                        }
-                    }
-                }
-                catch { }
-            }
         }
 
         public static void RestartRun()
@@ -2145,6 +2123,13 @@ namespace DeadCoreEditor
 
             CharacterController cc = GetPlayerController();
             if (cc != null) cc.enabled = false;
+
+            Rigidbody rb = player.GetComponent<Rigidbody>();
+            if (rb != null)
+            {
+                rb.velocity = Vector3.zero;
+                rb.angularVelocity = Vector3.zero;
+            }
 
             ClearLastCheckpoint();
             player.transform.position = LevelSpawnPosition + Vector3.up * 0.2f;
@@ -2170,9 +2155,8 @@ namespace DeadCoreEditor
             Cursor.visible = false;
 
             UnfreezePlayerControls();
-            MelonLogger.Msg(">> [Restart] Restarted run from the actual level start!");
+            MelonLogger.Msg(">> [Restart] Restarted run cleanly from level start!");
         }
-
         public static void RespawnPlayer(GameObject player)
         {
             CharacterController cc = GetPlayerController();
@@ -3822,7 +3806,7 @@ namespace DeadCoreEditor
                     case PlacedObjectType.Checkpoint:
                         {
                             CheckPointScript cp = obj.GetComponentInChildren<CheckPointScript>();
-                            bool isActive = (CheckPointScript.LastCheckPoint == cp);
+                            bool isActive = (ActiveCustomCheckpoint != null && ActiveCustomCheckpoint == cp);
                             GUI.color = isActive ? Color.green : new Color(0.4f, 0.8f, 1f);
                             string cpText = isActive ? "[Active Checkpoint]" : "[Checkpoint]";
                             GUI.Box(new Rect(screenPos.x - 75f, y - 14f, 150f, 26f), cpText);
@@ -4400,6 +4384,7 @@ namespace DeadCoreEditor
             obj.transform.localScale = Vector3.one * scale;
             obj.SetActive(true);
 
+            // 1. Visual tints & gate roles
             if (asset.IsSpawnGate)
             {
                 obj.name = "Custom_Spawn_Gate";
@@ -4409,11 +4394,34 @@ namespace DeadCoreEditor
             {
                 obj.name = "Custom_Goal_Gate";
                 ApplyGateVisualTint(obj, new Color(0.1f, 0.65f, 1.0f));
-
-                Collider col = obj.GetComponentInChildren<Collider>();
-                if (col != null) col.isTrigger = true;
             }
-            else if (asset.IsSunlight)
+
+            // 2. Universal Checkpoint Setup (Runs for Spawn, Normal Checkpoint, AND Goal Gate)
+            if (asset.IsCheckPoint)
+            {
+                CheckPointScript cp = obj.GetComponentInChildren<CheckPointScript>();
+                if (cp != null)
+                {
+                    // Spawn is 0, Goal is 9999, mid-checkpoints get indexed
+                    cp._id = asset.IsSpawnGate ? 0 : (asset.IsGoalGate ? 9999 : (PlacedObjects.Count + 100));
+
+                    // Guarantee _spawnPoint is NEVER null
+                    if (cp._spawnPoint == null)
+                    {
+                        GameObject spObj = new GameObject("SpawnPoint");
+                        spObj.transform.SetParent(obj.transform, false);
+                        spObj.transform.localPosition = new Vector3(0f, 0.1f, 0f);
+                        spObj.transform.localRotation = Quaternion.identity;
+                        cp._spawnPoint = spObj.transform;
+                    }
+
+                    Collider col = obj.GetComponentInChildren<Collider>();
+                    if (col != null) col.isTrigger = true;
+                }
+            }
+
+            // 3. Other Gameplay Mechanics (Sun, Spotlights, Lasers, Turbines, Turrets, Jumpers)
+            if (asset.IsSunlight)
             {
                 obj.name = "Custom_Global_Sunlight";
                 Light l = obj.GetComponentInChildren<Light>();
@@ -4448,39 +4456,10 @@ namespace DeadCoreEditor
             {
                 obj.name = "Custom_Laser_Barrier";
             }
-            else if (asset.IsCheckPoint)
-            {
-                CheckPointScript cp = obj.GetComponentInChildren<CheckPointScript>();
-                if (cp != null)
-                {
-                    cp._id = PlacedObjects.Count + 100;
-                    if (cp._spawnPoint == null)
-                    {
-                        GameObject spObj = new GameObject("SpawnPoint");
-                        spObj.transform.SetParent(obj.transform, false);
-                        spObj.transform.localPosition = new Vector3(0f, 0.1f, 0f);
-                        cp._spawnPoint = spObj.transform;
-                    }
 
-                    Collider col = obj.GetComponentInChildren<Collider>();
-                    if (col != null) col.isTrigger = true;
-                }
-            }
-
-            if (asset.IsHelix)
-            {
-                ApplyTurbineSpeed(obj, ActiveTurbineSpeed);
-            }
-
-            if (asset.IsTurret)
-            {
-                ApplyTurretSettings(obj, ActiveTurretFireDelay, 1500f);
-            }
-
-            if (asset.IsJumper)
-            {
-                ApplyJumperForce(obj, ActiveJumperForce);
-            }
+            if (asset.IsHelix) ApplyTurbineSpeed(obj, ActiveTurbineSpeed);
+            if (asset.IsTurret) ApplyTurretSettings(obj, ActiveTurretFireDelay, 1500f);
+            if (asset.IsJumper) ApplyJumperForce(obj, ActiveJumperForce);
 
             if (!asset.IsTurret && !asset.IsCheckPoint && !asset.IsHelix && !asset.IsSpawnGate && !asset.IsGoalGate && !asset.IsSpotlight && !asset.IsSunlight && !asset.IsLaser)
             {
@@ -4496,10 +4475,8 @@ namespace DeadCoreEditor
             }
 
             AttachEditorSnappingProxy(obj);
-
             return obj;
         }
-
         public static void AttachEditorSnappingProxy(GameObject obj)
         {
             if (obj == null) return;
