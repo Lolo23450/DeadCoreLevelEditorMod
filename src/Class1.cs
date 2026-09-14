@@ -416,6 +416,111 @@ namespace DeadCoreEditor
             }
         }
 
+        private static TMP_Text _sceneLabelText = null;
+
+        private static void CreateSceneSelectorRow(Transform parent, TMP_Text sampleTmp, float posY)
+        {
+            GameObject row = new GameObject("Row_SceneSelector");
+            row.transform.SetParent(parent, false);
+
+            RectTransform rowRt = row.AddComponent<RectTransform>();
+            rowRt.anchorMin = new Vector2(0f, 1f);
+            rowRt.anchorMax = new Vector2(1f, 1f);
+            rowRt.pivot = new Vector2(0.5f, 1f);
+            rowRt.sizeDelta = new Vector2(0f, 40f);
+            rowRt.anchoredPosition = new Vector2(0f, posY);
+
+            // Label
+            GameObject labelObj = new GameObject("Label");
+            labelObj.transform.SetParent(row.transform, false);
+            RectTransform labelRt = labelObj.AddComponent<RectTransform>();
+            labelRt.anchorMin = new Vector2(0f, 0.5f);
+            labelRt.anchorMax = new Vector2(0.25f, 0.5f);
+            labelRt.sizeDelta = Vector2.zero;
+
+            TMP_Text labelTmp = labelObj.AddComponent<TextMeshProUGUI>();
+            if (sampleTmp != null) { labelTmp.font = sampleTmp.font; labelTmp.fontSharedMaterial = sampleTmp.fontSharedMaterial; }
+            labelTmp.fontSize = 20f;
+            labelTmp.fontStyle = FontStyles.Bold;
+            labelTmp.color = new Color(0.2f, 0.82f, 1f, 1f);
+            labelTmp.text = "BASE SCENE";
+            labelTmp.alignment = TextAlignmentOptions.MidlineLeft;
+
+            // Previous Button (<)
+            GameObject prevBtn = new GameObject("Btn_PrevScene");
+            prevBtn.transform.SetParent(row.transform, false);
+            RectTransform prevRt = prevBtn.AddComponent<RectTransform>();
+            prevRt.anchorMin = new Vector2(0.26f, 0f);
+            prevRt.anchorMax = new Vector2(0.34f, 1f);
+            prevRt.sizeDelta = Vector2.zero;
+            prevBtn.AddComponent<Image>().color = new Color(0.1f, 0.15f, 0.25f, 0.9f);
+            Button pb = prevBtn.AddComponent<Button>();
+            pb.onClick.AddListener((Action)(() => CycleStagingScene(-1)));
+
+            GameObject prevTxt = new GameObject("Text");
+            prevTxt.transform.SetParent(prevBtn.transform, false);
+            RectTransform ptrt = prevTxt.AddComponent<RectTransform>();
+            ptrt.anchorMin = Vector2.zero; ptrt.anchorMax = Vector2.one;
+            TMP_Text pt = prevTxt.AddComponent<TextMeshProUGUI>();
+            if (sampleTmp != null) { pt.font = sampleTmp.font; pt.fontSharedMaterial = sampleTmp.fontSharedMaterial; }
+            pt.text = "<"; pt.fontSize = 22f; pt.alignment = TextAlignmentOptions.Center; pt.color = Color.white;
+
+            // Scene Name Display
+            GameObject displayObj = new GameObject("SceneDisplay");
+            displayObj.transform.SetParent(row.transform, false);
+            RectTransform dispRt = displayObj.AddComponent<RectTransform>();
+            dispRt.anchorMin = new Vector2(0.35f, 0f);
+            dispRt.anchorMax = new Vector2(0.91f, 1f);
+            dispRt.sizeDelta = Vector2.zero;
+            displayObj.AddComponent<Image>().color = new Color(0.04f, 0.08f, 0.15f, 0.88f);
+
+            GameObject textObj = new GameObject("Text");
+            textObj.transform.SetParent(displayObj.transform, false);
+            RectTransform trt = textObj.AddComponent<RectTransform>();
+            trt.anchorMin = Vector2.zero; trt.anchorMax = Vector2.one;
+            _sceneLabelText = textObj.AddComponent<TextMeshProUGUI>();
+            if (sampleTmp != null) { _sceneLabelText.font = sampleTmp.font; _sceneLabelText.fontSharedMaterial = sampleTmp.fontSharedMaterial; }
+            _sceneLabelText.fontSize = 18f;
+            _sceneLabelText.alignment = TextAlignmentOptions.Center;
+            _sceneLabelText.color = new Color(0.2f, 0.95f, 0.4f);
+            _sceneLabelText.text = MapBrowserService.SelectedStagingScene;
+
+            // Next Button (>)
+            GameObject nextBtn = new GameObject("Btn_NextScene");
+            nextBtn.transform.SetParent(row.transform, false);
+            RectTransform nextRt = nextBtn.AddComponent<RectTransform>();
+            nextRt.anchorMin = new Vector2(0.92f, 0f);
+            nextRt.anchorMax = new Vector2(1.0f, 1f);
+            nextRt.sizeDelta = Vector2.zero;
+            nextBtn.AddComponent<Image>().color = new Color(0.1f, 0.15f, 0.25f, 0.9f);
+            Button nb = nextBtn.AddComponent<Button>();
+            nb.onClick.AddListener((Action)(() => CycleStagingScene(1)));
+
+            GameObject nextTxt = new GameObject("Text");
+            nextTxt.transform.SetParent(nextBtn.transform, false);
+            RectTransform ntrt = nextTxt.AddComponent<RectTransform>();
+            ntrt.anchorMin = Vector2.zero; ntrt.anchorMax = Vector2.one;
+            TMP_Text nt = nextTxt.AddComponent<TextMeshProUGUI>();
+            if (sampleTmp != null) { nt.font = sampleTmp.font; nt.fontSharedMaterial = sampleTmp.fontSharedMaterial; }
+            nt.text = ">"; nt.fontSize = 22f; nt.alignment = TextAlignmentOptions.Center; nt.color = Color.white;
+        }
+
+        private static void CycleStagingScene(int dir)
+        {
+            var list = MapBrowserService.AvailableStagingScenes;
+            if (list.Count == 0) return;
+
+            int idx = list.IndexOf(MapBrowserService.SelectedStagingScene);
+            if (idx < 0) idx = 0;
+
+            idx = (idx + dir + list.Count) % list.Count;
+            MapBrowserService.SelectedStagingScene = list[idx];
+
+            if (_sceneLabelText != null)
+            {
+                _sceneLabelText.text = MapBrowserService.SelectedStagingScene;
+            }
+        }
         private static void RefreshRowTitlesInList(string newTitle)
         {
             for (int i = 0; i < _spawnedRowObjects.Count; i++)
@@ -1434,7 +1539,10 @@ namespace DeadCoreEditor
                 string sceneName = Path.GetFileNameWithoutExtension(p);
                 string sLower = sceneName.ToLower();
 
-                if (!sLower.Contains("menu") && !sLower.Contains("boot") && !sLower.Contains("title") && !sLower.Contains("intro") && !sLower.Contains("root"))
+                if (!string.IsNullOrEmpty(sceneName) &&
+                    !sLower.Contains("menu") && !sLower.Contains("boot") &&
+                    !sLower.Contains("title") && !sLower.Contains("intro") &&
+                    !sLower.Contains("root"))
                 {
                     if (!AvailableStagingScenes.Contains(sceneName))
                     {
@@ -1443,12 +1551,25 @@ namespace DeadCoreEditor
                 }
             }
 
-            if (!AvailableStagingScenes.Contains("level01_Spark01"))
+            // Fallback: Guarantee DeadCore's primary campaign levels are always selectable
+            string[] defaultCampaignLevels = new string[]
             {
-                AvailableStagingScenes.Insert(0, "level01_Spark01");
+                "level01_Spark01",
+                "level02_Spark01",
+                "level03_Spark01",
+                "level04_Spark01",
+                "level05_Spark01"
+            };
+
+            for (int d = 0; d < defaultCampaignLevels.Length; d++)
+            {
+                if (!AvailableStagingScenes.Contains(defaultCampaignLevels[d]))
+                {
+                    AvailableStagingScenes.Add(defaultCampaignLevels[d]);
+                }
             }
 
-            MelonLogger.Msg($">> Discovered {AvailableStagingScenes.Count} staging campaign scene(s) in build settings.");
+            MelonLogger.Msg($">> Registered {AvailableStagingScenes.Count} staging campaign scene(s).");
         }
 
         public static void EnsureDirectories()
@@ -6224,7 +6345,6 @@ namespace DeadCoreEditor
         }
     }
 
-    [HarmonyPatch(typeof(TurretScript), nameof(TurretScript.Shoot))]
     [HarmonyPatch(typeof(TurretScript), nameof(TurretScript.Shoot))]
     public static class TurretShootPatch
     {
