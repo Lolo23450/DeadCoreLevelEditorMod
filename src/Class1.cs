@@ -10,6 +10,7 @@ using HarmonyLib;
 using UnityEngine;
 using UnityEngine.UI;
 using SceneManager = UnityEngine.SceneManagement.SceneManager;
+using SceneUtility = UnityEngine.SceneManagement.SceneUtility;
 using Il2Cpp;
 using Il2CppInterop.Runtime;
 using Il2CppTMPro;
@@ -20,7 +21,7 @@ using File = System.IO.File;
 using Directory = System.IO.Directory;
 using Path = System.IO.Path;
 
-[assembly: MelonInfo(typeof(DeadCoreEditor.DeadCoreLevelEditorMod), "DeadCore Level Editor Suite", "6.3.0", "Trufa")]
+[assembly: MelonInfo(typeof(DeadCoreEditor.DeadCoreLevelEditorMod), "DeadCore Level Editor Suite", "6.4.0", "Trufa")]
 [assembly: MelonGame(null, null)]
 
 namespace DeadCoreEditor
@@ -28,8 +29,7 @@ namespace DeadCoreEditor
     /*
      * Mod Lifecycle Coordinator
      * Manages engine initialization, monitors scene changes, isolates custom editor states
-     * from vanilla campaign sequences, and routes frame updates between the level editor
-     * and playtest systems.
+     * from vanilla campaign sequences, and routes frame/physics updates.
      */
     public class DeadCoreLevelEditorMod : MelonMod
     {
@@ -38,11 +38,13 @@ namespace DeadCoreEditor
         public static int ActiveTab = 0;
         private static float _titleButtonScanTimer = 0f;
         private static bool _titleButtonHooked = false;
+        private static float _menuScanTimer = 0f;
 
         public override void OnInitializeMelon()
         {
             LoggerInstance.Msg("=== DeadCore Level Editor Suite Initialized ===");
             MapBrowserService.EnsureDirectories();
+            MapBrowserService.ScanStagingScenes();
         }
 
         public override void OnSceneWasLoaded(int buildIndex, string sceneName)
@@ -51,6 +53,7 @@ namespace DeadCoreEditor
             _cachedActiveMenu = null;
             _titleButtonHooked = false;
             _titleButtonScanTimer = 0.1f;
+            _menuScanTimer = 0f;
 
             string s = sceneName.ToLower();
             if (s.Contains("menu") || s.Contains("title") || s.Contains("boot") || s.Contains("intro"))
@@ -84,16 +87,20 @@ namespace DeadCoreEditor
                     NativeLogsMenuHijacker.OpenNativeMenu();
                 }
 
+                // Fast native active scene search (instant, no frame delay, no unmanaged heap scan)
                 if (_cachedActiveMenu == null || !_cachedActiveMenu.gameObject.scene.isLoaded || !_cachedActiveMenu.gameObject.activeInHierarchy)
                 {
-                    _cachedActiveMenu = null;
-                    LogsMenu[] menus = Resources.FindObjectsOfTypeAll<LogsMenu>();
-                    for (int i = 0; i < menus.Length; i++)
+                    _cachedActiveMenu = GameObject.FindObjectOfType<LogsMenu>();
+                    if (_cachedActiveMenu == null)
                     {
-                        if (menus[i] != null && menus[i].gameObject.scene.isLoaded && menus[i].gameObject.activeInHierarchy)
+                        LogsMenu[] menus = Resources.FindObjectsOfTypeAll<LogsMenu>();
+                        for (int i = 0; i < menus.Length; i++)
                         {
-                            _cachedActiveMenu = menus[i];
-                            break;
+                            if (menus[i] != null && menus[i].gameObject.scene.isLoaded && menus[i].gameObject.activeInHierarchy)
+                            {
+                                _cachedActiveMenu = menus[i];
+                                break;
+                            }
                         }
                     }
                 }
@@ -136,6 +143,12 @@ namespace DeadCoreEditor
 
             if (!EditorSessionManager.IsCustomSessionActive) return;
             EditorSessionManager.UpdateSession();
+        }
+
+        public override void OnFixedUpdate()
+        {
+            if (!EditorSessionManager.IsCustomSessionActive) return;
+            EditorSessionManager.FixedUpdateSession();
         }
 
         public override void OnGUI()
@@ -269,13 +282,13 @@ namespace DeadCoreEditor
         public string Author = "Unknown";
         public string Difficulty = "Normal";
         public string Description = "No description provided.";
+        public string StagingScene = "level01_Spark01";
     }
 
     /*
      * Native UI Hijacker & Browser Integrator
      * Intercepts DeadCore's built-in Logs Menu and repurposes it into an interactive level browser.
-     * Manages custom level file entries, metadata authoring (title, author, difficulty, description),
-     * and bottom action buttons (Play, New, Delete) without breaking native input focus.
+     * Uses DestroyImmediate to ensure native components do not hijack button inputs.
      */
     public static class NativeLogsMenuHijacker
     {
@@ -333,6 +346,8 @@ namespace DeadCoreEditor
                         meta.Difficulty = trimmed.Substring(12).Trim();
                     else if (trimmed.StartsWith("#DESC:", StringComparison.OrdinalIgnoreCase))
                         meta.Description = trimmed.Substring(6).Trim();
+                    else if (trimmed.StartsWith("#SCENE:", StringComparison.OrdinalIgnoreCase))
+                        meta.StagingScene = trimmed.Substring(7).Trim();
                     else if (!trimmed.StartsWith("#"))
                         break;
                 }
@@ -358,6 +373,7 @@ namespace DeadCoreEditor
 
                 string desc = (_descInput != null) ? _descInput.text.Trim() : "";
                 string diff = DifficultyNames[_selectedDifficultyIndex];
+                string scene = !string.IsNullOrEmpty(MapBrowserService.SelectedStagingScene) ? MapBrowserService.SelectedStagingScene : "level01_Spark01";
 
                 string[] allLines = File.ReadAllLines(fullPath);
                 List<string> objectLines = new List<string>();
@@ -378,6 +394,7 @@ namespace DeadCoreEditor
                 finalLines.Add($"#AUTHOR: {author}");
                 finalLines.Add($"#DIFFICULTY: {diff}");
                 finalLines.Add($"#DESC: {desc}");
+                finalLines.Add($"#SCENE: {scene}");
                 finalLines.AddRange(objectLines);
 
                 File.WriteAllLines(fullPath, finalLines.ToArray());
@@ -520,7 +537,7 @@ namespace DeadCoreEditor
                     {
                         if (child.name.StartsWith("CustomMap_"))
                         {
-                            GameObject.Destroy(child.gameObject);
+                            GameObject.DestroyImmediate(child.gameObject);
                         }
                         else
                         {
@@ -545,7 +562,7 @@ namespace DeadCoreEditor
                     if (!File.Exists(def))
                     {
                         Vector3 spawn = EditorSessionManager.LevelSpawnPosition;
-                        File.WriteAllText(def, $"#TITLE: Default Level\n#AUTHOR: Community\n#DIFFICULTY: Normal\n#DESC: Starter platform.\nFloor_Platform_16x16;{spawn.x:F4};{(spawn.y - 1.2f):F4};{spawn.z:F4};0.5500;0.0000;0.0000;0.0000;1.0000;0.00\n");
+                        File.WriteAllText(def, $"#TITLE: Default Level\n#AUTHOR: Community\n#DIFFICULTY: Normal\n#DESC: Starter platform.\n#SCENE: level01_Spark01\nFloor_Platform_16x16;{spawn.x:F4};{(spawn.y - 1.2f):F4};{spawn.z:F4};0.5500;0.0000;0.0000;0.0000;1.0000;0.00\n");
                     }
                     fileList.Add(def);
                 }
@@ -659,11 +676,12 @@ namespace DeadCoreEditor
 
         private static void RebrandAndTrimNativeTabs(LogsMenu menu)
         {
-            TMP_Text[] allTexts = Resources.FindObjectsOfTypeAll<TMP_Text>();
+            // Scans scene-active TMP elements across all UI root trees to guarantee catching tabs
+            TMP_Text[] allTexts = GameObject.FindObjectsOfType<TMP_Text>();
             for (int i = 0; i < allTexts.Length; i++)
             {
                 TMP_Text t = allTexts[i];
-                if (t == null || !t.gameObject.scene.isLoaded) continue;
+                if (t == null) continue;
 
                 string clean = t.text.Trim().ToLower();
 
@@ -732,6 +750,7 @@ namespace DeadCoreEditor
             catch { }
 
             LevelMetadata meta = ReadLevelMetadata(fullPath, fileName);
+            MapBrowserService.SelectedStagingScene = meta.StagingScene;
 
             for (int i = 0; i < _spawnedRowObjects.Count; i++)
             {
@@ -761,7 +780,7 @@ namespace DeadCoreEditor
                 menu._shortDesc.gameObject.SetActive(!isMyLevels);
                 if (!isMyLevels)
                 {
-                    menu._shortDesc.text = $"<b>{meta.Title.ToUpper()}</b>\nBY: {meta.Author.ToUpper()}  |  [{meta.Difficulty.ToUpper()}]  |  OBJECTS: {objectCount}";
+                    menu._shortDesc.text = $"<b>{meta.Title.ToUpper()}</b>\nBY: {meta.Author.ToUpper()}  |  [{meta.Difficulty.ToUpper()}]  |  OBJECTS: {objectCount}\nSCENE: {meta.StagingScene}";
                     DisableLocalizationScripts(menu._shortDesc.gameObject);
                 }
                 else
@@ -1134,7 +1153,7 @@ namespace DeadCoreEditor
 
             if (_nativePlayButton == null || _nativePlayButton.Equals(null) || _nativePlayButton.transform.parent != parentBar)
             {
-                if (_nativePlayButton != null) GameObject.Destroy(_nativePlayButton);
+                if (_nativePlayButton != null) GameObject.DestroyImmediate(_nativePlayButton);
                 _nativePlayButton = GameObject.Instantiate(nativeBack.gameObject, parentBar);
                 _nativePlayButton.name = "Btn_NativePlayLevel";
             }
@@ -1167,7 +1186,7 @@ namespace DeadCoreEditor
 
             if (_nativeCreateButton == null || _nativeCreateButton.Equals(null) || _nativeCreateButton.transform.parent != parentBar)
             {
-                if (_nativeCreateButton != null) GameObject.Destroy(_nativeCreateButton);
+                if (_nativeCreateButton != null) GameObject.DestroyImmediate(_nativeCreateButton);
                 _nativeCreateButton = GameObject.Instantiate(nativeBack.gameObject, parentBar);
                 _nativeCreateButton.name = "Btn_NativeCreateLevel";
             }
@@ -1196,7 +1215,7 @@ namespace DeadCoreEditor
 
             if (_nativeDeleteButton == null || _nativeDeleteButton.Equals(null) || _nativeDeleteButton.transform.parent != parentBar)
             {
-                if (_nativeDeleteButton != null) GameObject.Destroy(_nativeDeleteButton);
+                if (_nativeDeleteButton != null) GameObject.DestroyImmediate(_nativeDeleteButton);
                 _nativeDeleteButton = GameObject.Instantiate(nativeBack.gameObject, parentBar);
                 _nativeDeleteButton.name = "Btn_NativeDeleteLevel";
             }
@@ -1268,7 +1287,8 @@ namespace DeadCoreEditor
             }
 
             Vector3 spawn = EditorSessionManager.LevelSpawnPosition;
-            string starterContent = $"#TITLE: New Level {idx}\n#AUTHOR: Player\n#DIFFICULTY: Normal\n#DESC: Custom level created with DeadCore Level Editor.\n" +
+            string scene = !string.IsNullOrEmpty(MapBrowserService.SelectedStagingScene) ? MapBrowserService.SelectedStagingScene : "level01_Spark01";
+            string starterContent = $"#TITLE: New Level {idx}\n#AUTHOR: Player\n#DIFFICULTY: Normal\n#DESC: Custom level created with DeadCore Level Editor.\n#SCENE: {scene}\n" +
                                    $"Floor_Platform_16x16;{spawn.x:F4};{(spawn.y - 1.2f):F4};{spawn.z:F4};0.5500;0.0000;0.0000;0.0000;1.0000;0.00\n";
             File.WriteAllText(newPath, starterContent);
 
@@ -1388,8 +1408,8 @@ namespace DeadCoreEditor
 
     /*
      * Persistent Map Storage & Staging Service
-     * Manages level directory hierarchies, scans available .txt course packages,
-     * and sets up the session state machine before triggering native scene transitions.
+     * Manages level directory hierarchies, dynamically discovers all available game scenes
+     * from Unity's build index, and stages execution.
      */
     public static class MapBrowserService
     {
@@ -1397,8 +1417,39 @@ namespace DeadCoreEditor
         public static string SelectedMapPath = "";
         public static string SelectedMapName = "Default_Level";
 
+        public static List<string> AvailableStagingScenes = new List<string>();
+        public static string SelectedStagingScene = "level01_Spark01";
+
         public static string MyLevelsDir => Path.Combine(Directory.GetCurrentDirectory(), "UserData", "MyLevels");
         public static string DownloadedLevelsDir => Path.Combine(Directory.GetCurrentDirectory(), "UserData", "DownloadedLevels");
+
+        public static void ScanStagingScenes()
+        {
+            AvailableStagingScenes.Clear();
+            int count = SceneManager.sceneCountInBuildSettings;
+
+            for (int i = 0; i < count; i++)
+            {
+                string p = SceneUtility.GetScenePathByBuildIndex(i);
+                string sceneName = Path.GetFileNameWithoutExtension(p);
+                string sLower = sceneName.ToLower();
+
+                if (!sLower.Contains("menu") && !sLower.Contains("boot") && !sLower.Contains("title") && !sLower.Contains("intro") && !sLower.Contains("root"))
+                {
+                    if (!AvailableStagingScenes.Contains(sceneName))
+                    {
+                        AvailableStagingScenes.Add(sceneName);
+                    }
+                }
+            }
+
+            if (!AvailableStagingScenes.Contains("level01_Spark01"))
+            {
+                AvailableStagingScenes.Insert(0, "level01_Spark01");
+            }
+
+            MelonLogger.Msg($">> Discovered {AvailableStagingScenes.Count} staging campaign scene(s) in build settings.");
+        }
 
         public static void EnsureDirectories()
         {
@@ -1409,7 +1460,7 @@ namespace DeadCoreEditor
             if (!File.Exists(defaultMyPath))
             {
                 Vector3 spawn = EditorSessionManager.LevelSpawnPosition;
-                File.WriteAllText(defaultMyPath, $"#TITLE: Default Level\n#AUTHOR: Community\n#DIFFICULTY: Normal\n#DESC: Starter platform.\nFloor_Platform_16x16;{spawn.x:F4};{(spawn.y - 1.2f):F4};{spawn.z:F4};0.5500;0.0000;0.0000;0.0000;1.0000;0.00\n");
+                File.WriteAllText(defaultMyPath, $"#TITLE: Default Level\n#AUTHOR: Community\n#DIFFICULTY: Normal\n#DESC: Starter platform.\n#SCENE: level01_Spark01\nFloor_Platform_16x16;{spawn.x:F4};{(spawn.y - 1.2f):F4};{spawn.z:F4};0.5500;0.0000;0.0000;0.0000;1.0000;0.00\n");
             }
 
             RefreshFiles();
@@ -1435,16 +1486,18 @@ namespace DeadCoreEditor
             EditorSessionManager.IsCustomSessionActive = true;
             EditorSessionManager.IsLevelInitialized = false;
 
-            MelonLogger.Msg($">> [Map Browser] Launching: '{SelectedMapName}' from {SelectedMapPath}");
-            SceneLoader.LoadLevel("level01_Spark01", false, true);
+            string targetScene = !string.IsNullOrEmpty(SelectedStagingScene) ? SelectedStagingScene : "level01_Spark01";
+
+            MelonLogger.Msg($">> [Map Browser] Launching: '{SelectedMapName}' via Scene: '{targetScene}'");
+            SceneLoader.LoadLevel(targetScene, false, true);
         }
     }
 
     /*
      * Central Editor Session & Gameplay Engine
-     * Orchestrates interactive 3D placement, real-time kinematic motion calculations,
-     * compound entity assemblies, physical hazard evaluations (parabolic launch pads,
-     * radial wind push tunnels, OBB laser collisions), and IMGUI developer tooling.
+     * Orchestrates interactive 3D placement, frame-rate independent physics evaluations
+     * (parabolic launch pads, radial wind push tunnels, OBB laser collisions),
+     * and IMGUI developer tooling.
      */
     public static class EditorSessionManager
     {
@@ -1635,6 +1688,9 @@ namespace DeadCoreEditor
             PlacementHologramController.DestroyPreview();
             CarouselWheelToolbar.DestroyToolbar();
 
+            // Destroy procedural meshes and materials to eliminate native memory leaks
+            SceneHarvestingService.CleanupProceduralResources();
+
             PlayerCameraInstance = null;
             PlayerControllerInstance = null;
 
@@ -1688,8 +1744,6 @@ namespace DeadCoreEditor
             GameObject player = FindPlayerEntity();
             CharacterController cc = GetPlayerController();
 
-            UpdateObjectMotionPaths(player, cc);
-
             if (!IsEditModeActive)
             {
                 float dt = Time.deltaTime;
@@ -1703,11 +1757,7 @@ namespace DeadCoreEditor
 
                 if (player != null)
                 {
-                    CheckVoidFall(player);
-                    CheckJumperBoostPhysics(player, cc);
-                    CheckHelixWindPushing(player, cc);
                     CheckGoalTriggerArrival(player);
-                    CheckLaserBarriers(player, cc);
 
                     Vector3 pPos = player.transform.position;
                     for (int i = 0; i < PlacedCheckpoints.Count; i++)
@@ -1789,6 +1839,29 @@ namespace DeadCoreEditor
             }
         }
 
+        /*
+         * Deterministic Physics Dispatcher (FixedUpdate)
+         * Evaluates kinematic paths, wind push tunnels, launch pad accelerations, and hazard volumes
+         * at a fixed time-step to preserve identical physics across any display refresh rate.
+         */
+        public static void FixedUpdateSession()
+        {
+            if (!IsLevelInitialized) return;
+
+            GameObject player = FindPlayerEntity();
+            CharacterController cc = GetPlayerController();
+
+            UpdateObjectMotionPaths(player, cc);
+
+            if (!IsEditModeActive && player != null)
+            {
+                CheckVoidFall(player);
+                CheckJumperBoostPhysics(player, cc);
+                CheckHelixWindPushing(player, cc);
+                CheckLaserBarriers(player, cc);
+            }
+        }
+
         private static void UpdateObjectMotionPaths(GameObject player, CharacterController cc)
         {
             if (MotionPaths.Count == 0) return;
@@ -1802,7 +1875,6 @@ namespace DeadCoreEditor
                 ObjectMotionPath path = kvp.Value;
                 if (obj == null || !obj.activeSelf || !path.IsActive) continue;
 
-                // Freeze platform at Point A while its destination is being edited or while it is picked up
                 if (IsEditModeActive && (PathEditTarget == obj || RepositionTarget == obj))
                 {
                     obj.transform.position = path.PointA;
@@ -1863,13 +1935,14 @@ namespace DeadCoreEditor
 
         private static void CheckJumperBoostPhysics(GameObject player, CharacterController cc)
         {
-            if (_jumperTriggerCooldown > 0f) _jumperTriggerCooldown -= Time.deltaTime;
+            float fdt = Time.fixedDeltaTime;
+            if (_jumperTriggerCooldown > 0f) _jumperTriggerCooldown -= fdt;
             if (cc == null) return;
 
             if (_isBoostActive)
             {
-                cc.Move(_currentBoostVelocity * Time.deltaTime);
-                _currentBoostVelocity.y += -22f * Time.deltaTime;
+                cc.Move(_currentBoostVelocity * fdt);
+                _currentBoostVelocity.y += -22f * fdt;
 
                 if (cc.isGrounded && _jumperTriggerCooldown < 0.2f)
                 {
@@ -1932,7 +2005,7 @@ namespace DeadCoreEditor
             if (PlacedTurbines.Count == 0 || cc == null) return;
 
             Vector3 pPos = player.transform.position + Vector3.up * 1.0f;
-            float dt = Time.deltaTime;
+            float fdt = Time.fixedDeltaTime;
 
             for (int i = 0; i < PlacedTurbines.Count; i++)
             {
@@ -1949,7 +2022,7 @@ namespace DeadCoreEditor
 
                 if (helixScript != null && helixScript._hingeJoint != null)
                 {
-                    helixScript._hingeJoint.transform.Rotate(Vector3.forward, (speed * 12f) * dt, Space.Self);
+                    helixScript._hingeJoint.transform.Rotate(Vector3.forward, (speed * 12f) * fdt, Space.Self);
                 }
 
                 Vector3 hPos = obj.transform.position;
@@ -1971,7 +2044,7 @@ namespace DeadCoreEditor
                         pushDir.Normalize();
 
                         float pushSpeed = Mathf.Lerp(speed, speed * 0.25f, forwardDist / windRange);
-                        cc.Move(pushDir * pushSpeed * dt);
+                        cc.Move(pushDir * pushSpeed * fdt);
                     }
                 }
             }
@@ -2041,25 +2114,28 @@ namespace DeadCoreEditor
         public static void ClearLastCheckpoint()
         {
             ActiveCustomCheckpoint = null;
-            try
             {
-                IntPtr classPtr = Il2CppClassPointerStore<CheckPointScript>.NativeClassPtr;
-                string[] possibleFields = new string[] { "<LastCheckPoint>k__BackingField", "_lastCheckPoint", "LastCheckPoint", "lastCheckPoint" };
-                foreach (var fieldName in possibleFields)
+                // Graceful fallback to native pointer store if property setter is absent in interop
+                try
                 {
-                    IntPtr f = IL2CPP.GetIl2CppField(classPtr, fieldName);
-                    if (f != IntPtr.Zero)
+                    IntPtr classPtr = Il2CppClassPointerStore<CheckPointScript>.NativeClassPtr;
+                    string[] possibleFields = new string[] { "<LastCheckPoint>k__BackingField", "_lastCheckPoint", "LastCheckPoint", "lastCheckPoint" };
+                    foreach (var fieldName in possibleFields)
                     {
-                        IntPtr zero = IntPtr.Zero;
-                        unsafe
+                        IntPtr f = IL2CPP.GetIl2CppField(classPtr, fieldName);
+                        if (f != IntPtr.Zero)
                         {
-                            IL2CPP.il2cpp_field_static_set_value(f, (void*)(&zero));
+                            IntPtr zero = IntPtr.Zero;
+                            unsafe
+                            {
+                                IL2CPP.il2cpp_field_static_set_value(f, (void*)(&zero));
+                            }
+                            break;
                         }
-                        break;
                     }
                 }
+                catch { }
             }
-            catch { }
         }
 
         public static void RestartRun()
@@ -2706,18 +2782,12 @@ namespace DeadCoreEditor
             }
         }
 
-        /*
-         * Rotates the currently selected spotlight or global sunlight source.
-         * For directional sunlight, immediately applies the new orientation to the native scene sun
-         * and recalculates ambient directional sky passes.
-         */
         private static void HandleSelectedSpotlightRotation()
         {
             if (SelectedLightObject == null || !SelectedLightObject.activeSelf) return;
 
             bool isSun = PlacedObjectTypes.TryGetValue(SelectedLightObject, out var t) && t == PlacedObjectType.Sunlight;
 
-            // T: Snap to nearest 90-degree cardinal angle
             if (Input.GetKeyDown(KeyCode.T))
             {
                 Vector3 e = SelectedLightObject.transform.eulerAngles;
@@ -2735,7 +2805,6 @@ namespace DeadCoreEditor
                 return;
             }
 
-            // R: Reset to default orientation (Sun uses downward angled pitch, Spotlight uses level forward)
             if (Input.GetKeyDown(KeyCode.R))
             {
                 SelectedLightObject.transform.rotation = isSun ? Quaternion.Euler(50f, -30f, 0f) : Quaternion.identity;
@@ -2830,7 +2899,6 @@ namespace DeadCoreEditor
                 if (Mathf.Abs(rotDelta.z) > 0.001f)
                     SelectedLightObject.transform.Rotate(Vector3.forward, rotDelta.z, Space.Self);
 
-                // Instantly sync the rotated angle to the native directional sun
                 if (PlacedLights.TryGetValue(SelectedLightObject, out LightConfig cfg))
                 {
                     ApplyLightConfig(SelectedLightObject, cfg);
@@ -2921,11 +2989,6 @@ namespace DeadCoreEditor
             }
         }
 
-        /*
-         * Viewport Raycast Selector
-         * Evaluates crosshair vectors against placed entities in the active world.
-         * Explicitly queries trigger volumes to ensure interactive zones like lasers and checkpoints can be selected.
-         */
         public static GameObject GetAimedPlacedObject()
         {
             if (EditorViewportCamera.ViewportCamera == null) return null;
@@ -2935,8 +2998,7 @@ namespace DeadCoreEditor
                 : EditorViewportCamera.ViewportCamera.ScreenPointToRay(Input.mousePosition);
 
             int mask = ~LayerMask.GetMask("Ignore Raycast");
-            RaycastHit hit;
-            if (Physics.Raycast(ray, out hit, 1000f, mask, QueryTriggerInteraction.Collide))
+            if (Physics.Raycast(ray, out RaycastHit hit, 1000f, mask, QueryTriggerInteraction.Collide))
             {
                 GameObject hitObj = hit.collider.gameObject;
                 for (int i = 0; i < PlacedObjects.Count; i++)
@@ -3465,9 +3527,7 @@ namespace DeadCoreEditor
 
         /*
          * HDRP-Compliant Light Coordinator
-         * Converts scalar intensity values into physical Lux units, synchronizes custom orientations
-         * to the scene's primary directional sun, updates HDAdditionalLightData properties,
-         * and configures trilight ambient sky illumination.
+         * Adapts to Unity HDRP lighting pipeline while avoiding legacy non-functional ambient mode overrides.
          */
         public static void ApplyLightConfig(GameObject lightObj, LightConfig cfg)
         {
@@ -3494,7 +3554,7 @@ namespace DeadCoreEditor
                         targetSun.color = cfg.Color;
                         targetSun.transform.rotation = lightObj.transform.rotation;
 
-                        // DeadCore Redux native sun runs at ~13,000 Lux in HDRP
+                        // DeadCore Redux native sun runs at high physical Lux values in HDRP
                         float hdrpSunIntensity = Mathf.Max(0.1f, cfg.Intensity) * 4000f;
                         targetSun.intensity = hdrpSunIntensity;
                         RenderSettings.sun = targetSun;
@@ -3513,13 +3573,6 @@ namespace DeadCoreEditor
                         }
                         catch { }
                     }
-
-                    // Ambient sky colors adapt smoothly to the sun's intensity and color tint
-                    RenderSettings.ambientMode = UnityEngine.Rendering.AmbientMode.Trilight;
-                    RenderSettings.ambientSkyColor = cfg.Color * Mathf.Clamp01(cfg.Intensity * 0.35f);
-                    RenderSettings.ambientEquatorColor = cfg.Color * Mathf.Clamp01(cfg.Intensity * 0.20f);
-                    RenderSettings.ambientGroundColor = cfg.Color * 0.05f;
-                    RenderSettings.ambientIntensity = Mathf.Max(0.5f, cfg.Intensity);
                 }
                 else
                 {
@@ -3555,7 +3608,6 @@ namespace DeadCoreEditor
                             intProp.SetValue(comps[i], actualInt);
                         }
 
-                        // Volumetric dimming is strictly for conical spotlights
                         if (!cfg.IsDirectional)
                         {
                             var volDimProp = t.GetProperty("volumetricDimmer");
@@ -3651,9 +3703,8 @@ namespace DeadCoreEditor
         }
 
         /*
-         * Real-Time Editor Viewport Overlay (OnGUI)
-         * Renders 3D-to-2D spatial badges, active motion trajectories, waypoint endpoint markers,
-         * parent hierarchy indicators, category selection bars, and contextual hotkey reminders.
+         * Note: IMGUI (OnGUI) is currently utilized as an isolated developer/debug HUD.
+         * Production migration will target native Unity Canvas/TMP interfaces.
          */
         public static void DrawEditorGUI()
         {
@@ -3681,7 +3732,6 @@ namespace DeadCoreEditor
                     GUI.color = new Color(0.9f, 0.3f, 1f);
                     GUI.Box(new Rect(screenPos.x - 90f, y - 30f, 180f, 26f), $"[✦ Path: {mp.Speed:F1}m/s]");
 
-                    // Render spatial endpoint labels for Point A and Point B
                     Vector3 screenA = cam.WorldToScreenPoint(mp.PointA);
                     if (screenA.z > 0.2f)
                     {
@@ -3932,11 +3982,6 @@ namespace DeadCoreEditor
             GUI.Label(new Rect(32f, curY, 290f, 20f), $"HDRP Sun Hook: <b><color=#FFE57F>{nativeSun}</color></b>");
         }
 
-        /*
-         * Atmosphere, Sunlight, and Spotlight Inspector (F3)
-         * Provides calibrated Lux sliders, cone angle adjusters, volumetric scattering multipliers,
-         * safe unstripped RGB channel sliders with visual swatches, and instant lighting palette buttons.
-         */
         private static void DrawParametersWindow()
         {
             float winW = 340f;
@@ -4614,8 +4659,6 @@ namespace DeadCoreEditor
     /*
      * Holographic Placement Engine
      * Projects a live preview of the currently equipped catalog asset into the viewport.
-     * Evaluates discrete surface normal alignment, resolves bounding box overlap penetrations,
-     * and guarantees strict grid snapping along planar normals.
      */
     public static class PlacementHologramController
     {
@@ -5016,8 +5059,7 @@ namespace DeadCoreEditor
 
     /*
      * 3D HUD Carousel Wheel
-     * Projects a curved cylindrical asset tray into screen space. Uses circular trigonometric
-     * positioning and angular alpha falloff to let creators select mechanics without cluttering viewport focus.
+     * Projects a curved cylindrical asset tray into screen space.
      */
     public static class CarouselWheelToolbar
     {
@@ -5241,8 +5283,7 @@ namespace DeadCoreEditor
     /*
      * Serialization & Course Disk IO Pipeline
      * Formats level entities, custom physics parameters, compound parent-child hierarchies,
-     * and explicit 8-part kinematic paths (PATH:1:Speed:Ax:Ay:Az:Bx:By:Bz).
-     * Saves true stationary origin coordinates so saving mid-animation never shifts platform trajectories.
+     * explicit 8-part kinematic paths (PATH:1:Speed:Ax:Ay:Az:Bx:By:Bz), and staging scene tags.
      */
     public static class LevelPersistenceService
     {
@@ -5297,18 +5338,13 @@ namespace DeadCoreEditor
             lines.Add($"#AUTHOR: {existingMeta.Author}");
             lines.Add($"#DIFFICULTY: {existingMeta.Difficulty}");
             lines.Add($"#DESC: {existingMeta.Description}");
+            lines.Add($"#SCENE: {MapBrowserService.SelectedStagingScene}");
 
             for (int i = 0; i < EditorSessionManager.PlacedObjects.Count; i++)
             {
                 GameObject obj = EditorSessionManager.PlacedObjects[i];
                 if (obj == null || !obj.activeSelf) continue;
 
-                /*
-                 * Motion-Safe Position Capture:
-                 * If an entity has an active motion path, we must save its true origin (PointA)
-                 * rather than its animated mid-flight position. This prevents platform trajectories
-                 * from permanently shifting or shrinking when saving during playback or edit mode.
-                 */
                 Vector3 pos = EditorSessionManager.MotionPaths.ContainsKey(obj)
                     ? EditorSessionManager.MotionPaths[obj].PointA
                     : obj.transform.position;
@@ -5344,11 +5380,6 @@ namespace DeadCoreEditor
                     extraParams = $";{cfg.SpotAngle.ToString("F1", inv)};{hexColor};{cfg.VolumetricIntensity.ToString("F2", inv)}";
                 }
 
-                /*
-                 * Full 8-Part Path Serialization:
-                 * Explicitly stores both PointA and PointB in the token (PATH:1:Speed:Ax:Ay:Az:Bx:By:Bz).
-                 * This provides full path isolation on load, regardless of where the entity was spawned.
-                 */
                 string pathParams = ";PATH:0";
                 if (EditorSessionManager.MotionPaths.ContainsKey(obj))
                 {
@@ -5367,8 +5398,8 @@ namespace DeadCoreEditor
             }
 
             File.WriteAllLines(path, lines.ToArray());
-            EditorSessionManager.ShowNotification($"Saved {lines.Count - 4} objects to {cleanName}.txt!");
-            MelonLogger.Msg($">> Saved {lines.Count - 4} objects with full parameters to {path}!");
+            EditorSessionManager.ShowNotification($"Saved {lines.Count - 5} objects to {cleanName}.txt!");
+            MelonLogger.Msg($">> Saved {lines.Count - 5} objects with full parameters to {path}!");
 
             MapBrowserService.SelectedMapPath = path;
             MapBrowserService.SelectedMapName = cleanName;
@@ -5393,12 +5424,6 @@ namespace DeadCoreEditor
             LoadLevelByFullPath(path);
         }
 
-        /*
-         * Level Deserialization & Reconstruction Engine
-         * Reads level text payloads, instantiates game-native models, sets up mechanics
-         * (jump pads, wind zones, turrets, lights), restores full 8-part motion paths (with
-         * fallback parsing for legacy 5-part paths), and resolves parent-child compound assemblies.
-         */
         public static void LoadLevelByFullPath(string fullPath)
         {
             if (!File.Exists(fullPath)) return;
@@ -5413,6 +5438,12 @@ namespace DeadCoreEditor
             {
                 if (string.IsNullOrWhiteSpace(line)) continue;
                 string trimmed = line.Trim();
+
+                if (trimmed.StartsWith("#SCENE:", StringComparison.OrdinalIgnoreCase))
+                {
+                    MapBrowserService.SelectedStagingScene = trimmed.Substring(7).Trim();
+                    continue;
+                }
                 if (trimmed.StartsWith("#")) continue;
 
                 string[] p = trimmed.Split(';');
@@ -5475,18 +5506,12 @@ namespace DeadCoreEditor
                         }
                     }
 
-                    /*
-                     * Dual-Format Kinematic Path Decoder:
-                     * Handles both current 8-part tokens (Speed, PointA, PointB) and legacy 5-part
-                     * tokens (Speed, PointB, where PointA defaults to base position).
-                     */
                     int pathTagIdx = trimmed.IndexOf(";PATH:");
                     if (pathTagIdx != -1)
                     {
                         string pathSub = trimmed.Substring(pathTagIdx + 6).Split(';')[0];
                         string[] pathParts = pathSub.Split(':');
 
-                        // Modern format: PATH:1:Speed:Ax:Ay:Az:Bx:By:Bz
                         if (pathParts.Length >= 8 && pathParts[0] == "1")
                         {
                             float spd = ParseFloat(pathParts[1]);
@@ -5501,7 +5526,6 @@ namespace DeadCoreEditor
                                 Speed = spd > 0.1f ? spd : 3.5f
                             };
                         }
-                        // Legacy format fallback: PATH:1:Speed:Bx:By:Bz
                         else if (pathParts.Length >= 5 && pathParts[0] == "1")
                         {
                             float spd = ParseFloat(pathParts[1]);
@@ -5552,27 +5576,44 @@ namespace DeadCoreEditor
 
     /*
      * Scene Harvesting & Geometry Ingestion Pipeline
-     * Extracts existing visual assets and interactive actors directly from DeadCore's memory,
-     * strips extraneous vanilla particle renderers/scripts to construct clean editor prefabs,
-     * builds flicker-free Z-offset laser mesh geometry, and protects the native HDRP sun source.
+     * Manages model extraction, creates leak-free procedural laser geometry,
+     * and guarantees deterministic resource cleanup via tracked pools.
      */
     public static class SceneHarvestingService
     {
         public static Light NativeSceneSun = null;
+
+        private static readonly List<Mesh> _proceduralMeshes = new List<Mesh>();
+        private static readonly List<Material> _proceduralMaterials = new List<Material>();
+
+        public static void CleanupProceduralResources()
+        {
+            for (int i = 0; i < _proceduralMeshes.Count; i++)
+            {
+                if (_proceduralMeshes[i] != null)
+                {
+                    GameObject.Destroy(_proceduralMeshes[i]);
+                }
+            }
+            _proceduralMeshes.Clear();
+
+            for (int i = 0; i < _proceduralMaterials.Count; i++)
+            {
+                if (_proceduralMaterials[i] != null)
+                {
+                    GameObject.Destroy(_proceduralMaterials[i]);
+                }
+            }
+            _proceduralMaterials.Clear();
+
+            MelonLogger.Msg(">> Cleaned all dynamic procedural meshes and materials.");
+        }
 
         public static void DebugDumpSceneLighting()
         {
             MelonLogger.Msg("==================================================");
             MelonLogger.Msg("          SCENE LIGHTING & ATMOSPHERE DUMP        ");
             MelonLogger.Msg("==================================================");
-
-            MelonLogger.Msg($"[RenderSettings] Ambient Mode: {RenderSettings.ambientMode}");
-            MelonLogger.Msg($"[RenderSettings] Ambient Light Color: {RenderSettings.ambientLight}");
-            MelonLogger.Msg($"[RenderSettings] Ambient Sky Color: {RenderSettings.ambientSkyColor}");
-            MelonLogger.Msg($"[RenderSettings] Ambient Equator Color: {RenderSettings.ambientEquatorColor}");
-            MelonLogger.Msg($"[RenderSettings] Ambient Ground Color: {RenderSettings.ambientGroundColor}");
-            MelonLogger.Msg($"[RenderSettings] Ambient Intensity: {RenderSettings.ambientIntensity}");
-            MelonLogger.Msg($"[RenderSettings] Current Sun: {(RenderSettings.sun != null ? RenderSettings.sun.name : "NONE")}");
 
             NativeSceneSun = null;
 
@@ -5599,7 +5640,7 @@ namespace DeadCoreEditor
                 }
 
                 bool isSceneObject = l.gameObject.scene.isLoaded;
-                MelonLogger.Msg($"  #{i:D2} [{(isSceneObject ? "SCENE" : "ASSET")}] Path: '{path}' | Type: {l.type} | Active: {l.gameObject.activeInHierarchy} (CompEnabled: {l.enabled}) | Color: {l.color} | Int: {l.intensity} | Range: {l.range} | CullingMask: {l.cullingMask}");
+                MelonLogger.Msg($"  #{i:D2} [{(isSceneObject ? "SCENE" : "ASSET")}] Path: '{path}' | Type: {l.type} | Active: {l.gameObject.activeInHierarchy} (CompEnabled: {l.enabled}) | Color: {l.color} | Int: {l.intensity} | Range: {l.range}");
 
                 if (NativeSceneSun == null && isSceneObject && l.type == LightType.Directional)
                 {
@@ -5614,11 +5655,6 @@ namespace DeadCoreEditor
             MelonLogger.Msg("==================================================");
         }
 
-        /*
-         * Anti-Flicker Double-Sided Quad Generator:
-         * Generates front and back plane vertices with a tiny physical separation (+/- 0.01m Z).
-         * This prevents coplanar surface overlapping, entirely fixing HDRP Z-fighting and strobe artifacts.
-         */
         public static Mesh CreateDoubleSidedPlaneMesh(float width, float height)
         {
             Mesh m = new Mesh();
@@ -5657,15 +5693,11 @@ namespace DeadCoreEditor
             m.normals = normals;
             m.triangles = triangles;
             m.RecalculateBounds();
+
+            _proceduralMeshes.Add(m);
             return m;
         }
 
-        /*
-         * Scene Ingestion Routine
-         * Gathers level materials, checkpoints, jump pads, fans, turrets, and meshes from
-         * the current scene, cleans out runtime scripts that could cause side-effects, and prepares
-         * safe templates for the palette carousel.
-         */
         public static void HarvestAllSceneModels()
         {
             EditorSessionManager.AllAssets.Clear();
@@ -5710,7 +5742,7 @@ namespace DeadCoreEditor
                 });
             }
 
-            // 2. Waypoint and Checkpoint Gates (Standard, Spawn, and Goal)
+            // 2. Waypoint and Checkpoint Gates
             try
             {
                 EditorSessionManager.PrefabCheckPoint = GameObject.FindObjectOfType<CheckPointScript>();
@@ -5836,6 +5868,7 @@ namespace DeadCoreEditor
             {
                 Material sunMat = new Material(unlitShader);
                 sunMat.color = new Color(1f, 0.88f, 0.35f, 1f);
+                _proceduralMaterials.Add(sunMat);
                 sunOrb.GetComponent<Renderer>().material = sunMat;
                 sunRay.GetComponent<Renderer>().material = sunMat;
             }
@@ -5888,6 +5921,7 @@ namespace DeadCoreEditor
                         laserMat.SetColor("_EmissionColor", new Color(3.0f, 0.1f, 0.1f, 1f));
                         laserMat.EnableKeyword("_EMISSION");
                     }
+                    _proceduralMaterials.Add(laserMat);
                 }
             }
 
@@ -6162,12 +6196,6 @@ namespace DeadCoreEditor
             return Quaternion.identity;
         }
 
-        /*
-         * Vanilla Geometry Stripper
-         * Deactivates the default level root GameObjects (_LA, _LD) so custom levels can
-         * be constructed in clean space. Detaches and reparents the native directional light
-         * beforehand so that global HDRP skybox illumination and sun shadows are preserved.
-         */
         public static void HideVanillaLevelGeometry()
         {
             var activeScene = SceneManager.GetActiveScene();
@@ -6202,8 +6230,6 @@ namespace DeadCoreEditor
 
     /*
      * Harmony Runtime Detours & Gameplay Patches
-     * Intercepts native level start events to initialize the editor suite and custom map assets,
-     * and patches turret firing logic to eliminate self-collision and immediate projectile detonation.
      */
     [HarmonyPatch(typeof(StartLevelManager), nameof(StartLevelManager.StartLevelSequence))]
     public static class StartLevelPatch
@@ -6222,8 +6248,12 @@ namespace DeadCoreEditor
     }
 
     [HarmonyPatch(typeof(TurretScript), nameof(TurretScript.Shoot))]
+    [HarmonyPatch(typeof(TurretScript), nameof(TurretScript.Shoot))]
     public static class TurretShootPatch
     {
+        // Increased buffer so bullets are never missed in dense geometry
+        private static readonly Collider[] _turretHitsBuffer = new Collider[128];
+
         [HarmonyPostfix]
         public static void Postfix(TurretScript __instance)
         {
@@ -6237,10 +6267,10 @@ namespace DeadCoreEditor
                 Collider[] turretCols = __instance.GetComponentsInChildren<Collider>(true);
                 SphereCollider triggerSphere = __instance._triggerAnimation;
 
-                Collider[] hits = Physics.OverlapSphere(turretPos, 8.0f, ~0, QueryTriggerInteraction.Collide);
-                for (int i = 0; i < hits.Length; i++)
+                int hitCount = Physics.OverlapSphereNonAlloc(turretPos, 8.0f, _turretHitsBuffer, ~0, QueryTriggerInteraction.Collide);
+                for (int i = 0; i < hitCount; i++)
                 {
-                    Collider hitCol = hits[i];
+                    Collider hitCol = _turretHitsBuffer[i];
                     if (hitCol == null) continue;
 
                     GameObject hitGo = hitCol.gameObject;
