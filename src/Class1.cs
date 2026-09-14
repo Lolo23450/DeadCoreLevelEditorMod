@@ -56,18 +56,30 @@ namespace DeadCoreEditor
             _menuScanTimer = 0f;
 
             string s = sceneName.ToLower();
-            if (s.Contains("menu") || s.Contains("title") || s.Contains("boot") || s.Contains("intro"))
+            if (s.Contains("menu") || s.Contains("title") || s.Contains("boot") || s.Contains("intro") || s.Contains("root"))
             {
                 EditorSessionManager.ResetSession();
+                return;
+            }
+
+            // Universal loader: Initializes the custom level as soon as ANY scene loads
+            if (EditorSessionManager.IsCustomSessionActive && !EditorSessionManager.IsLevelInitialized)
+            {
+                MelonLogger.Msg($">> [Scene Loader] Scene '{sceneName}' finished loading. Initializing custom level...");
+                EditorSessionManager.InitializeCustomLevel();
             }
         }
 
         public override void OnUpdate()
         {
             string currentScene = SceneManager.GetActiveScene().name.ToLower();
-            bool isMenuScene = currentScene.Contains("menu") || currentScene.Contains("title") || currentScene.Contains("boot") || currentScene.Contains("root");
 
-            if (isMenuScene)
+            // Ignore menus AND loading/transition scenes
+            bool isIgnoredScene = currentScene.Contains("menu") || currentScene.Contains("title") ||
+                                  currentScene.Contains("boot") || currentScene.Contains("root") ||
+                                  currentScene.Contains("load") || currentScene.Contains("transition");
+
+            if (isIgnoredScene)
             {
                 if (!_titleButtonHooked)
                 {
@@ -142,6 +154,18 @@ namespace DeadCoreEditor
             }
 
             if (!EditorSessionManager.IsCustomSessionActive) return;
+
+            if (!EditorSessionManager.IsLevelInitialized)
+            {
+                GameObject player = EditorSessionManager.FindPlayerEntity();
+                if (player != null)
+                {
+                    MelonLogger.Msg(">> [Lifecycle] Player detected in scene. Triggering custom level initialization...");
+                    EditorSessionManager.InitializeCustomLevel();
+                }
+                return;
+            }
+
             EditorSessionManager.UpdateSession();
         }
 
@@ -508,7 +532,13 @@ namespace DeadCoreEditor
         private static void CycleStagingScene(int dir)
         {
             var list = MapBrowserService.AvailableStagingScenes;
-            if (list.Count == 0) return;
+
+            // Guarantee levels 1-5 exist so arrows always work
+            string[] defaultLevels = new string[] { "level01_Spark01", "level02_Spark01", "level03_Spark01", "level04_Spark01", "level05_Spark01" };
+            foreach (var lvl in defaultLevels)
+            {
+                if (!list.Contains(lvl)) list.Add(lvl);
+            }
 
             int idx = list.IndexOf(MapBrowserService.SelectedStagingScene);
             if (idx < 0) idx = 0;
@@ -521,6 +551,7 @@ namespace DeadCoreEditor
                 _sceneLabelText.text = MapBrowserService.SelectedStagingScene;
             }
         }
+
         private static void RefreshRowTitlesInList(string newTitle)
         {
             for (int i = 0; i < _spawnedRowObjects.Count; i++)
@@ -943,13 +974,17 @@ namespace DeadCoreEditor
 
                 TMP_Text sampleText = menu._shortDesc != null ? menu._shortDesc : menu.GetComponentInChildren<TMP_Text>(true);
 
-                CreateNativeInputRow(_nativeMetadataRoot.transform, sampleText, "LEVEL TITLE", 0f, 44f, 28f, out _titleInput);
-                CreateNativeInputRow(_nativeMetadataRoot.transform, sampleText, "AUTHOR", -54f, 44f, 24f, out _authorInput);
-                CreateDifficultyRow(_nativeMetadataRoot.transform, sampleText, -108f);
-                CreateNativeInputRow(_nativeMetadataRoot.transform, sampleText, "DESCRIPTION", -164f, 95f, 22f, out _descInput, true);
+                // Inputs
+                CreateNativeInputRow(_nativeMetadataRoot.transform, sampleText, "LEVEL TITLE", 0f, 38f, 24f, out _titleInput);
+                CreateNativeInputRow(_nativeMetadataRoot.transform, sampleText, "AUTHOR", -44f, 38f, 20f, out _authorInput);
+                CreateDifficultyRow(_nativeMetadataRoot.transform, sampleText, -88f);
 
-                CreateLevelStatsHUD(_nativeMetadataRoot.transform, sampleText, -272f);
-                CreateNativeSaveButton(_nativeMetadataRoot.transform, sampleText, -368f);
+                // === THE SCENE SELECTOR ROW IS CALLED HERE ===
+                CreateSceneSelectorRow(_nativeMetadataRoot.transform, sampleText, -136f);
+
+                CreateNativeInputRow(_nativeMetadataRoot.transform, sampleText, "DESCRIPTION", -180f, 65f, 19f, out _descInput, true);
+                CreateLevelStatsHUD(_nativeMetadataRoot.transform, sampleText, -252f);
+                CreateNativeSaveButton(_nativeMetadataRoot.transform, sampleText, -342f);
             }
 
             _nativeMetadataRoot.SetActive(isMyLevels);
@@ -957,6 +992,13 @@ namespace DeadCoreEditor
             if (_titleInput != null) _titleInput.text = meta.Title;
             if (_authorInput != null) _authorInput.text = meta.Author;
             if (_descInput != null) _descInput.text = meta.Description;
+
+            // Sync the scene selector display text
+            if (_sceneLabelText != null)
+            {
+                _sceneLabelText.text = !string.IsNullOrEmpty(meta.StagingScene) ? meta.StagingScene : "level01_Spark01";
+                MapBrowserService.SelectedStagingScene = _sceneLabelText.text;
+            }
 
             _selectedDifficultyIndex = 2;
             for (int i = 0; i < DifficultyNames.Length; i++)
@@ -1607,9 +1649,14 @@ namespace DeadCoreEditor
             EditorSessionManager.IsCustomSessionActive = true;
             EditorSessionManager.IsLevelInitialized = false;
 
-            string targetScene = !string.IsNullOrEmpty(SelectedStagingScene) ? SelectedStagingScene : "level01_Spark01";
+            // Strict sanitization: never pass a blank or invalid string to SceneLoader
+            string targetScene = "level01_Spark01";
+            if (!string.IsNullOrWhiteSpace(SelectedStagingScene) && SelectedStagingScene.Trim().Length > 3)
+            {
+                targetScene = SelectedStagingScene.Trim();
+            }
 
-            MelonLogger.Msg($">> [Map Browser] Launching: '{SelectedMapName}' via Scene: '{targetScene}'");
+            MelonLogger.Msg($">> [Map Browser] Launching: '{SelectedMapName}' via Scene: ['{targetScene}']");
             SceneLoader.LoadLevel(targetScene, false, true);
         }
     }
@@ -4349,6 +4396,13 @@ namespace DeadCoreEditor
 
         public static void InitializeCustomLevel()
         {
+            string curScene = SceneManager.GetActiveScene().name.ToLower();
+            if (curScene.Contains("load") || curScene.Contains("menu") || curScene.Contains("boot"))
+            {
+                MelonLogger.Warning($">> [Abort] Attempted to initialize custom level in non-gameplay scene: '{curScene}'. Waiting for level scene...");
+                return;
+            }
+
             GameObject player = FindPlayerEntity();
             Vector3 startPos = LevelSpawnPosition;
 
@@ -4621,23 +4675,19 @@ namespace DeadCoreEditor
 
         public static GameObject FindPlayerEntity()
         {
-            if (_cachedPlayer != null && _cachedPlayer.activeInHierarchy)
-                return _cachedPlayer;
+            // Never check for player inside menus or loading screens
+            string curScene = SceneManager.GetActiveScene().name.ToLower();
+            if (curScene.Contains("menu") || curScene.Contains("load") || curScene.Contains("boot") || curScene.Contains("title"))
+                return null;
+            GameObject tagged = GameObject.FindWithTag("Player");
+            if (tagged != null) return tagged;
 
-            _cachedPlayer = GameObject.FindWithTag("Player");
-            if (_cachedPlayer == null)
-            {
-                CharacterController cc = GameObject.FindObjectOfType<CharacterController>();
-                if (cc != null) _cachedPlayer = cc.transform.root.gameObject;
-                else if (Camera.main != null) _cachedPlayer = Camera.main.transform.root.gameObject;
-            }
+            // Only recognize an object as the player if it has a CharacterController
+            CharacterController cc = GameObject.FindObjectOfType<CharacterController>();
+            if (cc != null) return cc.transform.root.gameObject;
 
-            if (_cachedPlayer != null)
-            {
-                _cachedCharacterController = _cachedPlayer.GetComponentInChildren<CharacterController>();
-            }
-
-            return _cachedPlayer;
+            // DO NOT fallback to Camera.main! Loading screens have cameras!
+            return null;
         }
 
         public static CharacterController GetPlayerController()
@@ -6320,6 +6370,21 @@ namespace DeadCoreEditor
                 }
                 else if (r == "_LD" || r == "L_D")
                 {
+                    // Preserve player and StartLevelManager so loading screen fade-in is never killed
+                    GameObject player = EditorSessionManager.FindPlayerEntity();
+                    if (player != null && player.transform.IsChildOf(root.transform))
+                    {
+                        player.transform.SetParent(null, true);
+                        player.SetActive(true);
+                    }
+
+                    StartLevelManager slm = root.GetComponentInChildren<StartLevelManager>(true);
+                    if (slm != null)
+                    {
+                        slm.transform.SetParent(null, true);
+                        slm.gameObject.SetActive(true);
+                    }
+
                     root.SetActive(false);
                 }
             }
@@ -6338,7 +6403,7 @@ namespace DeadCoreEditor
             string currentScene = SceneManager.GetActiveScene().name.ToLower();
             if (currentScene.Contains("menu")) return;
 
-            if (EditorSessionManager.IsCustomSessionActive)
+            if (EditorSessionManager.IsCustomSessionActive && !EditorSessionManager.IsLevelInitialized)
             {
                 EditorSessionManager.InitializeCustomLevel();
             }
