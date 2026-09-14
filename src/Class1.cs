@@ -20,7 +20,7 @@ using File = System.IO.File;
 using Directory = System.IO.Directory;
 using Path = System.IO.Path;
 
-[assembly: MelonInfo(typeof(DeadCoreEditor.DeadCoreLevelEditorMod), "DeadCore Level Editor Suite", "5.4.0", "Trufa")]
+[assembly: MelonInfo(typeof(DeadCoreEditor.DeadCoreLevelEditorMod), "DeadCore Level Editor Suite", "6.3.0", "Trufa")]
 [assembly: MelonGame(null, null)]
 
 namespace DeadCoreEditor
@@ -28,8 +28,8 @@ namespace DeadCoreEditor
     public class DeadCoreLevelEditorMod : MelonMod
     {
         private static LogsMenu _lastTransformedLogsMenu = null;
-        public static int ActiveTab = 0; // Tab index: 0 = Local Levels, 1 = Community
-        private static int _lastObservedTab = -1;
+        private static LogsMenu _cachedActiveMenu = null;
+        public static int ActiveTab = 0; // 0 = My Levels, 1 = Community
         private static float _titleButtonScanTimer = 0f;
 
         public override void OnInitializeMelon()
@@ -41,7 +41,7 @@ namespace DeadCoreEditor
         public override void OnSceneWasLoaded(int buildIndex, string sceneName)
         {
             _lastTransformedLogsMenu = null;
-            _lastObservedTab = -1;
+            _cachedActiveMenu = null;
 
             string s = sceneName.ToLower();
             if (s.Contains("menu") || s.Contains("title") || s.Contains("boot") || s.Contains("intro"))
@@ -69,34 +69,33 @@ namespace DeadCoreEditor
                     NativeLogsMenuHijacker.OpenNativeMenu();
                 }
 
-                LogsMenu activeMenu = null;
-                LogsMenu[] menus = Resources.FindObjectsOfTypeAll<LogsMenu>();
-                for (int i = 0; i < menus.Length; i++)
+                if (_cachedActiveMenu == null || !_cachedActiveMenu.gameObject.scene.isLoaded || !_cachedActiveMenu.gameObject.activeInHierarchy)
                 {
-                    if (menus[i] != null && menus[i].gameObject.scene.isLoaded && menus[i].gameObject.activeInHierarchy)
+                    _cachedActiveMenu = null;
+                    LogsMenu[] menus = Resources.FindObjectsOfTypeAll<LogsMenu>();
+                    for (int i = 0; i < menus.Length; i++)
                     {
-                        activeMenu = menus[i];
-                        break;
+                        if (menus[i] != null && menus[i].gameObject.scene.isLoaded && menus[i].gameObject.activeInHierarchy)
+                        {
+                            _cachedActiveMenu = menus[i];
+                            break;
+                        }
                     }
                 }
 
+                LogsMenu activeMenu = _cachedActiveMenu;
+
                 if (activeMenu != null)
                 {
-                    int currentDetectedTab = NativeLogsMenuHijacker.GetActiveNativeTab(activeMenu);
-
-                    if (_lastTransformedLogsMenu != activeMenu || currentDetectedTab != _lastObservedTab)
+                    if (_lastTransformedLogsMenu != activeMenu)
                     {
                         _lastTransformedLogsMenu = activeMenu;
-                        _lastObservedTab = currentDetectedTab;
-                        ActiveTab = currentDetectedTab;
-
                         NativeLogsMenuHijacker.TransformLogsMenu(activeMenu, ActiveTab);
                     }
 
                     NativeLogsMenuHijacker.EnforceCustomListOnly(activeMenu);
                     NativeLogsMenuHijacker.EnforceBottomBarLabels();
 
-                    // Process confirmation inputs only when input focus is not captured by text fields
                     if (GUIUtility.keyboardControl == 0)
                     {
                         if (Input.GetKeyDown(KeyCode.Return) || Input.GetKeyDown(KeyCode.KeypadEnter))
@@ -116,7 +115,6 @@ namespace DeadCoreEditor
                 else
                 {
                     _lastTransformedLogsMenu = null;
-                    _lastObservedTab = -1;
                 }
 
                 return;
@@ -128,7 +126,6 @@ namespace DeadCoreEditor
 
         public override void OnGUI()
         {
-            // Render the active HUD only during custom level sessions
             if (EditorSessionManager.IsCustomSessionActive)
             {
                 if (EditorSessionManager.IsEditModeActive)
@@ -144,17 +141,16 @@ namespace DeadCoreEditor
 
         public static void SwitchTab(int tabIndex, LogsMenu menu)
         {
+            if (ActiveTab == tabIndex && _lastTransformedLogsMenu == menu && NativeLogsMenuHijacker.SpawnedRowCount > 0) return;
             ActiveTab = tabIndex;
-            _lastObservedTab = tabIndex;
             NativeLogsMenuHijacker.TransformLogsMenu(menu, ActiveTab);
         }
     }
 
     public enum AssetCategory
     {
-        Gameplay = 0,      // Interactive elements: Jumpers, Gates, Checkpoints, Lasers, Turrets, Lights, Fans
-        Architecture = 1,  // Structural geometry: Platforms, floors, walls, monoliths, pillars, cubes
-        Props = 2          // Decorative and environment detailing: Crates, panels, structural trim
+        Building = 0,
+        Gameplay = 1
     }
 
     public class CatalogAsset
@@ -170,6 +166,7 @@ namespace DeadCoreEditor
         public bool IsTurret;
         public bool IsHelix;
         public bool IsSpotlight;
+        public bool IsSunlight;
         public bool IsLaser;
         public bool IsRotatingLaser;
         public float DefaultScale;
@@ -177,10 +174,33 @@ namespace DeadCoreEditor
         public Quaternion BaseRotation;
     }
 
+    public class ObjectMotionPath
+    {
+        public Vector3 PointA;
+        public Vector3 PointB;
+        public float Speed = 3.5f;
+        public bool IsActive = true;
+        public Collider[] CachedColliders = null;
+
+        public ObjectMotionPath Clone()
+        {
+            return new ObjectMotionPath
+            {
+                PointA = this.PointA,
+                PointB = this.PointB,
+                Speed = this.Speed,
+                IsActive = this.IsActive,
+                CachedColliders = null
+            };
+        }
+    }
+
     public enum HistoryActionType
     {
         Placement,
-        Deletion
+        Deletion,
+        Parenting,
+        MotionPath
     }
 
     public class HistoryRecord
@@ -193,15 +213,21 @@ namespace DeadCoreEditor
         public Quaternion Rotation;
         public float Scale;
         public float CustomParameter;
+
+        public GameObject PreviousParent;
+        public GameObject NewParent;
+
+        public ObjectMotionPath PreviousMotionPath;
+        public ObjectMotionPath NewMotionPath;
     }
 
     public class LightConfig
     {
         public Color Color = Color.cyan;
-        public float Range = 50f;
         public float SpotAngle = 60f;
-        public float Intensity = 3.0f;
-        public float VolumetricDimmer = 1.5f;
+        public float Intensity = 8.0f;
+        public float VolumetricIntensity = 4.0f;
+        public bool IsDirectional = false;
     }
 
     public class LevelMetadata
@@ -221,18 +247,17 @@ namespace DeadCoreEditor
         private static GameObject _nativeCreateButton = null;
         private static GameObject _nativeDeleteButton = null;
         private static readonly List<GameObject> _spawnedRowObjects = new List<GameObject>();
+        public static int SpawnedRowCount => _spawnedRowObjects.Count;
 
         private static Toggle _cachedMyLevelsToggle = null;
         private static Toggle _cachedCommunityToggle = null;
-        private static LogsMenu _activeLogsMenuRef = null;
 
-        // UI Element References: Metadata Panel
         private static GameObject _nativeMetadataRoot = null;
         private static TMP_InputField _titleInput = null;
         private static TMP_InputField _authorInput = null;
         private static TMP_InputField _descInput = null;
         private static readonly List<GameObject> _diffButtons = new List<GameObject>();
-        private static int _selectedDifficultyIndex = 2; // Default index: 2 ("Normal")
+        private static int _selectedDifficultyIndex = 2;
 
         private static TMP_Text _statsLabelLeft = null;
         private static TMP_Text _statsLabelRight = null;
@@ -242,11 +267,11 @@ namespace DeadCoreEditor
         public static readonly string[] DifficultyNames = new string[] { "Very Easy", "Easy", "Normal", "Hard", "Expert" };
         public static readonly Color[] DifficultyColors = new Color[]
         {
-            new Color(0.2f, 0.95f, 0.4f),  // Very Easy (Green)
-            new Color(0.1f, 0.85f, 1.0f),  // Easy (Cyan)
-            new Color(0.3f, 0.65f, 1.0f),  // Normal (Blue)
-            new Color(1.0f, 0.55f, 0.1f),  // Hard (Orange)
-            new Color(0.95f, 0.2f, 0.2f)   // Expert (Red)
+            new Color(0.2f, 0.95f, 0.4f),
+            new Color(0.1f, 0.85f, 1.0f),
+            new Color(0.3f, 0.65f, 1.0f),
+            new Color(1.0f, 0.55f, 0.1f),
+            new Color(0.95f, 0.2f, 0.2f)
         };
 
         public static LevelMetadata ReadLevelMetadata(string fullPath, string fallbackTitle)
@@ -392,28 +417,6 @@ namespace DeadCoreEditor
             }
         }
 
-        public static int GetActiveNativeTab(LogsMenu menu)
-        {
-            if (_cachedCommunityToggle != null && _cachedCommunityToggle.isOn) return 1;
-            if (_cachedMyLevelsToggle != null && _cachedMyLevelsToggle.isOn) return 0;
-
-            Toggle[] allToggles = Resources.FindObjectsOfTypeAll<Toggle>();
-            for (int i = 0; i < allToggles.Length; i++)
-            {
-                Toggle tog = allToggles[i];
-                if (tog == null || !tog.gameObject.scene.isLoaded || !tog.isOn) continue;
-
-                TMP_Text t = tog.GetComponentInChildren<TMP_Text>(true);
-                if (t == null) continue;
-
-                string txt = t.text.Trim().ToLower();
-                if (txt.Contains("community") || txt.Contains("m-log")) return 1;
-                if (txt.Contains("my levels") || txt.Contains("t-log")) return 0;
-            }
-
-            return 0;
-        }
-
         public static void EnforceCustomListOnly(LogsMenu menu)
         {
             if (menu == null || menu._logsButtonRoot == null) return;
@@ -454,7 +457,6 @@ namespace DeadCoreEditor
         public static void TransformLogsMenu(LogsMenu menu, int currentTab)
         {
             if (menu == null) return;
-            _activeLogsMenuRef = menu;
 
             MapBrowserService.EnsureDirectories();
             MapBrowserService.RefreshFiles();
@@ -632,9 +634,11 @@ namespace DeadCoreEditor
                     _cachedMyLevelsToggle = t.GetComponentInParent<Toggle>();
                     if (_cachedMyLevelsToggle != null)
                     {
+                        _cachedMyLevelsToggle.onValueChanged.RemoveAllListeners();
                         _cachedMyLevelsToggle.onValueChanged.AddListener((Action<bool>)((isOn) =>
                         {
-                            if (isOn) DeadCoreLevelEditorMod.SwitchTab(0, menu);
+                            if (isOn && DeadCoreLevelEditorMod.ActiveTab != 0)
+                                DeadCoreLevelEditorMod.SwitchTab(0, menu);
                         }));
                     }
                 }
@@ -646,9 +650,11 @@ namespace DeadCoreEditor
                     _cachedCommunityToggle = t.GetComponentInParent<Toggle>();
                     if (_cachedCommunityToggle != null)
                     {
+                        _cachedCommunityToggle.onValueChanged.RemoveAllListeners();
                         _cachedCommunityToggle.onValueChanged.AddListener((Action<bool>)((isOn) =>
                         {
-                            if (isOn) DeadCoreLevelEditorMod.SwitchTab(1, menu);
+                            if (isOn && DeadCoreLevelEditorMod.ActiveTab != 1)
+                                DeadCoreLevelEditorMod.SwitchTab(1, menu);
                         }));
                     }
                 }
@@ -709,7 +715,6 @@ namespace DeadCoreEditor
             Transform parent = menu._logBigPicture.transform;
             bool isMyLevels = (DeadCoreLevelEditorMod.ActiveTab == 0);
 
-            // Toggle native description fields depending on current mode
             if (menu._shortDesc != null)
             {
                 menu._shortDesc.gameObject.SetActive(!isMyLevels);
@@ -738,7 +743,6 @@ namespace DeadCoreEditor
                 }
             }
 
-            // Suppress native lore indicator elements in local level mode
             TMP_Text[] parentTmps = parent.GetComponentsInChildren<TMP_Text>(true);
             for (int t = 0; t < parentTmps.Length; t++)
             {
@@ -752,7 +756,6 @@ namespace DeadCoreEditor
                 }
             }
 
-            // Suppress native panel expansion triggers in local level mode
             for (int i = 0; i < parent.childCount; i++)
             {
                 Transform ch = parent.GetChild(i);
@@ -775,16 +778,12 @@ namespace DeadCoreEditor
 
                 TMP_Text sampleText = menu._shortDesc != null ? menu._shortDesc : menu.GetComponentInChildren<TMP_Text>(true);
 
-                // Initialize metadata input fields
                 CreateNativeInputRow(_nativeMetadataRoot.transform, sampleText, "LEVEL TITLE", 0f, 44f, 28f, out _titleInput);
                 CreateNativeInputRow(_nativeMetadataRoot.transform, sampleText, "AUTHOR", -54f, 44f, 24f, out _authorInput);
                 CreateDifficultyRow(_nativeMetadataRoot.transform, sampleText, -108f);
                 CreateNativeInputRow(_nativeMetadataRoot.transform, sampleText, "DESCRIPTION", -164f, 95f, 22f, out _descInput, true);
 
-                // Render level statistics summary panel
                 CreateLevelStatsHUD(_nativeMetadataRoot.transform, sampleText, -272f);
-
-                // Render metadata commit action button
                 CreateNativeSaveButton(_nativeMetadataRoot.transform, sampleText, -368f);
             }
 
@@ -1010,7 +1009,7 @@ namespace DeadCoreEditor
         {
             if (_statsLabelLeft == null || _statsLabelRight == null || !File.Exists(fullPath)) return;
 
-            int lasers = 0, jumpers = 0, turbines = 0, turrets = 0;
+            int lasers = 0, jumpers = 0, turbines = 0, turrets = 0, paths = 0;
             try
             {
                 string[] lines = File.ReadAllLines(fullPath);
@@ -1022,13 +1021,14 @@ namespace DeadCoreEditor
                     else if (l.Contains("jumper")) jumpers++;
                     else if (l.Contains("helix")) turbines++;
                     else if (l.Contains("turret")) turrets++;
+                    if (l.Contains(";path:1")) paths++;
                 }
             }
             catch { }
 
             DateTime mod = File.GetLastWriteTime(fullPath);
             _statsLabelLeft.text = $"• TOTAL OBJECTS: <b><color=#00E5FF>{objectCount}</color></b>\n• HAZARDS & LASERS: <b><color=#FF5252>{lasers}</color></b>\n• JUMP PADS: <b><color=#FFEB3B>{jumpers}</color></b>";
-            _statsLabelRight.text = $"• TURBINES & FANS: <b><color=#69F0AE>{turbines}</color></b>\n• TURRET ENEMIES: <b><color=#FF4081>{turrets}</color></b>\n• LAST SAVED: <color=#B0BEC5>{mod:dd/MM/yyyy HH:mm}</color>";
+            _statsLabelRight.text = $"• MOVING PATHS: <b><color=#E040FB>{paths}</color></b>\n• TURRET ENEMIES: <b><color=#FF4081>{turrets}</color></b>\n• LAST SAVED: <color=#B0BEC5>{mod:dd/MM/yyyy HH:mm}</color>";
         }
 
         private static void CreateNativeSaveButton(Transform parent, TMP_Text sampleTmp, float posY)
@@ -1076,9 +1076,6 @@ namespace DeadCoreEditor
             _saveBtnText.alignment = TextAlignmentOptions.Center;
         }
 
-        // =====================================================================================================
-        // BOTTOM NAVIGATION BAR CONFIGURATION
-        // =====================================================================================================
         private static void SetupBottomBarButtons(LogsMenu menu)
         {
             BackButton nativeBack = GameObject.FindObjectOfType<BackButton>();
@@ -1094,7 +1091,6 @@ namespace DeadCoreEditor
             float nativeFontSize = (backTmp != null && backTmp.fontSize > 15f) ? backTmp.fontSize : 34f;
             float spacing = 15f;
 
-            // 1. Play Button (Cyan Accent)
             if (_nativePlayButton == null || _nativePlayButton.Equals(null) || _nativePlayButton.transform.parent != parentBar)
             {
                 if (_nativePlayButton != null) GameObject.Destroy(_nativePlayButton);
@@ -1128,7 +1124,6 @@ namespace DeadCoreEditor
                 }
             }));
 
-            // 2. New Level Creation Button (Green Accent)
             if (_nativeCreateButton == null || _nativeCreateButton.Equals(null) || _nativeCreateButton.transform.parent != parentBar)
             {
                 if (_nativeCreateButton != null) GameObject.Destroy(_nativeCreateButton);
@@ -1158,7 +1153,6 @@ namespace DeadCoreEditor
                 CreateNewLevel(menu);
             }));
 
-            // 3. Level Deletion Button (Red Accent)
             if (_nativeDeleteButton == null || _nativeDeleteButton.Equals(null) || _nativeDeleteButton.transform.parent != parentBar)
             {
                 if (_nativeDeleteButton != null) GameObject.Destroy(_nativeDeleteButton);
@@ -1408,16 +1402,13 @@ namespace DeadCoreEditor
     // =========================================================================================================
     public static class EditorSessionManager
     {
-        [DllImport("user32.dll")]
-        private static extern short GetAsyncKeyState(int vKey);
-
         public static bool CustomLevelSelected = true;
         public static bool IsCustomSessionActive = false;
         public static bool IsEditModeActive = false;
         public static bool IsLevelInitialized = false;
 
         public static List<CatalogAsset> AllAssets = new List<CatalogAsset>();
-        public static AssetCategory CurrentTab = AssetCategory.Gameplay;
+        public static AssetCategory CurrentTab = AssetCategory.Building;
         public static int SelectedAssetIndex = 0;
         public static bool IsBlockSelected = false;
 
@@ -1426,11 +1417,17 @@ namespace DeadCoreEditor
         public static float ActiveTurretFireDelay = 1.0f;
         public static float ActivePlacementScale = 0.55f;
         public static float CurrentGridSnap = 1.0f;
+        public static bool AutoAlignToSurface = false;
+
+        public static Dictionary<GameObject, ObjectMotionPath> MotionPaths = new Dictionary<GameObject, ObjectMotionPath>();
+        public static GameObject PathEditTarget = null;
+        public static float DefaultPathSpeed = 3.5f;
+
+        public static GameObject ParentingChildTarget = null;
 
         public static float ActiveLaserRotationSpeed = 45.0f;
         public static Dictionary<GameObject, float> LaserRotationSpeeds = new Dictionary<GameObject, float>();
 
-        // Transform and Rotation State
         public static float TargetPitch = 0f;
         public static float TargetYaw = 0f;
         public static float TargetRoll = 0f;
@@ -1439,7 +1436,6 @@ namespace DeadCoreEditor
         private static float _keyHoldDuration = 0f;
         private static float _keyRepeatTimer = 0f;
 
-        // Spotlight Configuration State
         public static bool ShowParamsWindow = true;
         public static GameObject SelectedLightObject = null;
         public static Dictionary<GameObject, LightConfig> PlacedLights = new Dictionary<GameObject, LightConfig>();
@@ -1454,6 +1450,15 @@ namespace DeadCoreEditor
 
         public static List<GameObject> PlacedObjects = new List<GameObject>();
         public static GameObject LastPlacedObject = null;
+
+        public static List<GameObject> PlacedJumpers = new List<GameObject>();
+        public static List<GameObject> PlacedTurbines = new List<GameObject>();
+        public static List<GameObject> PlacedLaserBarriers = new List<GameObject>();
+        public static List<BoxCollider> PlacedLaserColliders = new List<BoxCollider>();
+        public static List<GameObject> PlacedRotatingLasers = new List<GameObject>();
+        public static List<CheckPointScript> PlacedCheckpoints = new List<CheckPointScript>();
+        public static GameObject PlacedGoalGate = null;
+        private static readonly Dictionary<GameObject, Helix> _cachedHelixScripts = new Dictionary<GameObject, Helix>();
 
         public static Dictionary<GameObject, float> JumperForces = new Dictionary<GameObject, float>();
         public static Dictionary<GameObject, float> TurbineSpeeds = new Dictionary<GameObject, float>();
@@ -1478,42 +1483,41 @@ namespace DeadCoreEditor
         public static Quaternion FrozenPlayerRotation = Quaternion.identity;
         public static Vector3 LevelSpawnPosition = new Vector3(-241f, -95f, -6f);
 
-        public static bool AutoAlignToSurface = false;
+        public static float CachedVoidDeathY = -140f;
 
-        public static void ToggleAutoAlign()
+        public static void SetSpotlightMeshesVisible(bool visible)
         {
-            AutoAlignToSurface = !AutoAlignToSurface;
-            string status = AutoAlignToSurface ? "ON (Wall/Ramp/Ceiling)" : "OFF (Manual Pitch/Roll)";
-            ShowNotification($"Surface Auto-Align: {status}");
-            MelonLogger.Msg($">> [Surface Align] Switched to: {status}");
-        }
-
-        // Dynamic Kill Plane (calculated from lowest placed geometry)
-        public static float VoidDeathY
-        {
-            get
+            for (int i = 0; i < PlacedObjects.Count; i++)
             {
-                float lowest = -140f;
-                for (int i = 0; i < PlacedObjects.Count; i++)
+                GameObject obj = PlacedObjects[i];
+                if (obj == null) continue;
+                string low = obj.name.ToLower();
+                if (low.Contains("spotlight") || low.Contains("sunlight"))
                 {
-                    if (PlacedObjects[i] != null && PlacedObjects[i].activeSelf)
-                    {
-                        float y = PlacedObjects[i].transform.position.y - 60f;
-                        if (y < lowest) lowest = y;
-                    }
+                    Transform housing = obj.transform.Find("Light_Housing");
+                    if (housing != null) housing.gameObject.SetActive(visible);
+
+                    Transform lens = obj.transform.Find("Light_Lens");
+                    if (lens != null) lens.gameObject.SetActive(visible);
                 }
-                return lowest;
             }
         }
 
-        public static List<CatalogAsset> ActiveTabAssets
+        public static void RecalculateVoidDeathY()
         {
-            get
+            float lowest = -140f;
+            for (int i = 0; i < PlacedObjects.Count; i++)
             {
-                var list = AllAssets.FindAll(a => a.Category == CurrentTab);
-                return list;
+                if (PlacedObjects[i] != null && PlacedObjects[i].activeSelf)
+                {
+                    float y = PlacedObjects[i].transform.position.y - 60f;
+                    if (y < lowest) lowest = y;
+                }
             }
+            CachedVoidDeathY = lowest;
         }
+
+        public static List<CatalogAsset> ActiveTabAssets => AllAssets.FindAll(a => a.Category == CurrentTab);
 
         public static CatalogAsset CurrentAsset
         {
@@ -1530,7 +1534,7 @@ namespace DeadCoreEditor
         {
             if (!ShowParamsWindow) return false;
             Vector2 mouse = new Vector2(Input.mousePosition.x, Screen.height - Input.mousePosition.y);
-            Rect winRect = new Rect(Screen.width - 340f, 20f, 340f, 420f);
+            Rect winRect = new Rect(Screen.width - 360f, 20f, 340f, 490f);
             return winRect.Contains(mouse);
         }
 
@@ -1547,6 +1551,7 @@ namespace DeadCoreEditor
             IsLevelInitialized = false;
             IsLevelCompleted = false;
             LevelTimer = 0f;
+            SceneHarvestingService.NativeSceneSun = null;
 
             EditorViewportCamera.DestroyCamera();
             PlacementHologramController.DestroyPreview();
@@ -1556,7 +1561,7 @@ namespace DeadCoreEditor
             PlayerControllerInstance = null;
 
             AllAssets.Clear();
-            CurrentTab = AssetCategory.Gameplay;
+            CurrentTab = AssetCategory.Building;
             SelectedAssetIndex = 0;
             IsBlockSelected = false;
 
@@ -1565,15 +1570,7 @@ namespace DeadCoreEditor
             PrefabHelix = null;
             PrefabTurret = null;
 
-            PlacedObjects.Clear();
-            PlacedLights.Clear();
-            SelectedLightObject = null;
-            LastPlacedObject = null;
-            JumperForces.Clear();
-            TurbineSpeeds.Clear();
-            TurretFireDelays.Clear();
-            UndoHistory.Clear();
-            RedoHistory.Clear();
+            ClearAllPlacedObjects();
 
             _isBoostActive = false;
             _jumperTriggerCooldown = 0f;
@@ -1592,6 +1589,7 @@ namespace DeadCoreEditor
             ActiveTurretFireDelay = 1.0f;
             ActivePlacementScale = 0.55f;
             CurrentGridSnap = 1.0f;
+            AutoAlignToSurface = false;
         }
 
         public static void UpdateSession()
@@ -1607,18 +1605,17 @@ namespace DeadCoreEditor
                 }
             }
 
-            // Animate dynamic hazards during playtest mode
+            UpdateObjectMotionPaths();
+
             if (!IsEditModeActive)
             {
-                for (int i = 0; i < PlacedObjects.Count; i++)
+                float dt = Time.deltaTime;
+                for (int i = 0; i < PlacedRotatingLasers.Count; i++)
                 {
-                    GameObject obj = PlacedObjects[i];
+                    GameObject obj = PlacedRotatingLasers[i];
                     if (obj == null || !obj.activeSelf) continue;
-                    if (obj.name.ToLower().Contains("rotating_laser") || obj.name.ToLower().Contains("rotating laser"))
-                    {
-                        float speed = LaserRotationSpeeds.ContainsKey(obj) ? LaserRotationSpeeds[obj] : ActiveLaserRotationSpeed;
-                        obj.transform.Rotate(Vector3.up, speed * Time.deltaTime, Space.Self);
-                    }
+                    float speed = LaserRotationSpeeds.ContainsKey(obj) ? LaserRotationSpeeds[obj] : ActiveLaserRotationSpeed;
+                    obj.transform.Rotate(Vector3.up, speed * dt, Space.Self);
                 }
 
                 CheckVoidFall();
@@ -1636,6 +1633,27 @@ namespace DeadCoreEditor
                     Cursor.lockState = CursorLockMode.None;
                     Cursor.visible = true;
                 }
+
+                GameObject p = FindPlayerEntity();
+                if (p != null)
+                {
+                    Vector3 pPos = p.transform.position;
+                    for (int i = 0; i < PlacedCheckpoints.Count; i++)
+                    {
+                        CheckPointScript cp = PlacedCheckpoints[i];
+                        if (cp != null && cp.gameObject.activeSelf)
+                        {
+                            if ((pPos - cp.transform.position).sqrMagnitude < 9.0f)
+                            {
+                                if (ActiveCustomCheckpoint != cp)
+                                {
+                                    ActiveCustomCheckpoint = cp;
+                                    MelonLogger.Msg($">> [Checkpoint] Tagged checkpoint at {cp.transform.position}!");
+                                }
+                            }
+                        }
+                    }
+                }
             }
             else
             {
@@ -1652,6 +1670,12 @@ namespace DeadCoreEditor
                 ShowParamsWindow = !ShowParamsWindow;
             }
 
+            if (Input.GetKeyDown(KeyCode.F4))
+            {
+                SceneHarvestingService.DebugDumpSceneLighting();
+                ShowNotification("Lighting hierarchy dumped to MelonLoader console (F4)");
+            }
+
             if (_notificationTimer > 0f) _notificationTimer -= Time.deltaTime;
 
             if (IsEditModeActive)
@@ -1663,28 +1687,60 @@ namespace DeadCoreEditor
                 HandleGhostRotationOnly();
                 HandleMouseWheel();
                 HandleObjectDeletion();
-            }
 
-            GameObject p = FindPlayerEntity();
-            if (p != null && !IsEditModeActive)
-            {
-                Vector3 pPos = p.transform.position;
-                for (int i = 0; i < PlacedObjects.Count; i++)
+                if (Input.GetMouseButtonDown(0) && !IsBlockSelected && !IsMouseOverUI())
                 {
-                    GameObject obj = PlacedObjects[i];
-                    if (obj == null || !obj.activeSelf) continue;
-                    if (obj.name.ToLower().Contains("spawn") || obj.name.ToLower().Contains("goal")) continue;
-
-                    CheckPointScript cp = obj.GetComponentInChildren<CheckPointScript>();
-                    if (cp != null)
+                    GameObject aimed = GetAimedPlacedObject();
+                    if (aimed != null && (PlacedLights.ContainsKey(aimed) || aimed.name.ToLower().Contains("spotlight") || aimed.name.ToLower().Contains("sunlight")))
                     {
-                        if (Vector3.Distance(pPos, obj.transform.position) < 3.0f)
+                        SelectedLightObject = aimed;
+                        ShowNotification("Selected Light (Use Arrow Keys to Rotate/Aim Beam)");
+                    }
+                }
+            }
+        }
+
+        private static void UpdateObjectMotionPaths()
+        {
+            if (MotionPaths.Count == 0) return;
+
+            GameObject player = FindPlayerEntity();
+            CharacterController cc = (player != null && !IsEditModeActive) ? player.GetComponentInChildren<CharacterController>() : null;
+            Vector3 playerFeetPos = (player != null) ? player.transform.position : Vector3.zero;
+
+            foreach (var kvp in MotionPaths)
+            {
+                GameObject obj = kvp.Key;
+                ObjectMotionPath path = kvp.Value;
+                if (obj == null || !obj.activeSelf || !path.IsActive) continue;
+
+                float dist = Vector3.Distance(path.PointA, path.PointB);
+                if (dist < 0.05f) continue;
+
+                float speed = Mathf.Max(0.2f, path.Speed);
+                float duration = dist / speed;
+                float t = Mathf.PingPong(Time.time / duration, 1.0f);
+                float smoothT = Mathf.SmoothStep(0f, 1f, t);
+
+                Vector3 targetPos = Vector3.Lerp(path.PointA, path.PointB, smoothT);
+                Vector3 delta = targetPos - obj.transform.position;
+
+                obj.transform.position = targetPos;
+
+                if (cc != null && cc.isGrounded && delta.sqrMagnitude > 0.00001f)
+                {
+                    if (path.CachedColliders == null || path.CachedColliders.Length == 0)
+                    {
+                        path.CachedColliders = obj.GetComponentsInChildren<Collider>(true);
+                    }
+
+                    for (int c = 0; c < path.CachedColliders.Length; c++)
+                    {
+                        Collider col = path.CachedColliders[c];
+                        if (col != null && col.bounds.Contains(playerFeetPos + Vector3.down * 0.15f))
                         {
-                            if (ActiveCustomCheckpoint != cp)
-                            {
-                                ActiveCustomCheckpoint = cp;
-                                MelonLogger.Msg($">> [Checkpoint] Tagged checkpoint at {obj.transform.position}!");
-                            }
+                            cc.Move(delta);
+                            break;
                         }
                     }
                 }
@@ -1693,33 +1749,23 @@ namespace DeadCoreEditor
 
         private static void CheckGoalTriggerArrival()
         {
-            if (IsLevelCompleted) return;
+            if (IsLevelCompleted || PlacedGoalGate == null || !PlacedGoalGate.activeSelf) return;
 
             GameObject player = FindPlayerEntity();
             if (player == null) return;
 
             Vector3 pPos = player.transform.position;
+            Vector3 gPos = PlacedGoalGate.transform.position;
 
-            for (int i = 0; i < PlacedObjects.Count; i++)
+            float horizDistSq = (pPos.x - gPos.x) * (pPos.x - gPos.x) + (pPos.z - gPos.z) * (pPos.z - gPos.z);
+            float vertDist = Mathf.Abs(pPos.y - gPos.y);
+
+            if (horizDistSq < 10.24f && vertDist < 2.5f)
             {
-                GameObject obj = PlacedObjects[i];
-                if (obj == null || !obj.activeSelf) continue;
-
-                if (obj.name.ToLower().Contains("goal"))
-                {
-                    Vector3 gPos = obj.transform.position;
-                    float horizDist = Vector2.Distance(new Vector2(pPos.x, pPos.z), new Vector2(gPos.x, gPos.z));
-                    float vertDist = Mathf.Abs(pPos.y - gPos.y);
-
-                    if (horizDist < 3.2f && vertDist < 2.5f)
-                    {
-                        IsLevelCompleted = true;
-                        Cursor.lockState = CursorLockMode.None;
-                        Cursor.visible = true;
-                        MelonLogger.Msg($">> [VICTORY] Level completed in {LevelTimer:F2} seconds!");
-                        break;
-                    }
-                }
+                IsLevelCompleted = true;
+                Cursor.lockState = CursorLockMode.None;
+                Cursor.visible = true;
+                MelonLogger.Msg($">> [VICTORY] Level completed in {LevelTimer:F2} seconds!");
             }
         }
 
@@ -1748,17 +1794,18 @@ namespace DeadCoreEditor
 
             Vector3 pPos = player.transform.position;
 
-            foreach (var obj in PlacedObjects)
+            for (int i = 0; i < PlacedJumpers.Count; i++)
             {
+                GameObject obj = PlacedJumpers[i];
                 if (obj == null || !obj.activeSelf) continue;
-                if (!JumperForces.ContainsKey(obj) && !obj.name.ToLower().Contains("jumper")) continue;
 
                 Vector3 jPos = obj.transform.position;
                 Vector3 diff = pPos - jPos;
-                float horiz = new Vector2(diff.x, diff.z).magnitude;
+
+                float horizSq = (diff.x * diff.x) + (diff.z * diff.z);
                 float vert = Mathf.Abs(diff.y);
 
-                if (horiz < 2.5f && vert < 1.9f)
+                if (horizSq < 6.25f && vert < 1.9f)
                 {
                     float force = JumperForces.ContainsKey(obj) ? JumperForces[obj] : ActiveJumperForce;
 
@@ -1795,6 +1842,8 @@ namespace DeadCoreEditor
 
         private static void CheckHelixWindPushing()
         {
+            if (PlacedTurbines.Count == 0) return;
+
             GameObject player = FindPlayerEntity();
             if (player == null) return;
 
@@ -1802,18 +1851,24 @@ namespace DeadCoreEditor
             if (cc == null) return;
 
             Vector3 pPos = player.transform.position + Vector3.up * 1.0f;
+            float dt = Time.deltaTime;
 
-            foreach (var obj in PlacedObjects)
+            for (int i = 0; i < PlacedTurbines.Count; i++)
             {
+                GameObject obj = PlacedTurbines[i];
                 if (obj == null || !obj.activeSelf) continue;
-                if (!obj.name.ToLower().Contains("helix") && !obj.name.ToLower().Contains("helice")) continue;
 
                 float speed = TurbineSpeeds.ContainsKey(obj) ? TurbineSpeeds[obj] : ActiveTurbineSpeed;
 
-                Helix helixScript = obj.GetComponentInChildren<Helix>();
+                if (!_cachedHelixScripts.TryGetValue(obj, out Helix helixScript) || helixScript == null)
+                {
+                    helixScript = obj.GetComponentInChildren<Helix>();
+                    _cachedHelixScripts[obj] = helixScript;
+                }
+
                 if (helixScript != null && helixScript._hingeJoint != null)
                 {
-                    helixScript._hingeJoint.transform.Rotate(Vector3.forward, (speed * 12f) * Time.deltaTime, Space.Self);
+                    helixScript._hingeJoint.transform.Rotate(Vector3.forward, (speed * 12f) * dt, Space.Self);
                 }
 
                 Vector3 hPos = obj.transform.position;
@@ -1828,14 +1883,14 @@ namespace DeadCoreEditor
                     Vector3 perp = toPlayer - forward * forwardDist;
                     float radius = 3.0f * obj.transform.localScale.x;
 
-                    if (perp.magnitude < radius)
+                    if (perp.sqrMagnitude < radius * radius)
                     {
                         Vector3 pushDir = forward;
                         pushDir.y = Mathf.Max(0.22f, pushDir.y);
                         pushDir.Normalize();
 
                         float pushSpeed = Mathf.Lerp(speed, speed * 0.25f, forwardDist / windRange);
-                        cc.Move(pushDir * pushSpeed * Time.deltaTime);
+                        cc.Move(pushDir * pushSpeed * dt);
                     }
                 }
             }
@@ -1843,6 +1898,8 @@ namespace DeadCoreEditor
 
         private static void CheckLaserBarriers()
         {
+            if (PlacedLaserBarriers.Count == 0) return;
+
             GameObject player = FindPlayerEntity();
             if (player == null) return;
 
@@ -1853,13 +1910,14 @@ namespace DeadCoreEditor
             float playerRadius = cc.radius + 0.1f;
             float playerHalfHeight = cc.height * 0.5f;
 
-            for (int i = 0; i < PlacedObjects.Count; i++)
+            for (int i = 0; i < PlacedLaserBarriers.Count; i++)
             {
-                GameObject obj = PlacedObjects[i];
+                GameObject obj = PlacedLaserBarriers[i];
                 if (obj == null || !obj.activeSelf) continue;
-                if (!obj.name.ToLower().Contains("laser")) continue;
 
-                BoxCollider bc = obj.GetComponentInChildren<BoxCollider>();
+                if ((obj.transform.position - playerCenter).sqrMagnitude > 225f) continue;
+
+                BoxCollider bc = (i < PlacedLaserColliders.Count) ? PlacedLaserColliders[i] : null;
                 if (bc == null) continue;
 
                 Vector3 localPlayer = obj.transform.InverseTransformPoint(playerCenter);
@@ -1900,7 +1958,7 @@ namespace DeadCoreEditor
         private static void CheckVoidFall()
         {
             GameObject player = FindPlayerEntity();
-            if (player != null && player.transform.position.y < VoidDeathY)
+            if (player != null && player.transform.position.y < CachedVoidDeathY)
             {
                 RespawnPlayer(player);
             }
@@ -2019,6 +2077,7 @@ namespace DeadCoreEditor
         {
             IsEditModeActive = !IsEditModeActive;
             MelonLogger.Msg($">> Viewport Mode: {(IsEditModeActive ? "[3D HAMMER EDIT MODE]" : "[PLAYTEST MODE]")}");
+            SetSpotlightMeshesVisible(IsEditModeActive);
 
             GameObject player = FindPlayerEntity();
 
@@ -2039,10 +2098,7 @@ namespace DeadCoreEditor
                 EditorViewportCamera.InitializeCamera(PlayerCameraInstance);
                 CarouselWheelToolbar.CreateToolbar(EditorViewportCamera.ViewportCamera);
 
-                if (IsBlockSelected && CurrentAsset != null)
-                    PlacementHologramController.SpawnHologram(CurrentAsset);
-                else
-                    PlacementHologramController.DestroyPreview();
+                SelectCurrentAsset();
 
                 Cursor.lockState = CursorLockMode.None;
                 Cursor.visible = true;
@@ -2071,46 +2127,209 @@ namespace DeadCoreEditor
         {
             bool isCtrlHeld = Input.GetKey(KeyCode.LeftControl) || Input.GetKey(KeyCode.RightControl);
 
-            // 1. Category Switching (1: Gameplay, 2: Architecture, 3: Props)
-            // Switching automatically equips the first item — no Enter key needed!
             if (!Input.GetMouseButton(1) && !isCtrlHeld)
             {
-                if (Input.GetKeyDown(KeyCode.Alpha1) || Input.GetKeyDown(KeyCode.Keypad1)) SetCategory(AssetCategory.Gameplay);
-                else if (Input.GetKeyDown(KeyCode.Alpha2) || Input.GetKeyDown(KeyCode.Keypad2)) SetCategory(AssetCategory.Architecture);
-                else if (Input.GetKeyDown(KeyCode.Alpha3) || Input.GetKeyDown(KeyCode.Keypad3)) SetCategory(AssetCategory.Props);
-                else if (Input.GetKeyDown(KeyCode.Tab))
+                if (Input.GetKeyDown(KeyCode.Tab))
                 {
-                    int step = (Input.GetKey(KeyCode.LeftShift) || Input.GetKey(KeyCode.RightShift)) ? -1 : 1;
-                    CycleTabs(step);
+                    AssetCategory nextCat = (CurrentTab == AssetCategory.Building) ? AssetCategory.Gameplay : AssetCategory.Building;
+                    SetCategory(nextCat);
+                }
+                else if (Input.GetKeyDown(KeyCode.Alpha1) || Input.GetKeyDown(KeyCode.Keypad1))
+                {
+                    SetCategory(AssetCategory.Building);
+                }
+                else if (Input.GetKeyDown(KeyCode.Alpha2) || Input.GetKeyDown(KeyCode.Keypad2))
+                {
+                    SetCategory(AssetCategory.Gameplay);
                 }
             }
 
-            // 2. Deselect / Cancel Placement (Escape or X)
+            if (Input.GetKeyDown(KeyCode.P) && !isCtrlHeld)
+            {
+                if (Input.GetKey(KeyCode.LeftShift) || Input.GetKey(KeyCode.RightShift))
+                {
+                    GameObject aimed = GetAimedPlacedObject();
+                    if (aimed != null)
+                    {
+                        if (aimed.transform.parent != null)
+                        {
+                            GameObject oldParent = aimed.transform.parent.gameObject;
+
+                            UndoHistory.Push(new HistoryRecord
+                            {
+                                ActionType = HistoryActionType.Parenting,
+                                TargetObject = aimed,
+                                PreviousParent = oldParent,
+                                NewParent = null
+                            });
+                            RedoHistory.Clear();
+
+                            aimed.transform.SetParent(null, true);
+                            ShowNotification($"Unparented '{aimed.name}' from '{oldParent.name}' (Ctrl+Z to Undo)");
+                            MelonLogger.Msg($">> [Parenting] Unparented '{aimed.name}'");
+                        }
+                        else
+                        {
+                            ShowNotification($"'{aimed.name}' has no parent.");
+                        }
+                    }
+                    ParentingChildTarget = null;
+                }
+                else
+                {
+                    if (ParentingChildTarget == null)
+                    {
+                        GameObject aimed = GetAimedPlacedObject();
+                        if (aimed != null)
+                        {
+                            ParentingChildTarget = aimed;
+                            ShowNotification($"Selected Child '{aimed.name}'. Now aim at PARENT and press P.");
+                            MelonLogger.Msg($">> [Parenting] Selected Child '{aimed.name}'. Awaiting parent selection...");
+                        }
+                        else
+                        {
+                            ShowNotification("Aim at an object to select as child first!");
+                        }
+                    }
+                    else
+                    {
+                        GameObject aimedParent = GetAimedPlacedObject();
+                        if (aimedParent != null && aimedParent != ParentingChildTarget)
+                        {
+                            if (aimedParent.transform.IsChildOf(ParentingChildTarget.transform))
+                            {
+                                ShowNotification("Cannot parent to own child!");
+                            }
+                            else
+                            {
+                                GameObject oldParent = ParentingChildTarget.transform.parent != null ? ParentingChildTarget.transform.parent.gameObject : null;
+
+                                UndoHistory.Push(new HistoryRecord
+                                {
+                                    ActionType = HistoryActionType.Parenting,
+                                    TargetObject = ParentingChildTarget,
+                                    PreviousParent = oldParent,
+                                    NewParent = aimedParent
+                                });
+                                RedoHistory.Clear();
+
+                                ParentingChildTarget.transform.SetParent(aimedParent.transform, true);
+                                ShowNotification($"Linked: '{ParentingChildTarget.name}' -> '{aimedParent.name}'! (Ctrl+Z to Undo)");
+                                MelonLogger.Msg($">> [Parenting] Linked child '{ParentingChildTarget.name}' to parent '{aimedParent.name}'");
+                                ParentingChildTarget = null;
+                            }
+                        }
+                        else
+                        {
+                            ShowNotification("Invalid parent. Parenting cancelled.");
+                            ParentingChildTarget = null;
+                        }
+                    }
+                }
+            }
+
+            if (Input.GetKeyDown(KeyCode.M) && !isCtrlHeld)
+            {
+                if (Input.GetKey(KeyCode.LeftShift) || Input.GetKey(KeyCode.RightShift))
+                {
+                    GameObject aimed = GetAimedPlacedObject();
+                    if (aimed != null && MotionPaths.ContainsKey(aimed))
+                    {
+                        ObjectMotionPath prevPath = MotionPaths[aimed].Clone();
+                        MotionPaths.Remove(aimed);
+
+                        UndoHistory.Push(new HistoryRecord
+                        {
+                            ActionType = HistoryActionType.MotionPath,
+                            TargetObject = aimed,
+                            PreviousMotionPath = prevPath,
+                            NewMotionPath = null
+                        });
+                        RedoHistory.Clear();
+
+                        ShowNotification($"Cleared motion path for '{aimed.name}' (Ctrl+Z to Undo)");
+                    }
+                    PathEditTarget = null;
+                }
+                else
+                {
+                    if (PathEditTarget == null)
+                    {
+                        GameObject aimed = GetAimedPlacedObject();
+                        if (aimed != null)
+                        {
+                            PathEditTarget = aimed;
+                            if (!MotionPaths.ContainsKey(aimed))
+                            {
+                                MotionPaths[aimed] = new ObjectMotionPath
+                                {
+                                    PointA = aimed.transform.position,
+                                    PointB = aimed.transform.position + Vector3.up * 6.0f,
+                                    Speed = DefaultPathSpeed
+                                };
+                            }
+                            ShowNotification($"[Path Edit] Aim at destination & press M to lock Point B.");
+                        }
+                    }
+                    else
+                    {
+                        ObjectMotionPath prevPath = MotionPaths.ContainsKey(PathEditTarget) ? MotionPaths[PathEditTarget].Clone() : null;
+                        MotionPaths[PathEditTarget].PointB = PlacementHologramController.TargetPosition;
+                        ObjectMotionPath newPath = MotionPaths[PathEditTarget].Clone();
+
+                        UndoHistory.Push(new HistoryRecord
+                        {
+                            ActionType = HistoryActionType.MotionPath,
+                            TargetObject = PathEditTarget,
+                            PreviousMotionPath = prevPath,
+                            NewMotionPath = newPath
+                        });
+                        RedoHistory.Clear();
+
+                        ShowNotification($"[Path Edit] Point B locked! (Shift+Scroll adjusts speed, Ctrl+Z Undoes)");
+                        PathEditTarget = null;
+                    }
+                }
+            }
+
             if (Input.GetKeyDown(KeyCode.Escape) || Input.GetKeyDown(KeyCode.X))
             {
-                if (IsBlockSelected)
+                if (SelectedLightObject != null && !IsBlockSelected)
+                {
+                    SelectedLightObject = null;
+                    ShowNotification("Light Deselected");
+                }
+                else if (ParentingChildTarget != null)
+                {
+                    ParentingChildTarget = null;
+                    ShowNotification("Parenting cancelled.");
+                }
+                else if (PathEditTarget != null)
+                {
+                    PathEditTarget = null;
+                    ShowNotification("Path editing cancelled.");
+                }
+                else if (IsBlockSelected)
                 {
                     IsBlockSelected = false;
                     PlacementHologramController.DestroyPreview();
                     ShowNotification("Placement Cancelled");
-                    MelonLogger.Msg(">> [Deselect] Placement cancelled.");
                 }
             }
 
-            // 3. Toggle Surface Normal Auto-Align (C Key)
             if (Input.GetKeyDown(KeyCode.C) && !isCtrlHeld)
             {
-                ToggleAutoAlign();
+                AutoAlignToSurface = !AutoAlignToSurface;
+                string st = AutoAlignToSurface ? "ON (Wall/Ceiling)" : "OFF (Manual)";
+                ShowNotification($"Surface Align: {st}");
                 PlacementHologramController.ApplyRotationToPreview();
             }
 
-            // 4. Cycle Grid Snap (G Key)
             if (Input.GetKeyDown(KeyCode.G) && !isCtrlHeld)
             {
                 CycleGridSnap();
             }
 
-            // 5. Standardized Undo / Redo (Ctrl+Z / Ctrl+Y / Ctrl+Shift+Z)
             if (isCtrlHeld)
             {
                 if (Input.GetKeyDown(KeyCode.Z))
@@ -2126,7 +2345,6 @@ namespace DeadCoreEditor
                 }
             }
 
-            // 6. Quick Save / Load
             if (Input.GetKeyDown(KeyCode.F5))
             {
                 LevelPersistenceService.SaveLevel(MapBrowserService.SelectedMapName);
@@ -2145,8 +2363,6 @@ namespace DeadCoreEditor
             SelectedAssetIndex = 0;
 
             CarouselWheelToolbar.BuildCarouselIcons();
-
-            // Instant equip first item in new category
             SelectCurrentAsset();
 
             ShowNotification($"Category: [{CurrentTab}] ({ActiveTabAssets.Count} items)");
@@ -2171,6 +2387,12 @@ namespace DeadCoreEditor
 
         public static void HandleGhostRotationOnly()
         {
+            if (SelectedLightObject != null && SelectedLightObject.activeSelf && !IsBlockSelected)
+            {
+                HandleSelectedSpotlightRotation();
+                return;
+            }
+
             if (Input.GetKeyDown(KeyCode.T))
             {
                 TargetPitch = Mathf.Round(TargetPitch / 90f) * 90f;
@@ -2269,6 +2491,120 @@ namespace DeadCoreEditor
             }
         }
 
+        private static void HandleSelectedSpotlightRotation()
+        {
+            if (SelectedLightObject == null || !SelectedLightObject.activeSelf) return;
+
+            if (Input.GetKeyDown(KeyCode.T))
+            {
+                Vector3 e = SelectedLightObject.transform.eulerAngles;
+                e.x = Mathf.Round(e.x / 90f) * 90f;
+                e.y = Mathf.Round(e.y / 90f) * 90f;
+                e.z = Mathf.Round(e.z / 90f) * 90f;
+                SelectedLightObject.transform.rotation = Quaternion.Euler(e);
+                ShowNotification($"Light Snapped to 90° ({e.x:F0}°, {e.y:F0}°, {e.z:F0}°)");
+                return;
+            }
+
+            if (Input.GetKeyDown(KeyCode.R))
+            {
+                SelectedLightObject.transform.rotation = Quaternion.identity;
+                ShowNotification("Light Rotation Reset (0°, 0°, 0°)");
+                return;
+            }
+
+            float step = 5f;
+            if (Input.GetKey(KeyCode.LeftShift) || Input.GetKey(KeyCode.RightShift))
+                step = 15f;
+            else if (Input.GetKey(KeyCode.LeftControl) || Input.GetKey(KeyCode.RightControl))
+                step = 1f;
+
+            KeyCode activeKey = KeyCode.None;
+            Vector3 rotDelta = Vector3.zero;
+
+            if (Input.GetKey(KeyCode.LeftArrow))
+            {
+                activeKey = KeyCode.LeftArrow;
+                rotDelta.y = -step;
+            }
+            else if (Input.GetKey(KeyCode.RightArrow))
+            {
+                activeKey = KeyCode.RightArrow;
+                rotDelta.y = step;
+            }
+            else if (Input.GetKey(KeyCode.UpArrow))
+            {
+                activeKey = KeyCode.UpArrow;
+                rotDelta.x = step;
+            }
+            else if (Input.GetKey(KeyCode.DownArrow))
+            {
+                activeKey = KeyCode.DownArrow;
+                rotDelta.x = -step;
+            }
+            else if (Input.GetKey(KeyCode.PageUp) || Input.GetKey(KeyCode.LeftBracket))
+            {
+                activeKey = KeyCode.PageUp;
+                rotDelta.z = -step;
+            }
+            else if (Input.GetKey(KeyCode.PageDown) || Input.GetKey(KeyCode.RightBracket))
+            {
+                activeKey = KeyCode.PageDown;
+                rotDelta.z = step;
+            }
+
+            if (activeKey == KeyCode.None)
+            {
+                _lastHeldKey = KeyCode.None;
+                _keyHoldDuration = 0f;
+                _keyRepeatTimer = 0f;
+                return;
+            }
+
+            bool shouldStep = false;
+            if (activeKey != _lastHeldKey)
+            {
+                _lastHeldKey = activeKey;
+                _keyHoldDuration = 0f;
+                _keyRepeatTimer = 0f;
+                shouldStep = true;
+            }
+            else
+            {
+                _keyHoldDuration += Time.deltaTime;
+                if (_keyHoldDuration > 0.22f)
+                {
+                    _keyRepeatTimer -= Time.deltaTime;
+                    if (_keyRepeatTimer <= 0f)
+                    {
+                        _keyRepeatTimer = 0.07f;
+                        shouldStep = true;
+                    }
+                }
+            }
+
+            if (shouldStep)
+            {
+                if (Mathf.Abs(rotDelta.y) > 0.001f)
+                {
+                    SelectedLightObject.transform.Rotate(Vector3.up, rotDelta.y, Space.World);
+                }
+
+                if (Mathf.Abs(rotDelta.x) > 0.001f)
+                {
+                    SelectedLightObject.transform.Rotate(Vector3.right, rotDelta.x, Space.Self);
+                }
+
+                if (Mathf.Abs(rotDelta.z) > 0.001f)
+                {
+                    SelectedLightObject.transform.Rotate(Vector3.forward, rotDelta.z, Space.Self);
+                }
+
+                Vector3 angles = SelectedLightObject.transform.eulerAngles;
+                ShowNotification($"Light Aim: Pitch {angles.x:F0}° | Yaw {angles.y:F0}° | Roll {angles.z:F0}°");
+            }
+        }
+
         private static void NormalizeAngles()
         {
             TargetPitch = (TargetPitch % 360f + 360f) % 360f;
@@ -2283,53 +2619,64 @@ namespace DeadCoreEditor
 
             if (Input.GetKey(KeyCode.LeftShift))
             {
-                // Parameter Adjustments (Force, Speed, Turret Delays, Scale)...
+                // Parameter Adjustments (keep sign matching scroll direction)
+                float stepDir = Mathf.Sign(scroll);
+
+                GameObject aimed = GetAimedPlacedObject();
+                if ((PathEditTarget != null || aimed != null) && (MotionPaths.ContainsKey(PathEditTarget ?? aimed)))
+                {
+                    GameObject target = PathEditTarget ?? aimed;
+                    MotionPaths[target].Speed = Mathf.Clamp(MotionPaths[target].Speed + stepDir * 0.5f, 0.5f, 30.0f);
+                    ShowNotification($"[Path Speed] {MotionPaths[target].Speed:F1} m/s");
+                    return;
+                }
+
                 if (CurrentAsset != null && CurrentAsset.IsJumper)
                 {
-                    ActiveJumperForce += Mathf.Sign(scroll) * 2.5f;
-                    ActiveJumperForce = Mathf.Max(1.0f, ActiveJumperForce);
+                    ActiveJumperForce = Mathf.Max(1.0f, ActiveJumperForce + stepDir * 2.5f);
                     MelonLogger.Msg($">> [Jumper Force] Set: {ActiveJumperForce:F1}");
+                    if (aimed != null && (JumperForces.ContainsKey(aimed) || aimed.name.ToLower().Contains("jumper")))
+                        ApplyJumperForce(aimed, ActiveJumperForce);
                 }
                 else if (CurrentAsset != null && CurrentAsset.IsHelix)
                 {
-                    ActiveTurbineSpeed += Mathf.Sign(scroll) * 5.0f;
-                    ActiveTurbineSpeed = Mathf.Max(1.0f, ActiveTurbineSpeed);
+                    ActiveTurbineSpeed = Mathf.Max(1.0f, ActiveTurbineSpeed + stepDir * 5.0f);
                     MelonLogger.Msg($">> [Turbine Speed] Set: {ActiveTurbineSpeed:F1}");
+                    if (aimed != null && (TurbineSpeeds.ContainsKey(aimed) || aimed.name.ToLower().Contains("helix")))
+                        ApplyTurbineSpeed(aimed, ActiveTurbineSpeed);
                 }
                 else if (CurrentAsset != null && CurrentAsset.IsRotatingLaser)
                 {
-                    ActiveLaserRotationSpeed += Mathf.Sign(scroll) * 5.0f;
+                    ActiveLaserRotationSpeed += stepDir * 5.0f;
                     MelonLogger.Msg($">> [Rotating Laser Speed] Set: {ActiveLaserRotationSpeed:F1}°/s");
+                    if (aimed != null && aimed.name.ToLower().Contains("rotating"))
+                        LaserRotationSpeeds[aimed] = ActiveLaserRotationSpeed;
                 }
                 else if (CurrentAsset != null && CurrentAsset.IsTurret)
                 {
-                    ActiveTurretFireDelay -= Mathf.Sign(scroll) * 0.1f;
-                    ActiveTurretFireDelay = Mathf.Max(0.05f, ActiveTurretFireDelay);
+                    ActiveTurretFireDelay = Mathf.Max(0.05f, ActiveTurretFireDelay - stepDir * 0.1f);
                     MelonLogger.Msg($">> [Turret Fire Delay] Set: {ActiveTurretFireDelay:F2}s");
+                    if (aimed != null && (TurretFireDelays.ContainsKey(aimed) || aimed.name.ToLower().Contains("turret")))
+                        ApplyTurretSettings(aimed, ActiveTurretFireDelay, 1500f);
                 }
                 else
                 {
-                    ActivePlacementScale += Mathf.Sign(scroll) * 0.05f;
-                    ActivePlacementScale = Mathf.Clamp(ActivePlacementScale, 0.01f, 50.0f);
+                    ActivePlacementScale = Mathf.Clamp(ActivePlacementScale + stepDir * 0.05f, 0.01f, 50.0f);
                     PlacementHologramController.ApplyScaleToPreview();
                 }
             }
             else
             {
-                // Cycle assets: Automatically equips and spawns preview immediately
                 var list = ActiveTabAssets;
                 if (list.Count > 0)
                 {
-                    int step = (scroll > 0) ? 1 : -1;
+                    int step = (scroll < 0) ? 1 : -1;
                     SelectedAssetIndex = (SelectedAssetIndex + step + list.Count) % list.Count;
                     CarouselWheelToolbar.SetTargetIndex(SelectedAssetIndex);
-
-                    // Instant equip — no Enter required
                     SelectCurrentAsset();
                 }
             }
         }
-
 
         private static void HandleObjectDeletion()
         {
@@ -2369,16 +2716,14 @@ namespace DeadCoreEditor
             GameObject target = GetAimedPlacedObject();
             if (target != null)
             {
-                PlacedObjects.Remove(target);
-                if (PlacedLights.ContainsKey(target)) PlacedLights.Remove(target);
-                if (SelectedLightObject == target) SelectedLightObject = null;
+                RemovePlacedObjectFromTracking(target);
                 target.SetActive(false);
 
                 float param = 0f;
                 if (JumperForces.ContainsKey(target)) param = JumperForces[target];
                 else if (TurbineSpeeds.ContainsKey(target)) param = TurbineSpeeds[target];
                 else if (TurretFireDelays.ContainsKey(target)) param = TurretFireDelays[target];
-                else if (PlacedLights.ContainsKey(target)) param = PlacedLights[target].Range;
+                else if (PlacedLights.ContainsKey(target)) param = PlacedLights[target].Intensity;
 
                 UndoHistory.Push(new HistoryRecord
                 {
@@ -2393,8 +2738,85 @@ namespace DeadCoreEditor
                 RedoHistory.Clear();
 
                 if (LastPlacedObject == target) LastPlacedObject = null;
-                MelonLogger.Msg($">> [Delete] Removed '{target.name}'. (Press Z to Undo)");
+                MelonLogger.Msg($">> [Delete] Removed '{target.name}'. (Press Ctrl+Z to Undo)");
             }
+        }
+
+        public static void RegisterPlacedObject(GameObject obj)
+        {
+            if (obj == null || PlacedObjects.Contains(obj)) return;
+
+            PlacedObjects.Add(obj);
+            string low = obj.name.ToLower();
+
+            if (low.Contains("jumper"))
+            {
+                if (!PlacedJumpers.Contains(obj)) PlacedJumpers.Add(obj);
+            }
+            else if (low.Contains("helix") || low.Contains("helice"))
+            {
+                if (!PlacedTurbines.Contains(obj)) PlacedTurbines.Add(obj);
+                Helix h = obj.GetComponentInChildren<Helix>();
+                if (h != null) _cachedHelixScripts[obj] = h;
+            }
+            else if (low.Contains("rotating_laser") || low.Contains("rotating laser"))
+            {
+                if (!PlacedRotatingLasers.Contains(obj)) PlacedRotatingLasers.Add(obj);
+            }
+            else if (low.Contains("laser"))
+            {
+                if (!PlacedLaserBarriers.Contains(obj))
+                {
+                    PlacedLaserBarriers.Add(obj);
+                    BoxCollider bc = obj.GetComponentInChildren<BoxCollider>();
+                    PlacedLaserColliders.Add(bc);
+                }
+            }
+            else if (low.Contains("goal"))
+            {
+                PlacedGoalGate = obj;
+            }
+            else
+            {
+                CheckPointScript cp = obj.GetComponentInChildren<CheckPointScript>();
+                if (cp != null && !PlacedCheckpoints.Contains(cp))
+                {
+                    PlacedCheckpoints.Add(cp);
+                }
+            }
+
+            RecalculateVoidDeathY();
+        }
+
+        public static void RemovePlacedObjectFromTracking(GameObject target)
+        {
+            if (target == null) return;
+
+            PlacedObjects.Remove(target);
+            if (PlacedLights.ContainsKey(target)) PlacedLights.Remove(target);
+            if (MotionPaths.ContainsKey(target)) MotionPaths.Remove(target);
+            if (PathEditTarget == target) PathEditTarget = null;
+            if (ParentingChildTarget == target) ParentingChildTarget = null;
+            if (SelectedLightObject == target) SelectedLightObject = null;
+
+            PlacedJumpers.Remove(target);
+            PlacedTurbines.Remove(target);
+            _cachedHelixScripts.Remove(target);
+            PlacedRotatingLasers.Remove(target);
+
+            int laserIdx = PlacedLaserBarriers.IndexOf(target);
+            if (laserIdx >= 0)
+            {
+                PlacedLaserBarriers.RemoveAt(laserIdx);
+                if (laserIdx < PlacedLaserColliders.Count) PlacedLaserColliders.RemoveAt(laserIdx);
+            }
+
+            if (PlacedGoalGate == target) PlacedGoalGate = null;
+
+            CheckPointScript cp = target.GetComponentInChildren<CheckPointScript>();
+            if (cp != null) PlacedCheckpoints.Remove(cp);
+
+            RecalculateVoidDeathY();
         }
 
         public static void PerformUndo()
@@ -2412,8 +2834,7 @@ namespace DeadCoreEditor
                 if (record.TargetObject != null)
                 {
                     record.TargetObject.SetActive(false);
-                    PlacedObjects.Remove(record.TargetObject);
-                    if (SelectedLightObject == record.TargetObject) SelectedLightObject = null;
+                    RemovePlacedObjectFromTracking(record.TargetObject);
                 }
                 RedoHistory.Push(record);
                 ShowNotification($"Undid placement of {record.AssetName}");
@@ -2423,8 +2844,7 @@ namespace DeadCoreEditor
                 if (record.TargetObject != null)
                 {
                     record.TargetObject.SetActive(true);
-                    if (!PlacedObjects.Contains(record.TargetObject))
-                        PlacedObjects.Add(record.TargetObject);
+                    RegisterPlacedObject(record.TargetObject);
                 }
                 else
                 {
@@ -2437,17 +2857,38 @@ namespace DeadCoreEditor
                             if (record.AssetName.ToLower().Contains("jumper")) ApplyJumperForce(recreated, record.CustomParameter);
                             if (record.AssetName.ToLower().Contains("helix")) ApplyTurbineSpeed(recreated, record.CustomParameter);
                             if (record.AssetName.ToLower().Contains("turret")) ApplyTurretSettings(recreated, record.CustomParameter, 1500f);
-                            if (record.AssetName.ToLower().Contains("spotlight") && PlacedLights.ContainsKey(recreated))
+                            if ((record.AssetName.ToLower().Contains("spotlight") || record.AssetName.ToLower().Contains("sunlight")) && PlacedLights.ContainsKey(recreated))
                             {
-                                PlacedLights[recreated].Range = record.CustomParameter;
+                                PlacedLights[recreated].Intensity = record.CustomParameter;
                                 ApplyLightConfig(recreated, PlacedLights[recreated]);
                             }
                         }
-                        PlacedObjects.Add(recreated);
+                        RegisterPlacedObject(recreated);
                     }
                 }
                 RedoHistory.Push(record);
                 ShowNotification($"Restored deleted {record.AssetName}");
+            }
+            else if (record.ActionType == HistoryActionType.Parenting)
+            {
+                if (record.TargetObject != null)
+                {
+                    record.TargetObject.transform.SetParent(record.PreviousParent != null ? record.PreviousParent.transform : null, true);
+                }
+                RedoHistory.Push(record);
+                ShowNotification($"Undid parenting on '{record.TargetObject.name}'");
+            }
+            else if (record.ActionType == HistoryActionType.MotionPath)
+            {
+                if (record.TargetObject != null)
+                {
+                    if (record.PreviousMotionPath != null)
+                        MotionPaths[record.TargetObject] = record.PreviousMotionPath.Clone();
+                    else
+                        MotionPaths.Remove(record.TargetObject);
+                }
+                RedoHistory.Push(record);
+                ShowNotification($"Undid motion path on '{record.TargetObject.name}'");
             }
         }
 
@@ -2466,8 +2907,7 @@ namespace DeadCoreEditor
                 if (record.TargetObject != null)
                 {
                     record.TargetObject.SetActive(true);
-                    if (!PlacedObjects.Contains(record.TargetObject))
-                        PlacedObjects.Add(record.TargetObject);
+                    RegisterPlacedObject(record.TargetObject);
                 }
                 UndoHistory.Push(record);
                 ShowNotification($"Redid placement of {record.AssetName}");
@@ -2477,11 +2917,31 @@ namespace DeadCoreEditor
                 if (record.TargetObject != null)
                 {
                     record.TargetObject.SetActive(false);
-                    PlacedObjects.Remove(record.TargetObject);
-                    if (SelectedLightObject == record.TargetObject) SelectedLightObject = null;
+                    RemovePlacedObjectFromTracking(record.TargetObject);
                 }
                 UndoHistory.Push(record);
                 ShowNotification($"Re-deleted {record.AssetName}");
+            }
+            else if (record.ActionType == HistoryActionType.Parenting)
+            {
+                if (record.TargetObject != null)
+                {
+                    record.TargetObject.transform.SetParent(record.NewParent != null ? record.NewParent.transform : null, true);
+                }
+                UndoHistory.Push(record);
+                ShowNotification($"Redid parenting on '{record.TargetObject.name}'");
+            }
+            else if (record.ActionType == HistoryActionType.MotionPath)
+            {
+                if (record.TargetObject != null)
+                {
+                    if (record.NewMotionPath != null)
+                        MotionPaths[record.TargetObject] = record.NewMotionPath.Clone();
+                    else
+                        MotionPaths.Remove(record.TargetObject);
+                }
+                UndoHistory.Push(record);
+                ShowNotification($"Redid motion path on '{record.TargetObject.name}'");
             }
         }
 
@@ -2529,11 +2989,26 @@ namespace DeadCoreEditor
             PlacedLights.Clear();
             SelectedLightObject = null;
             LastPlacedObject = null;
+
+            PlacedJumpers.Clear();
+            PlacedTurbines.Clear();
+            _cachedHelixScripts.Clear();
+            PlacedLaserBarriers.Clear();
+            PlacedLaserColliders.Clear();
+            PlacedRotatingLasers.Clear();
+            PlacedCheckpoints.Clear();
+            PlacedGoalGate = null;
+
             JumperForces.Clear();
             TurbineSpeeds.Clear();
             TurretFireDelays.Clear();
+            MotionPaths.Clear();
+            PathEditTarget = null;
+            ParentingChildTarget = null;
             UndoHistory.Clear();
             RedoHistory.Clear();
+
+            CachedVoidDeathY = -140f;
         }
 
         public static void StripParticlesAndLights(GameObject root)
@@ -2606,6 +3081,7 @@ namespace DeadCoreEditor
             {
                 h.enabled = true;
                 h._maximumVelocity = speed * 20f;
+                _cachedHelixScripts[turbineObj] = h;
             }
 
             MelonLogger.Msg($">> [Turbine Speed] Set to {speed:F1} on '{turbineObj.name}'");
@@ -2629,7 +3105,6 @@ namespace DeadCoreEditor
                 ts._fireDelay = Mathf.Max(0.05f, fireDelay);
                 ts._firePower = firePower;
 
-                // Expand detection trigger so the turret spots the player across custom distances
                 if (ts._triggerAnimation != null)
                 {
                     ts._triggerAnimation.enabled = true;
@@ -2641,9 +3116,6 @@ namespace DeadCoreEditor
                 }
             }
 
-            // DO NOT destroy any colliders! 
-            // The turret's body and head colliders are what the Switch Gun hits to stun/deactivate it.
-            // Ensure all colliders and interactive components are enabled.
             Collider[] colliders = turretObj.GetComponentsInChildren<Collider>(true);
             for (int i = 0; i < colliders.Length; i++)
             {
@@ -2668,6 +3140,9 @@ namespace DeadCoreEditor
             MelonLogger.Msg($">> [Turret] Configured with hitboxes intact! Fire Delay: {fireDelay:F2}s, Power: {firePower:F0}");
         }
 
+        // =========================================================================================================
+        // OVERHAULED LIGHT & SUNLIGHT SYSTEM (Supports Spotlights and Infinite Global Directional Sunlights)
+        // =========================================================================================================
         public static void ApplyLightConfig(GameObject lightObj, LightConfig cfg)
         {
             if (lightObj == null || cfg == null) return;
@@ -2678,13 +3153,67 @@ namespace DeadCoreEditor
             if (l != null)
             {
                 l.enabled = false;
-                l.range = Mathf.Max(1f, cfg.Range);
-                l.spotAngle = Mathf.Clamp(cfg.SpotAngle, 1f, 175f);
-                l.color = cfg.Color;
-                l.intensity = cfg.Intensity * 1200f;
+
+                if (cfg.IsDirectional)
+                {
+                    // Pick the hooked native scene sun if available, otherwise fallback to this light's component
+                    Light targetSun = SceneHarvestingService.NativeSceneSun != null
+                        ? SceneHarvestingService.NativeSceneSun
+                        : l;
+
+                    if (targetSun != null)
+                    {
+                        targetSun.gameObject.SetActive(true);
+                        targetSun.enabled = true;
+                        targetSun.type = LightType.Directional;
+                        targetSun.color = cfg.Color;
+                        targetSun.transform.rotation = lightObj.transform.rotation;
+
+                        // Directional sunlight in HDRP needs thousands of Lux (native is 13,000)
+                        float hdrpSunIntensity = Mathf.Max(0.1f, cfg.Intensity) * 4000f; // Scale 1.0-5.0 -> 4,000 - 20,000 Lux
+                        targetSun.intensity = hdrpSunIntensity;
+
+                        RenderSettings.sun = targetSun;
+
+                        // Apply to HDAdditionalLightData if present
+                        try
+                        {
+                            Component[] sunComps = targetSun.GetComponentsInChildren<Component>(true);
+                            for (int i = 0; i < sunComps.Length; i++)
+                            {
+                                if (sunComps[i] != null && sunComps[i].GetIl2CppType().Name.Contains("HDAdditionalLightData"))
+                                {
+                                    var prop = sunComps[i].GetIl2CppType().GetProperty("intensity");
+                                    if (prop != null) prop.SetValue(sunComps[i], hdrpSunIntensity);
+                                }
+                            }
+                        }
+                        catch { }
+                    }
+
+                    // Force ambient lighting so materials without dynamic light passes still receive the color & brightness
+                    RenderSettings.ambientMode = UnityEngine.Rendering.AmbientMode.Trilight;
+                    RenderSettings.ambientSkyColor = cfg.Color * Mathf.Clamp01(cfg.Intensity * 0.35f);
+                    RenderSettings.ambientEquatorColor = cfg.Color * Mathf.Clamp01(cfg.Intensity * 0.20f);
+                    RenderSettings.ambientGroundColor = cfg.Color * 0.05f;
+                    RenderSettings.ambientIntensity = Mathf.Max(0.5f, cfg.Intensity);
+                }
+                else
+                {
+                    l.type = LightType.Spot;
+                    l.renderMode = LightRenderMode.Auto;
+                    l.range = 150f;
+                    l.spotAngle = Mathf.Clamp(cfg.SpotAngle, 5f, 150f);
+                    l.color = cfg.Color;
+
+                    // Exponential spotlight punch
+                    l.intensity = Mathf.Pow(Mathf.Max(0.1f, cfg.Intensity), 2.2f) * 8000f;
+                }
+
                 l.enabled = true;
             }
 
+            // Update HDRP / Additional Light Data on the light object itself
             try
             {
                 Component[] comps = lightObj.GetComponentsInChildren<Component>(true);
@@ -2695,21 +3224,28 @@ namespace DeadCoreEditor
                         var t = comps[i].GetIl2CppType();
 
                         var rangeProp = t.GetProperty("range");
-                        if (rangeProp != null) rangeProp.SetValue(comps[i], cfg.Range);
+                        if (rangeProp != null && !cfg.IsDirectional) rangeProp.SetValue(comps[i], 150f);
 
                         var intProp = t.GetProperty("intensity");
-                        if (intProp != null) intProp.SetValue(comps[i], cfg.Intensity * 1200f);
+                        if (intProp != null)
+                        {
+                            float actualInt = cfg.IsDirectional
+                                ? (Mathf.Max(0.1f, cfg.Intensity) * 4000f)
+                                : (Mathf.Pow(Mathf.Max(0.1f, cfg.Intensity), 2.2f) * 8000f);
+                            intProp.SetValue(comps[i], actualInt);
+                        }
 
                         var volDimProp = t.GetProperty("volumetricDimmer");
-                        if (volDimProp != null) volDimProp.SetValue(comps[i], cfg.VolumetricDimmer);
+                        if (volDimProp != null) volDimProp.SetValue(comps[i], cfg.VolumetricIntensity);
 
                         var useVolProp = t.GetProperty("useVolumetric");
-                        if (useVolProp != null) useVolProp.SetValue(comps[i], cfg.VolumetricDimmer > 0.01f);
+                        if (useVolProp != null) useVolProp.SetValue(comps[i], cfg.VolumetricIntensity > 0.01f);
                     }
                 }
             }
             catch { }
 
+            // Update physical lamp / sun orb glow
             try
             {
                 MeshRenderer mr = lightObj.GetComponentInChildren<MeshRenderer>();
@@ -2718,7 +3254,7 @@ namespace DeadCoreEditor
                     mr.material.color = cfg.Color;
                     if (mr.material.HasProperty("_EmissionColor"))
                     {
-                        mr.material.SetColor("_EmissionColor", cfg.Color * Mathf.Max(1.5f, cfg.Intensity));
+                        mr.material.SetColor("_EmissionColor", cfg.Color * Mathf.Max(2.0f, cfg.Intensity * 0.8f));
                         mr.material.EnableKeyword("_EMISSION");
                     }
                 }
@@ -2737,16 +3273,14 @@ namespace DeadCoreEditor
                 Light l = obj.GetComponentInChildren<Light>();
                 if (l != null)
                 {
-                    l.range = cfg.Range + 1.0f;
-                    l.spotAngle = cfg.SpotAngle + 1.0f;
-                    l.intensity = (cfg.Intensity + 0.5f) * 1200f;
+                    l.spotAngle = cfg.SpotAngle + 0.1f;
                     l.enabled = false;
                 }
 
                 ApplyLightConfig(obj, cfg);
             }
 
-            MelonLogger.Msg($">> [Lights] Automatically synced {PlacedLights.Count} spotlights!");
+            MelonLogger.Msg($">> [Lights] Automatically synced {PlacedLights.Count} lights!");
         }
 
         public static void ApplyGateVisualTint(GameObject gateObj, Color tintColor)
@@ -2802,208 +3336,181 @@ namespace DeadCoreEditor
             if (cam == null) return;
 
             Color originalColor = GUI.color;
+            float sw = Screen.width;
+            float sh = Screen.height;
 
-            // Render world-space contextual object labels
-            foreach (var obj in PlacedObjects)
+            for (int o = 0; o < PlacedObjects.Count; o++)
             {
+                GameObject obj = PlacedObjects[o];
                 if (obj == null || !obj.activeSelf) continue;
+
+                Vector3 screenPos = cam.WorldToScreenPoint(obj.transform.position + Vector3.up * 1.5f);
+                if (screenPos.z <= 0.5f || screenPos.x < -120f || screenPos.x > sw + 120f || screenPos.y < -80f || screenPos.y > sh + 80f)
+                    continue;
+
+                float y = sh - screenPos.y;
+
+                if (MotionPaths.ContainsKey(obj))
+                {
+                    var mp = MotionPaths[obj];
+                    GUI.color = new Color(0.9f, 0.3f, 1f);
+                    GUI.Box(new Rect(screenPos.x - 90f, y - 30f, 180f, 26f), $"[✦ Path: {mp.Speed:F1}m/s]");
+                }
+
+                if (obj.transform.childCount > 0)
+                {
+                    int placedChildCount = 0;
+                    for (int k = 0; k < PlacedObjects.Count; k++)
+                    {
+                        if (PlacedObjects[k] != null && PlacedObjects[k].transform.parent == obj.transform)
+                            placedChildCount++;
+                    }
+
+                    if (placedChildCount > 0)
+                    {
+                        GUI.color = new Color(1.0f, 0.7f, 0.2f);
+                        GUI.Box(new Rect(screenPos.x - 95f, y - 55f, 190f, 22f), $"★ Assembly Parent ({placedChildCount} Objects)");
+                    }
+                }
 
                 if (JumperForces.ContainsKey(obj) || obj.name.ToLower().Contains("jumper"))
                 {
                     float force = JumperForces.ContainsKey(obj) ? JumperForces[obj] : ActiveJumperForce;
-                    Vector3 worldPos = obj.transform.position + Vector3.up * 1.2f;
-                    Vector3 screenPos = cam.WorldToScreenPoint(worldPos);
-
-                    if (screenPos.z > 0.5f)
-                    {
-                        float y = Screen.height - screenPos.y;
-                        GUI.color = Color.cyan;
-                        GUI.Box(new Rect(screenPos.x - 75f, y - 14f, 150f, 26f), $"[Force: {force:F1}]");
-                    }
+                    GUI.color = Color.cyan;
+                    GUI.Box(new Rect(screenPos.x - 75f, y - 14f, 150f, 26f), $"[Force: {force:F1}]");
                 }
                 else if (TurbineSpeeds.ContainsKey(obj) || obj.name.ToLower().Contains("helix"))
                 {
                     float speed = TurbineSpeeds.ContainsKey(obj) ? TurbineSpeeds[obj] : ActiveTurbineSpeed;
-                    Vector3 worldPos = obj.transform.position + Vector3.up * 2.0f;
-                    Vector3 screenPos = cam.WorldToScreenPoint(worldPos);
-
-                    if (screenPos.z > 0.5f)
-                    {
-                        float y = Screen.height - screenPos.y;
-                        GUI.color = Color.green;
-                        GUI.Box(new Rect(screenPos.x - 75f, y - 14f, 150f, 26f), $"[Speed: {speed:F1}]");
-                    }
+                    GUI.color = Color.green;
+                    GUI.Box(new Rect(screenPos.x - 75f, y - 14f, 150f, 26f), $"[Speed: {speed:F1}]");
                 }
                 else if (TurretFireDelays.ContainsKey(obj) || obj.name.ToLower().Contains("turret"))
                 {
                     float delay = TurretFireDelays.ContainsKey(obj) ? TurretFireDelays[obj] : ActiveTurretFireDelay;
-                    Vector3 worldPos = obj.transform.position + Vector3.up * 1.6f;
-                    Vector3 screenPos = cam.WorldToScreenPoint(worldPos);
-
-                    if (screenPos.z > 0.5f)
-                    {
-                        float y = Screen.height - screenPos.y;
-                        GUI.color = Color.red;
-                        GUI.Box(new Rect(screenPos.x - 75f, y - 14f, 150f, 26f), $"[Fire Delay: {delay:F2}s]");
-                    }
+                    GUI.color = Color.red;
+                    GUI.Box(new Rect(screenPos.x - 75f, y - 14f, 150f, 26f), $"[Fire Delay: {delay:F2}s]");
                 }
                 else if (obj.name.ToLower().Contains("spawn"))
                 {
-                    Vector3 worldPos = obj.transform.position + Vector3.up * 2.2f;
-                    Vector3 screenPos = cam.WorldToScreenPoint(worldPos);
-                    if (screenPos.z > 0.5f)
-                    {
-                        float y = Screen.height - screenPos.y;
-                        GUI.color = new Color(1.0f, 0.45f, 0.05f);
-                        GUI.Box(new Rect(screenPos.x - 85f, y - 14f, 170f, 26f), "[Entry / Spawn Point]");
-                    }
+                    GUI.color = new Color(1.0f, 0.45f, 0.05f);
+                    GUI.Box(new Rect(screenPos.x - 85f, y - 14f, 170f, 26f), "[Entry / Spawn Point]");
                 }
                 else if (obj.name.ToLower().Contains("goal"))
                 {
-                    Vector3 worldPos = obj.transform.position + Vector3.up * 2.2f;
-                    Vector3 screenPos = cam.WorldToScreenPoint(worldPos);
-                    if (screenPos.z > 0.5f)
-                    {
-                        float y = Screen.height - screenPos.y;
-                        GUI.color = new Color(0.1f, 0.65f, 1.0f);
-                        GUI.Box(new Rect(screenPos.x - 85f, y - 14f, 170f, 26f), "[Goal / Finish Line]");
-                    }
+                    GUI.color = new Color(0.1f, 0.65f, 1.0f);
+                    GUI.Box(new Rect(screenPos.x - 85f, y - 14f, 170f, 26f), "[Goal / Finish Line]");
+                }
+                else if (obj.name.ToLower().Contains("sunlight"))
+                {
+                    bool isSel = (obj == SelectedLightObject);
+                    GUI.color = isSel ? Color.green : new Color(1.0f, 0.85f, 0.2f);
+                    string badge = isSel ? "★ [Aim Sunlight: Arrows] ★" : "[Global Sunlight Source]";
+                    GUI.Box(new Rect(screenPos.x - 100f, y - 14f, 200f, 26f), badge);
                 }
                 else if (obj.name.ToLower().Contains("spotlight"))
                 {
-                    Vector3 worldPos = obj.transform.position + Vector3.up * 1.2f;
-                    Vector3 screenPos = cam.WorldToScreenPoint(worldPos);
-                    if (screenPos.z > 0.5f)
-                    {
-                        float y = Screen.height - screenPos.y;
-                        bool isSel = (obj == SelectedLightObject);
-                        GUI.color = isSel ? Color.green : Color.yellow;
-                        string badge = isSel ? "★ [Selected Spotlight] ★" : "[Tech Spotlight]";
-                        GUI.Box(new Rect(screenPos.x - 90f, y - 14f, 180f, 26f), badge);
-                    }
+                    bool isSel = (obj == SelectedLightObject);
+                    GUI.color = isSel ? Color.green : Color.yellow;
+                    string badge = isSel ? "★ [Aim Spotlight: Arrows] ★" : "[Tech Spotlight]";
+                    GUI.Box(new Rect(screenPos.x - 100f, y - 14f, 200f, 26f), badge);
                 }
                 else if (obj.name.ToLower().Contains("rotating"))
                 {
-                    Vector3 worldPos = obj.transform.position + Vector3.up * 1.2f;
-                    Vector3 screenPos = cam.WorldToScreenPoint(worldPos);
-                    if (screenPos.z > 0.5f)
-                    {
-                        float y = Screen.height - screenPos.y;
-                        float spd = LaserRotationSpeeds.ContainsKey(obj) ? LaserRotationSpeeds[obj] : ActiveLaserRotationSpeed;
-                        GUI.color = Color.red;
-                        GUI.Box(new Rect(screenPos.x - 85f, y - 14f, 170f, 26f), $"[Laser: {spd:F0}°/s]");
-                    }
+                    float spd = LaserRotationSpeeds.ContainsKey(obj) ? LaserRotationSpeeds[obj] : ActiveLaserRotationSpeed;
+                    GUI.color = Color.red;
+                    GUI.Box(new Rect(screenPos.x - 85f, y - 14f, 170f, 26f), $"[Laser: {spd:F0}°/s]");
                 }
                 else if (obj.name.ToLower().Contains("laser"))
                 {
-                    Vector3 worldPos = obj.transform.position + Vector3.up * 1.5f;
-                    Vector3 screenPos = cam.WorldToScreenPoint(worldPos);
-                    if (screenPos.z > 0.5f)
-                    {
-                        float y = Screen.height - screenPos.y;
-                        GUI.color = Color.red;
-                        string label = obj.name.ToLower().Contains("rotating") ? "[Rotating Laser]" : (obj.name.ToLower().Contains("long") ? "[Long Laser]" : "[Laser Barrier]");
-                        GUI.Box(new Rect(screenPos.x - 85f, y - 14f, 170f, 26f), label);
-                    }
+                    GUI.color = Color.red;
+                    string label = obj.name.ToLower().Contains("long") ? "[Long Laser]" : "[Laser Barrier]";
+                    GUI.Box(new Rect(screenPos.x - 85f, y - 14f, 170f, 26f), label);
                 }
                 else
                 {
                     CheckPointScript cp = obj.GetComponentInChildren<CheckPointScript>();
                     if (cp != null)
                     {
-                        Vector3 worldPos = obj.transform.position + Vector3.up * 2.2f;
-                        Vector3 screenPos = cam.WorldToScreenPoint(worldPos);
-
-                        if (screenPos.z > 0.5f)
-                        {
-                            bool isActive = (CheckPointScript.LastCheckPoint == cp);
-                            float y = Screen.height - screenPos.y;
-                            GUI.color = isActive ? Color.green : new Color(0.4f, 0.8f, 1f);
-                            string cpText = isActive ? "[Active Checkpoint]" : "[Checkpoint]";
-                            GUI.Box(new Rect(screenPos.x - 75f, y - 14f, 150f, 26f), cpText);
-                        }
+                        bool isActive = (CheckPointScript.LastCheckPoint == cp);
+                        GUI.color = isActive ? Color.green : new Color(0.4f, 0.8f, 1f);
+                        string cpText = isActive ? "[Active Checkpoint]" : "[Checkpoint]";
+                        GUI.Box(new Rect(screenPos.x - 75f, y - 14f, 150f, 26f), cpText);
                     }
                 }
             }
 
-            // Render holographic preview parameters
-            if (IsBlockSelected && CurrentAsset != null && PlacementHologramController.GhostInstance != null)
+            if (PathEditTarget != null)
             {
-                if (CurrentAsset.IsJumper)
+                Vector3 dest = PlacementHologramController.TargetPosition;
+                Vector3 screenPos = cam.WorldToScreenPoint(dest);
+                if (screenPos.z > 0.5f)
                 {
-                    Vector3 worldPos = PlacementHologramController.GhostInstance.transform.position + Vector3.up * 1.4f;
-                    Vector3 screenPos = cam.WorldToScreenPoint(worldPos);
-                    if (screenPos.z > 0.5f)
-                    {
-                        float y = Screen.height - screenPos.y;
-                        GUI.color = Color.yellow;
-                        GUI.Box(new Rect(screenPos.x - 100f, y - 14f, 200f, 26f), $"[Set Force: {ActiveJumperForce:F1}] (Shift+Scroll)");
-                    }
-                }
-                else if (CurrentAsset.IsHelix)
-                {
-                    Vector3 worldPos = PlacementHologramController.GhostInstance.transform.position + Vector3.up * 2.2f;
-                    Vector3 screenPos = cam.WorldToScreenPoint(worldPos);
-                    if (screenPos.z > 0.5f)
-                    {
-                        float y = Screen.height - screenPos.y;
-                        GUI.color = Color.green;
-                        GUI.Box(new Rect(screenPos.x - 105f, y - 14f, 210f, 26f), $"[Set Speed: {ActiveTurbineSpeed:F1}] (Shift+Scroll)");
-                    }
-                }
-                else if (CurrentAsset.IsTurret)
-                {
-                    Vector3 worldPos = PlacementHologramController.GhostInstance.transform.position + Vector3.up * 1.8f;
-                    Vector3 screenPos = cam.WorldToScreenPoint(worldPos);
-                    if (screenPos.z > 0.5f)
-                    {
-                        float y = Screen.height - screenPos.y;
-                        GUI.color = Color.red;
-                        GUI.Box(new Rect(screenPos.x - 105f, y - 14f, 210f, 26f), $"[Set Fire Delay: {ActiveTurretFireDelay:F2}s] (Shift+Scroll)");
-                    }
+                    float y = Screen.height - screenPos.y;
+                    GUI.color = Color.magenta;
+                    GUI.Box(new Rect(screenPos.x - 110f, y - 16f, 220f, 32f), "<b>[ TARGET POINT B (Press M) ]</b>");
                 }
             }
 
-            // Category Selection Header Bar
-            float barW = 560f;
+            if (ParentingChildTarget != null)
+            {
+                Vector3 worldPos = ParentingChildTarget.transform.position + Vector3.up * 2.5f;
+                Vector3 screenPos = cam.WorldToScreenPoint(worldPos);
+                if (screenPos.z > 0.5f)
+                {
+                    float y = Screen.height - screenPos.y;
+                    GUI.color = Color.yellow;
+                    GUI.Box(new Rect(screenPos.x - 125f, y - 16f, 250f, 32f), "<b>[ AIM AT PARENT & PRESS P ]</b>");
+                }
+            }
+
+            if (SelectedLightObject != null && SelectedLightObject.activeSelf && !IsBlockSelected)
+            {
+                GUI.color = new Color(1f, 0.88f, 0.2f, 0.95f);
+                GUI.Box(new Rect(Screen.width * 0.5f - 275f, Screen.height - 75f, 550f, 28f),
+                    "★ AIMING LIGHT: Arrow Keys (Pan/Tilt) | [ ] (Roll) | R (Reset) | Esc (Deselect)");
+            }
+
+            float barW = 460f;
             float barH = 34f;
             float barX = (Screen.width - barW) * 0.5f;
             float barY = 14f;
 
-            GUI.color = new Color(0.04f, 0.08f, 0.12f, 0.9f);
+            GUI.color = new Color(0.04f, 0.08f, 0.12f, 0.92f);
             GUI.Box(new Rect(barX, barY, barW, barH), "");
 
-            string[] catLabels = new string[] { "1: GAMEPLAY", "2: ARCHITECTURE", "3: PROPS" };
-            float tabBtnW = (barW - 16f) / 3f;
+            string[] catLabels = new string[] { "1: BUILDING", "2: GAMEPLAY" };
+            float tabBtnW = (barW - 14f) / 2f;
 
-            for (int i = 0; i < 3; i++)
+            for (int i = 0; i < 2; i++)
             {
                 AssetCategory c = (AssetCategory)i;
                 bool isCurrent = (CurrentTab == c);
-                GUI.color = isCurrent ? new Color(0.2f, 0.85f, 1f, 1f) : new Color(0.35f, 0.42f, 0.5f, 0.8f);
+                GUI.color = isCurrent ? new Color(0.2f, 0.85f, 1f, 1f) : new Color(0.22f, 0.28f, 0.36f, 0.85f);
 
                 int count = AllAssets.FindAll(a => a.Category == c).Count;
-                if (GUI.Button(new Rect(barX + 8f + (i * tabBtnW), barY + 4f, tabBtnW - 4f, 26f), $"{catLabels[i]} ({count})"))
+                if (GUI.Button(new Rect(barX + 6f + (i * tabBtnW), barY + 4f, tabBtnW - 4f, 26f), $"{catLabels[i]} ({count})"))
                 {
                     SetCategory(c);
                 }
             }
 
-            // Viewport Status and Shortcut Footer
             string gridName = (CurrentGridSnap > 0.01f) ? $"{CurrentGridSnap}m" : "OFF";
             string alignMode = AutoAlignToSurface ? "<color=#69F0AE>SURFACE (C)</color>" : "<color=#FFB74D>MANUAL (C)</color>";
+            string pathInfo = PathEditTarget != null ? "<color=#E040FB>SETTING POINT B (M)</color>" : "M: Path";
+            string parentInfo = ParentingChildTarget != null ? "<color=#FFD54F>LINKING PARENT (P)</color>" : "P: Parent";
 
             string status = IsBlockSelected
-                ? $"EQUIPPED: '{CurrentAsset?.DisplayName}' | Left-Click: Place | RMB (Tap) / Esc: Cancel | Align: {alignMode} | Snap: {gridName} (G)"
-                : $"MAP: '{MapBrowserService.SelectedMapName}' | Scroll / 1-3: Equip | Tab: Categories | C: Align | Ctrl+Z: Undo | Ctrl+Y: Redo";
+                ? $"EQUIPPED: '{CurrentAsset?.DisplayName}' | Left-Click: Place | RMB/Esc: Cancel | {pathInfo} | {parentInfo} | Align: {alignMode} | Snap: {gridName} (G)"
+                : $"MAP: '{MapBrowserService.SelectedMapName}' | Tab/1-2: Tabs | {pathInfo} | {parentInfo} | C: Align | Ctrl+Z: Undo | Ctrl+Y: Redo";
 
             GUI.color = Color.white;
-            GUI.Box(new Rect(Screen.width * 0.5f - 450f, Screen.height - 40f, 900f, 28f), status);
+            GUI.Box(new Rect(Screen.width * 0.5f - 510f, Screen.height - 40f, 1020f, 28f), status);
 
             if (_notificationTimer > 0f)
             {
                 GUI.color = new Color(0.2f, 1f, 0.4f, Mathf.Clamp01(_notificationTimer));
-                GUI.Box(new Rect(Screen.width * 0.5f - 220f, Screen.height - 85f, 440f, 34f), _notificationMessage);
+                GUI.Box(new Rect(Screen.width * 0.5f - 220f, Screen.height - 110f, 440f, 32f), _notificationMessage);
             }
 
             if (ShowParamsWindow)
@@ -3016,15 +3523,15 @@ namespace DeadCoreEditor
 
         private static void DrawParametersWindow()
         {
-            float winW = 320f;
-            float winH = 390f;
+            float winW = 340f;
+            float winH = 490f;
             float winX = Screen.width - winW - 20f;
             float winY = 20f;
             Rect winRect = new Rect(winX, winY, winW, winH);
 
             Color orig = GUI.color;
 
-            GUI.color = new Color(0.04f, 0.07f, 0.12f, 0.94f);
+            GUI.color = new Color(0.04f, 0.07f, 0.12f, 0.95f);
             GUI.Box(winRect, "");
             GUI.color = new Color(0.12f, 0.65f, 0.95f, 0.85f);
             GUI.Box(new Rect(winX + 2, winY + 2, winW - 4, winH - 4), "");
@@ -3032,18 +3539,9 @@ namespace DeadCoreEditor
             GUI.color = new Color(0.08f, 0.14f, 0.22f, 1f);
             GUI.Box(new Rect(winX + 8, winY + 8, winW - 16, 32), "");
             GUI.color = Color.yellow;
-            GUI.Label(new Rect(winX + 20, winY + 14, 250, 25), "SPOTLIGHT INSPECTOR (F3)");
+            GUI.Label(new Rect(winX + 20, winY + 14, 250, 25), "LIGHT & ATMOSPHERE (F3)");
 
-            float curY = winY + 48f;
-
-            if (!IsMouseOverUI())
-            {
-                GameObject aimed = GetAimedPlacedObject();
-                if (aimed != null && (PlacedLights.ContainsKey(aimed) || aimed.name.ToLower().Contains("spotlight")))
-                {
-                    SelectedLightObject = aimed;
-                }
-            }
+            float curY = winY + 46f;
 
             if (SelectedLightObject != null && !SelectedLightObject.activeSelf)
             {
@@ -3066,6 +3564,8 @@ namespace DeadCoreEditor
                 {
                     curIdx = (curIdx - 1 + allLights.Count) % allLights.Count;
                     SelectedLightObject = allLights[curIdx];
+                    IsBlockSelected = false;
+                    PlacementHologramController.DestroyPreview();
                 }
 
                 GUI.color = Color.white;
@@ -3076,10 +3576,12 @@ namespace DeadCoreEditor
                 {
                     curIdx = (curIdx + 1) % allLights.Count;
                     SelectedLightObject = allLights[curIdx];
+                    IsBlockSelected = false;
+                    PlacementHologramController.DestroyPreview();
                 }
 
                 GUI.color = new Color(0.8f, 0.3f, 0.3f);
-                if (GUI.Button(new Rect(winX + 235, curY, 70, 24), "Deselect"))
+                if (GUI.Button(new Rect(winX + 235, curY, 80, 24), "Deselect"))
                 {
                     SelectedLightObject = null;
                 }
@@ -3091,30 +3593,18 @@ namespace DeadCoreEditor
                 LightConfig cfg = PlacedLights[SelectedLightObject];
                 bool changed = false;
 
+                GUI.color = new Color(1f, 0.9f, 0.3f);
+                string title = cfg.IsDirectional ? "[GLOBAL SUNLIGHT SOURCE]" : "[TECH SPOTLIGHT]";
+                GUI.Label(new Rect(winX + 15, curY, winW - 30, 18), $"{title} Aim with Arrows | [ ] Roll");
+                curY += 22f;
+
+                // 1. INTENSITY
                 GUI.color = Color.white;
-                GUI.Label(new Rect(winX + 15, curY, 200, 18), $"Light Range: {cfg.Range:F0}m");
+                GUI.Label(new Rect(winX + 15, curY, 200, 18), $"Light Intensity: <b><color=#00E5FF>{cfg.Intensity:F1}x</color></b>");
                 curY += 18f;
-                float newRange = GUI.HorizontalSlider(new Rect(winX + 15, curY, winW - 30, 16), cfg.Range, 1f, 1000f);
-                if (Mathf.Abs(newRange - cfg.Range) > 0.5f)
-                {
-                    cfg.Range = newRange;
-                    changed = true;
-                }
-                curY += 22f;
 
-                GUI.Label(new Rect(winX + 15, curY, 200, 18), $"Beam Angle: {cfg.SpotAngle:F0}°");
-                curY += 18f;
-                float newAngle = GUI.HorizontalSlider(new Rect(winX + 15, curY, winW - 30, 16), cfg.SpotAngle, 1f, 175f);
-                if (Mathf.Abs(newAngle - cfg.SpotAngle) > 0.5f)
-                {
-                    cfg.SpotAngle = newAngle;
-                    changed = true;
-                }
-                curY += 22f;
-
-                GUI.Label(new Rect(winX + 15, curY, 200, 18), $"Intensity: {cfg.Intensity:F1}x");
-                curY += 18f;
-                float newInt = GUI.HorizontalSlider(new Rect(winX + 15, curY, winW - 30, 16), cfg.Intensity, 0.1f, 50f);
+                // Widen the slider range to 0.1x - 30.0x:
+                float newInt = GUI.HorizontalSlider(new Rect(winX + 15, curY, winW - 30, 16), cfg.Intensity, 0.1f, 30.0f);
                 if (Mathf.Abs(newInt - cfg.Intensity) > 0.05f)
                 {
                     cfg.Intensity = newInt;
@@ -3122,32 +3612,91 @@ namespace DeadCoreEditor
                 }
                 curY += 22f;
 
-                GUI.color = new Color(0.4f, 0.9f, 1f);
-                GUI.Label(new Rect(winX + 15, curY, 200, 18), $"Volumetric Beam: {cfg.VolumetricDimmer:F1}x");
-                curY += 18f;
-                float newVol = GUI.HorizontalSlider(new Rect(winX + 15, curY, winW - 30, 16), cfg.VolumetricDimmer, 0.0f, 10.0f);
-                if (Mathf.Abs(newVol - cfg.VolumetricDimmer) > 0.05f)
+                // 2. CONE ANGLE (Disabled for Directional Sun)
+                if (!cfg.IsDirectional)
                 {
-                    cfg.VolumetricDimmer = newVol;
+                    GUI.Label(new Rect(winX + 15, curY, 200, 18), $"Cone Angle: <b><color=#FFEB3B>{cfg.SpotAngle:F0}°</color></b>");
+                    curY += 18f;
+                    float newAngle = GUI.HorizontalSlider(new Rect(winX + 15, curY, winW - 30, 16), cfg.SpotAngle, 10f, 150f);
+                    if (Mathf.Abs(newAngle - cfg.SpotAngle) > 0.5f)
+                    {
+                        cfg.SpotAngle = newAngle;
+                        changed = true;
+                    }
+                    curY += 22f;
+                }
+                else
+                {
+                    GUI.color = Color.gray;
+                    GUI.Label(new Rect(winX + 15, curY, 280, 18), "Cone Angle: [INFINITE / GLOBAL SUN]");
+                    curY += 36f;
+                }
+
+                // 3. VOLUMETRIC INTENSITY
+                GUI.color = new Color(0.6f, 0.9f, 1f);
+                GUI.Label(new Rect(winX + 15, curY, 240, 18), $"Volumetric Intensity: <b><color=#E040FB>{cfg.VolumetricIntensity:F1}x</color></b>");
+                curY += 18f;
+                float newVol = GUI.HorizontalSlider(new Rect(winX + 15, curY, winW - 30, 16), cfg.VolumetricIntensity, 0.0f, 10.0f);
+                if (Mathf.Abs(newVol - cfg.VolumetricIntensity) > 0.05f)
+                {
+                    cfg.VolumetricIntensity = newVol;
                     changed = true;
                 }
+                curY += 26f;
+
+                // 4. FULL RGB COLOR PICKER
+                GUI.color = Color.white;
+                GUI.Label(new Rect(winX + 15, curY, 180, 18), "Light Color (RGB Picker):");
+
+                Color oldGuiCol = GUI.color;
+                GUI.color = cfg.Color;
+                GUI.Box(new Rect(winX + winW - 65f, curY - 2f, 50f, 22f), "");
+                GUI.color = oldGuiCol;
                 curY += 24f;
 
-                GUI.color = Color.white;
-                GUI.Label(new Rect(winX + 15, curY, 150, 18), "Beam Color:");
-                curY += 20f;
-                float cW = (winW - 50) / 5f;
+                // Red
+                GUI.color = new Color(1f, 0.3f, 0.3f);
+                GUI.Label(new Rect(winX + 15, curY, 60, 16), $"R: {cfg.Color.r:F2}");
+                float r = GUI.HorizontalSlider(new Rect(winX + 75, curY + 2, winW - 95, 14), cfg.Color.r, 0f, 1f);
+                curY += 18f;
 
+                // Green
+                GUI.color = new Color(0.3f, 1f, 0.4f);
+                GUI.Label(new Rect(winX + 15, curY, 60, 16), $"G: {cfg.Color.g:F2}");
+                float g = GUI.HorizontalSlider(new Rect(winX + 75, curY + 2, winW - 95, 14), cfg.Color.g, 0f, 1f);
+                curY += 18f;
+
+                // Blue
+                GUI.color = new Color(0.3f, 0.7f, 1f);
+                GUI.Label(new Rect(winX + 15, curY, 60, 16), $"B: {cfg.Color.b:F2}");
+                float b = GUI.HorizontalSlider(new Rect(winX + 75, curY + 2, winW - 95, 14), cfg.Color.b, 0f, 1f);
+                curY += 24f;
+
+                if (Mathf.Abs(r - cfg.Color.r) > 0.01f || Mathf.Abs(g - cfg.Color.g) > 0.01f || Mathf.Abs(b - cfg.Color.b) > 0.01f)
+                {
+                    cfg.Color = new Color(r, g, b, 1f);
+                    changed = true;
+                }
+
+                // Quick Palette Presets
+                float cW = (winW - 50) / 5f;
                 GUI.color = Color.cyan;
-                if (GUI.Button(new Rect(winX + 15, curY, cW, 22), "Cyan")) { cfg.Color = Color.cyan; changed = true; }
-                GUI.color = new Color(1f, 0.5f, 0.1f);
-                if (GUI.Button(new Rect(winX + 15 + cW + 4, curY, cW, 22), "Amber")) { cfg.Color = new Color(1f, 0.5f, 0.1f); changed = true; }
+                if (GUI.Button(new Rect(winX + 15, curY, cW, 20), "Cyan")) { cfg.Color = Color.cyan; changed = true; }
+                GUI.color = new Color(1f, 0.75f, 0.3f);
+                if (GUI.Button(new Rect(winX + 15 + cW + 4, curY, cW, 20), "Sun")) { cfg.Color = new Color(1f, 0.75f, 0.3f); changed = true; }
                 GUI.color = new Color(0.2f, 1f, 0.35f);
-                if (GUI.Button(new Rect(winX + 15 + (cW + 4) * 2, curY, cW, 22), "Green")) { cfg.Color = Color.green; changed = true; }
+                if (GUI.Button(new Rect(winX + 15 + (cW + 4) * 2, curY, cW, 20), "Green")) { cfg.Color = Color.green; changed = true; }
                 GUI.color = new Color(1f, 0.25f, 0.25f);
-                if (GUI.Button(new Rect(winX + 15 + (cW + 4) * 3, curY, cW, 22), "Red")) { cfg.Color = Color.red; changed = true; }
+                if (GUI.Button(new Rect(winX + 15 + (cW + 4) * 3, curY, cW, 20), "Red")) { cfg.Color = Color.red; changed = true; }
                 GUI.color = Color.white;
-                if (GUI.Button(new Rect(winX + 15 + (cW + 4) * 4, curY, cW, 22), "White")) { cfg.Color = Color.white; changed = true; }
+                if (GUI.Button(new Rect(winX + 15 + (cW + 4) * 4, curY, cW, 20), "White")) { cfg.Color = Color.white; changed = true; }
+                curY += 28f;
+
+                GUI.color = new Color(0.2f, 0.65f, 0.95f);
+                if (GUI.Button(new Rect(winX + 15, curY, winW - 30, 22), "Reset Aim (0°, 0°, 0°)"))
+                {
+                    SelectedLightObject.transform.rotation = Quaternion.identity;
+                }
 
                 if (changed)
                 {
@@ -3157,9 +3706,9 @@ namespace DeadCoreEditor
             else
             {
                 GUI.color = Color.gray;
-                GUI.Label(new Rect(winX + 15, curY + 25, 290, 60), allLights.Count > 0
-                    ? "Click '<' or '>' above to select a light,\nor aim at any Tech Spotlight in the world."
-                    : "No Tech Spotlights placed yet.\nSelect 'Tech Spotlight' from Gameplay to place one.");
+                GUI.Label(new Rect(winX + 15, curY + 25, 290, 80), allLights.Count > 0
+                    ? "Click '<' or '>' above to select a light,\nor click any Tech Spotlight or Sunlight in the world."
+                    : "No lights placed yet.\nSelect 'Global Sunlight' or 'Tech Spotlight' from Gameplay to place one.");
             }
 
             GUI.color = orig;
@@ -3230,18 +3779,15 @@ namespace DeadCoreEditor
         {
             GameObject player = FindPlayerEntity();
             Vector3 startPos = LevelSpawnPosition;
-            Vector3 forwardDir = new Vector3(0f, 0f, 1f);
 
             if (player != null)
             {
                 startPos = player.transform.position;
                 LevelSpawnPosition = startPos;
-                forwardDir = player.transform.forward;
-                forwardDir.y = 0;
-                forwardDir.Normalize();
             }
 
             SceneHarvestingService.HarvestAllSceneModels();
+            SceneHarvestingService.DebugDumpSceneLighting();
             SceneHarvestingService.HideVanillaLevelGeometry();
 
             if (!string.IsNullOrEmpty(MapBrowserService.SelectedMapPath) && File.Exists(MapBrowserService.SelectedMapPath))
@@ -3282,8 +3828,25 @@ namespace DeadCoreEditor
 
                 if (startPlatform != null)
                 {
-                    PlacedObjects.Add(startPlatform);
+                    RegisterPlacedObject(startPlatform);
                     MelonLogger.Msg($">> [SafeSpawn] Spawned solid floor platform directly under player at {p0Pos}!");
+                }
+            }
+
+            for (int i = 0; i < PlacedObjects.Count; i++)
+            {
+                if (PlacedObjects[i] != null)
+                {
+                    AttachEditorSnappingProxy(PlacedObjects[i]);
+                }
+            }
+
+            foreach (var obj in PlacedObjects)
+            {
+                if (obj != null && obj.activeSelf && obj.name.ToLower().Contains("turret"))
+                {
+                    float delay = TurretFireDelays.ContainsKey(obj) ? TurretFireDelays[obj] : ActiveTurretFireDelay;
+                    ApplyTurretSettings(obj, delay, 1500f);
                 }
             }
 
@@ -3297,17 +3860,8 @@ namespace DeadCoreEditor
 
             LevelTimer = 0f;
             IsLevelCompleted = false;
-
             _lightRefreshTimer = 0.35f;
-
-            // Attach simplified proxy box to all loaded objects
-            for (int i = 0; i < PlacedObjects.Count; i++)
-            {
-                if (PlacedObjects[i] != null)
-                {
-                    AttachEditorSnappingProxy(PlacedObjects[i]);
-                }
-            }
+            SetSpotlightMeshesVisible(false);
 
             UnfreezePlayerControls();
             IsLevelInitialized = true;
@@ -3339,19 +3893,20 @@ namespace DeadCoreEditor
             {
                 if (clean.Contains("spawn") || clean.Contains("entry")) found = AllAssets.Find(a => a.IsSpawnGate);
                 else if (clean.Contains("goal") || clean.Contains("finish") || clean.Contains("end")) found = AllAssets.Find(a => a.IsGoalGate);
+                else if (clean.Contains("sunlight") || clean.Contains("sun")) found = AllAssets.Find(a => a.IsSunlight);
                 else if (clean.Contains("spotlight") || clean.Contains("light")) found = AllAssets.Find(a => a.IsSpotlight);
                 else if (clean.Contains("rotating") && clean.Contains("laser")) found = AllAssets.Find(a => a.IsRotatingLaser);
                 else if (clean.Contains("long") && clean.Contains("laser")) found = AllAssets.Find(a => a.DisplayName.ToLower().Contains("long laser"));
                 else if (clean.Contains("laser") || clean.Contains("barrier")) found = AllAssets.Find(a => a.IsLaser && !a.IsRotatingLaser);
-                else if (clean.Contains("platform") || clean.Contains("floor") || clean.Contains("plateforme"))
-                    found = AllAssets.Find(a => a.DisplayName.ToLower().Contains("platform") || a.DisplayName.ToLower().Contains("floor"));
+                else if (clean.Contains("platform") || clean.Contains("floor") || clean.Contains("plateforme") || clean.Contains("16x16") || clean.Contains("16x2x16"))
+                    found = AllAssets.Find(a => a.DisplayName.ToLower().Contains("platform") || a.DisplayName.ToLower().Contains("floor") || (a.FilterMesh != null && a.FilterMesh.name.ToLower().Contains("16x2x16")));
                 else if (clean.Contains("jumper") || clean.Contains("launch")) found = AllAssets.Find(a => a.IsJumper);
                 else if (clean.Contains("checkpoint")) found = AllAssets.Find(a => a.IsCheckPoint && !a.IsSpawnGate && !a.IsGoalGate);
                 else if (clean.Contains("turret") || clean.Contains("defense")) found = AllAssets.Find(a => a.IsTurret);
                 else if (clean.Contains("helix") || clean.Contains("turbine") || clean.Contains("fan")) found = AllAssets.Find(a => a.IsHelix);
                 else if (clean.Contains("crate")) found = AllAssets.Find(a => a.DisplayName.ToLower().Contains("crate"));
                 else if (clean.Contains("pillar") || clean.Contains("monolith")) found = AllAssets.Find(a => a.DisplayName.ToLower().Contains("pillar") || a.DisplayName.ToLower().Contains("monolith"));
-                else if (clean.Contains("gate") || clean.Contains("bar")) found = AllAssets.Find(a => a.FilterMesh != null && a.FilterMesh.name.ToLower().Contains("gate"));
+                else if (clean.Contains("gate") || clean.Contains("bar")) found = AllAssets.Find(a => a.Category == AssetCategory.Building && (a.DisplayName.ToLower().Contains("gate") || a.DisplayName.ToLower().Contains("bar") || (a.FilterMesh != null && a.FilterMesh.name.ToLower().Contains("gate"))));
                 else if (clean.Contains("wall")) found = AllAssets.Find(a => a.DisplayName.ToLower().Contains("wall") || (a.FilterMesh != null && a.FilterMesh.name.ToLower().Contains("wall")));
                 else if (clean.Contains("cube")) found = AllAssets.Find(a => a.DisplayName.ToLower().Contains("cube") || (a.FilterMesh != null && a.FilterMesh.name.ToLower().Contains("cube")));
             }
@@ -3387,6 +3942,23 @@ namespace DeadCoreEditor
 
                 Collider col = obj.GetComponentInChildren<Collider>();
                 if (col != null) col.isTrigger = true;
+            }
+            else if (asset.IsSunlight)
+            {
+                obj.name = "Custom_Global_Sunlight";
+                Light l = obj.GetComponentInChildren<Light>();
+                if (l != null)
+                {
+                    l.enabled = true;
+                    PlacedLights[obj] = new LightConfig
+                    {
+                        IsDirectional = true,
+                        Color = new Color(1f, 0.85f, 0.6f),
+                        Intensity = 3.0f,
+                        VolumetricIntensity = 1.0f
+                    };
+                    ApplyLightConfig(obj, PlacedLights[obj]);
+                }
             }
             else if (asset.IsSpotlight)
             {
@@ -3440,8 +4012,7 @@ namespace DeadCoreEditor
                 ApplyJumperForce(obj, ActiveJumperForce);
             }
 
-            // 1. Full-detail MeshCollider for player walking & physics
-            if (!asset.IsTurret && !asset.IsCheckPoint && !asset.IsHelix && !asset.IsSpawnGate && !asset.IsGoalGate && !asset.IsSpotlight && !asset.IsLaser)
+            if (!asset.IsTurret && !asset.IsCheckPoint && !asset.IsHelix && !asset.IsSpawnGate && !asset.IsGoalGate && !asset.IsSpotlight && !asset.IsSunlight && !asset.IsLaser)
             {
                 if (obj.GetComponentInChildren<Collider>() == null)
                 {
@@ -3454,7 +4025,6 @@ namespace DeadCoreEditor
                 }
             }
 
-            // 2. Attach clean 90°/45° simplified proxy box for editor snapping & overlap detection
             AttachEditorSnappingProxy(obj);
 
             return obj;
@@ -3472,14 +4042,15 @@ namespace DeadCoreEditor
             proxyObj.transform.localPosition = Vector3.zero;
             proxyObj.transform.localRotation = Quaternion.identity;
             proxyObj.transform.localScale = Vector3.one;
-            proxyObj.layer = 2; // Ignore Raycast (so placement raycasts hit the world surface, not this proxy)
+            proxyObj.layer = 2;
 
             Bounds proxyB = PlacementHologramController.CalculateOptimizedProxyBounds(obj);
             BoxCollider bc = proxyObj.AddComponent<BoxCollider>();
-            bc.isTrigger = true; // Trigger: Player CharacterController ignores it completely
+            bc.isTrigger = true;
             bc.center = proxyB.center;
             bc.size = proxyB.size;
         }
+
         public static GameObject FindPlayerEntity()
         {
             GameObject tagged = GameObject.FindWithTag("Player");
@@ -3506,7 +4077,6 @@ namespace DeadCoreEditor
         private static float _pitch = 0f;
         private static float _baseSpeed = 24f;
 
-        // Track RMB tap duration to distinguish tap-cancel from flycam hold
         private static float _rmbDownTime = 0f;
         private static Vector2 _rmbDownMousePos = Vector2.zero;
 
@@ -3533,7 +4103,6 @@ namespace DeadCoreEditor
         {
             if (_camInstance == null) return;
 
-            // 1. Detect RMB Tap to deselect (Replaces Backspace)
             if (Input.GetMouseButtonDown(1))
             {
                 _rmbDownTime = Time.realtimeSinceStartup;
@@ -3544,7 +4113,6 @@ namespace DeadCoreEditor
                 float duration = Time.realtimeSinceStartup - _rmbDownTime;
                 float dist = Vector2.Distance(Input.mousePosition, _rmbDownMousePos);
 
-                // Quick click without moving the mouse = cancel hand
                 if (duration < 0.25f && dist < 5f)
                 {
                     if (EditorSessionManager.IsBlockSelected)
@@ -3556,7 +4124,6 @@ namespace DeadCoreEditor
                 }
             }
 
-            // 2. Hold RMB to Fly / Look around
             if (Input.GetMouseButton(1))
             {
                 Cursor.lockState = CursorLockMode.Locked;
@@ -3610,6 +4177,8 @@ namespace DeadCoreEditor
 
         private static BoxCollider _ghostBoxCollider = null;
         private static Vector3 _targetPosition = Vector3.zero;
+        public static Vector3 TargetPosition => _targetPosition;
+
         private static Vector3 _currentSnappedNormal = Vector3.up;
 
         public static void SpawnHologram(CatalogAsset asset)
@@ -3620,7 +4189,7 @@ namespace DeadCoreEditor
             _ghostInstance = GameObject.Instantiate(asset.SourceTemplate);
             _ghostInstance.name = "Holographic_Ghost_Preview";
 
-            _ghostInstance.layer = 2; // Ignore Raycast
+            _ghostInstance.layer = 2;
             foreach (var tr in _ghostInstance.GetComponentsInChildren<Transform>(true))
             {
                 tr.gameObject.layer = 2;
@@ -3647,7 +4216,6 @@ namespace DeadCoreEditor
                 EditorSessionManager.ApplyGateVisualTint(_ghostInstance, new Color(0.1f, 0.65f, 1.0f));
             }
 
-            // Generate clean, quantized box proxy bounds
             Bounds b = CalculateOptimizedProxyBounds(_ghostInstance);
 
             _ghostBoxCollider = _ghostInstance.AddComponent<BoxCollider>();
@@ -3661,7 +4229,6 @@ namespace DeadCoreEditor
             _ghostInstance.SetActive(true);
         }
 
-        // Quantizes raw model mesh bounds to clean multiples of 0.5m so geometry stacks flush
         public static Bounds CalculateOptimizedProxyBounds(GameObject go)
         {
             Bounds raw = new Bounds(Vector3.zero, Vector3.zero);
@@ -3690,7 +4257,6 @@ namespace DeadCoreEditor
 
             if (!hasBounds) raw = new Bounds(Vector3.zero, new Vector3(2f, 2f, 2f));
 
-            // Snap extents to clean 0.5m grid intervals to eliminate fractional mesh overhang
             Vector3 size = raw.size;
             size.x = Mathf.Max(0.5f, Mathf.Round(size.x * 2f) * 0.5f);
             size.y = Mathf.Max(0.5f, Mathf.Round(size.y * 2f) * 0.5f);
@@ -3704,13 +4270,11 @@ namespace DeadCoreEditor
             return new Bounds(center, size);
         }
 
-        // Snaps raw surface normals strictly to 90° cardinals or 45° diagonals
         public static Vector3 SnapNormalToDiscreteAngles(Vector3 rawNormal)
         {
             if (rawNormal.sqrMagnitude < 0.01f) return Vector3.up;
             rawNormal.Normalize();
 
-            // 1. Cardinal Snap (Floors, Ceilings, Flat Walls)
             if (rawNormal.y > 0.85f) return Vector3.up;
             if (rawNormal.y < -0.85f) return Vector3.down;
             if (Mathf.Abs(rawNormal.y) < 0.25f)
@@ -3721,7 +4285,6 @@ namespace DeadCoreEditor
                     return new Vector3(0f, 0f, Mathf.Sign(rawNormal.z));
             }
 
-            // 2. 45° Diagonal Ramp Snap
             float signY = Mathf.Sign(rawNormal.y);
             float signX = Mathf.Sign(rawNormal.x);
             float signZ = Mathf.Sign(rawNormal.z);
@@ -3740,10 +4303,7 @@ namespace DeadCoreEditor
         {
             if (EditorSessionManager.AutoAlignToSurface)
             {
-                // Align base with the discrete surface normal
                 Quaternion alignRot = Quaternion.FromToRotation(Vector3.up, surfaceNormal);
-
-                // Apply user yaw around that surface normal (snapped to 45° intervals)
                 float snappedYaw = Mathf.Round(EditorSessionManager.TargetYaw / 45f) * 45f;
                 Quaternion yawRot = Quaternion.AngleAxis(snappedYaw, surfaceNormal);
 
@@ -3799,12 +4359,9 @@ namespace DeadCoreEditor
                 hitNormal = -ray.direction;
             }
 
-            // Snap normal to discrete 90° or 45° angles
             _currentSnappedNormal = SnapNormalToDiscreteAngles(hitNormal);
-
             Quaternion targetRot = CalculateActiveRotation(EditorSessionManager.CurrentAsset, _currentSnappedNormal);
 
-            // Compute position where Grid Snap is strictly preserved and overlaps resolve on the grid
             _targetPosition = CalculateProxySnappedPosition(
                 rawTargetPos,
                 targetRot,
@@ -3825,13 +4382,13 @@ namespace DeadCoreEditor
         }
 
         private static Vector3 CalculateProxySnappedPosition(
-    Vector3 rawPos,
-    Quaternion rot,
-    BoxCollider proxyCol,
-    Vector3 normal,
-    bool hasHit,
-    Collider hitCol,
-    CatalogAsset asset)
+            Vector3 rawPos,
+            Quaternion rot,
+            BoxCollider proxyCol,
+            Vector3 normal,
+            bool hasHit,
+            Collider hitCol,
+            CatalogAsset asset)
         {
             if (proxyCol == null) return rawPos;
 
@@ -3849,25 +4406,20 @@ namespace DeadCoreEditor
                 Vector3 uY = rot * Vector3.up;
                 Vector3 uZ = rot * Vector3.forward;
 
-                // Exact extent along the discrete snapped normal
                 float extentAlongNormal = halfExtents.x * Mathf.Abs(Vector3.Dot(uX, normal))
                                         + halfExtents.y * Mathf.Abs(Vector3.Dot(uY, normal))
                                         + halfExtents.z * Mathf.Abs(Vector3.Dot(uZ, normal));
 
                 float extraOffset = (asset != null) ? asset.VerticalOffset : 0f;
 
-                // Base flush contact plane against the surface
                 Vector3 contactCenter = rawPos + normal * (extentAlongNormal + 0.001f + extraOffset);
                 targetPos = contactCenter - (rot * centerOffset);
 
-                // --- STEP 1: INITIAL STRICT GRID SNAP (ALL 3 AXES) ---
                 if (isGridActive)
                 {
                     targetPos = ApplyStrictGridSnap(targetPos, normal, grid);
                 }
 
-                // --- STEP 2: SIMPLIFIED PROXY OVERLAP CHECK ---
-                // Shrink probe by 3cm so flush adjacent grid faces NEVER false-alarm as overlapping
                 Vector3 probeHalfExtents = halfExtents - Vector3.one * 0.03f;
                 probeHalfExtents.x = Mathf.Max(0.04f, probeHalfExtents.x);
                 probeHalfExtents.y = Mathf.Max(0.04f, probeHalfExtents.y);
@@ -3886,23 +4438,19 @@ namespace DeadCoreEditor
                     if (col.transform.root == ghostRoot) continue;
                     if (col.GetComponent<CharacterController>() != null) continue;
 
-                    // FIX: Completely ignore the object we are attaching TO (including all its children and proxies)
                     if (hitRoot != null && col.transform.root == hitRoot) continue;
 
-                    // Only test against placed objects or their snapping proxies
                     bool isPlaced = col.name.StartsWith("Custom_") ||
                                     col.transform.root.name.StartsWith("Custom_") ||
                                     col.name == "Editor_Snapping_Proxy";
 
                     if (!isPlaced) continue;
 
-                    // FIX: Push along the ACTUAL direction of penetration, NEVER a blind macro-jump!
                     if (Physics.ComputePenetration(
                         proxyCol, targetPos, rot,
                         col, col.transform.position, col.transform.rotation,
                         out Vector3 pushDir, out float pushDist))
                     {
-                        // Only resolve if actual penetration exceeds the probe tolerance (3cm)
                         if (pushDist > 0.03f)
                         {
                             targetPos += pushDir * pushDist;
@@ -3911,8 +4459,6 @@ namespace DeadCoreEditor
                     }
                 }
 
-                // --- STEP 3: MANDATORY FINAL ROUNDING (ROUNDING AFTER OVERLAP) ---
-                // Guarantees all 3 coordinates lock strictly to the grid after any push
                 if (isGridActive)
                 {
                     targetPos = ApplyStrictGridSnap(targetPos, normal, grid);
@@ -3920,7 +4466,6 @@ namespace DeadCoreEditor
             }
             else
             {
-                // Free air placement: direct grid snap on all 3 coordinates
                 if (isGridActive)
                 {
                     targetPos = new Vector3(
@@ -3934,7 +4479,6 @@ namespace DeadCoreEditor
             return targetPos;
         }
 
-        // Snaps ALL THREE AXES strictly to clean grid/sub-grid intervals
         private static Vector3 ApplyStrictGridSnap(Vector3 pos, Vector3 normal, float grid)
         {
             if (grid <= 0.01f) return pos;
@@ -3942,25 +4486,25 @@ namespace DeadCoreEditor
             Vector3 snapped = pos;
             float depthStep = (grid > 0.5f) ? (grid * 0.5f) : grid;
 
-            if (Mathf.Abs(normal.y) > 0.65f) // Floor / Ceiling
+            if (Mathf.Abs(normal.y) > 0.65f)
             {
                 snapped.x = Mathf.Round(snapped.x / grid) * grid;
                 snapped.z = Mathf.Round(snapped.z / grid) * grid;
-                snapped.y = Mathf.Round(snapped.y / depthStep) * depthStep; // Snaps vertical contact cleanly!
+                snapped.y = Mathf.Round(snapped.y / depthStep) * depthStep;
             }
-            else if (Mathf.Abs(normal.x) > 0.65f) // X-Walls
+            else if (Mathf.Abs(normal.x) > 0.65f)
             {
                 snapped.y = Mathf.Round(snapped.y / grid) * grid;
                 snapped.z = Mathf.Round(snapped.z / grid) * grid;
                 snapped.x = Mathf.Round(snapped.x / depthStep) * depthStep;
             }
-            else if (Mathf.Abs(normal.z) > 0.65f) // Z-Walls
+            else if (Mathf.Abs(normal.z) > 0.65f)
             {
                 snapped.x = Mathf.Round(snapped.x / grid) * grid;
-                snapped.y = Mathf.Round(snapped.y / grid) * grid;
-                snapped.z = Mathf.Round(snapped.z / depthStep) * depthStep;
+                snapped.y = Mathf.Round(snapped.y / depthStep) * depthStep;
+                snapped.z = Mathf.Round(snapped.z / grid) * grid;
             }
-            else // Diagonal Ramps (45°)
+            else
             {
                 snapped.x = Mathf.Round(snapped.x / grid) * grid;
                 snapped.y = Mathf.Round(snapped.y / depthStep) * depthStep;
@@ -3981,14 +4525,19 @@ namespace DeadCoreEditor
 
             if (placed != null)
             {
-                EditorSessionManager.PlacedObjects.Add(placed);
+                EditorSessionManager.RegisterPlacedObject(placed);
                 EditorSessionManager.LastPlacedObject = placed;
+
+                if (asset.IsSpotlight || asset.IsSunlight)
+                {
+                    EditorSessionManager.SelectedLightObject = placed;
+                }
 
                 float param = 0f;
                 if (asset.IsJumper) param = EditorSessionManager.ActiveJumperForce;
                 else if (asset.IsHelix) param = EditorSessionManager.ActiveTurbineSpeed;
                 else if (asset.IsTurret) param = EditorSessionManager.ActiveTurretFireDelay;
-                else if (asset.IsSpotlight && EditorSessionManager.PlacedLights.ContainsKey(placed)) param = EditorSessionManager.PlacedLights[placed].Range;
+                else if ((asset.IsSpotlight || asset.IsSunlight) && EditorSessionManager.PlacedLights.ContainsKey(placed)) param = EditorSessionManager.PlacedLights[placed].Intensity;
 
                 EditorSessionManager.UndoHistory.Push(new HistoryRecord
                 {
@@ -4019,30 +4568,30 @@ namespace DeadCoreEditor
     }
 
     // =========================================================================================================
-    // 3D CAROUSEL WHEEL TOOLBAR
+    // OVERHAULED 3D CAROUSEL ARC TOOLBAR (Semi-Circular Arc with smooth fading & zero crowding)
     // =========================================================================================================
     public static class CarouselWheelToolbar
     {
-        public static float WheelRadius = 0.48f;
-        public static float IconScaleMultiplier = 0.025f;
-        public static float WheelCenterY = -0.75f;
-        public static float WheelDistanceZ = 0.95f;
+        public static float ArcRadius = 0.75f;
+        public static float IconScaleMultiplier = 0.026f;
+        public static float ArcCenterY = -0.35f;
+        public static float ArcDistanceZ = 0.96f;
 
         private static GameObject _wheelRoot = null;
         private static readonly List<GameObject> _spawnedIcons = new List<GameObject>();
 
-        private static float _currentAngle = 0f;
-        private static float _targetAngle = 0f;
+        private static float _targetOffset = 0f;
+        private static float _currentOffset = 0f;
         private static int _lastHighlightedIndex = -1;
 
         public static void CreateToolbar(Camera viewCam)
         {
             if (_wheelRoot != null || viewCam == null) return;
 
-            _wheelRoot = new GameObject("Magical_Carousel_Wheel");
+            _wheelRoot = new GameObject("Magical_Carousel_Arc");
             _wheelRoot.transform.SetParent(viewCam.transform, false);
 
-            _wheelRoot.transform.localPosition = new Vector3(0f, WheelCenterY, WheelDistanceZ);
+            _wheelRoot.transform.localPosition = new Vector3(0f, ArcCenterY, ArcDistanceZ);
             _wheelRoot.transform.localRotation = Quaternion.identity;
             _wheelRoot.layer = 2;
 
@@ -4052,42 +4601,61 @@ namespace DeadCoreEditor
 
         public static void SetTargetIndex(int index)
         {
-            int total = EditorSessionManager.ActiveTabAssets.Count;
-            if (total == 0) return;
-
-            float stepAngle = 360f / total;
-            _targetAngle = -index * stepAngle;
+            _targetOffset = index;
         }
 
         public static void UpdateCarousel()
         {
             if (_wheelRoot == null) return;
 
-            _currentAngle = Mathf.LerpAngle(_currentAngle, _targetAngle, Time.deltaTime * 14f);
-            _wheelRoot.transform.localRotation = Quaternion.Euler(0f, 0f, _currentAngle);
+            _currentOffset = Mathf.Lerp(_currentOffset, _targetOffset, Time.deltaTime * 14f);
+
+            var list = EditorSessionManager.ActiveTabAssets;
+            int total = list.Count;
+            if (total == 0) return;
+
+            float slotSpacingAngle = 24f;
 
             for (int i = 0; i < _spawnedIcons.Count; i++)
             {
-                if (_spawnedIcons[i] != null && i < EditorSessionManager.ActiveTabAssets.Count)
-                {
-                    _spawnedIcons[i].transform.localRotation = Quaternion.Euler(0f, 0f, -_currentAngle) * Quaternion.Euler(15f, Time.time * 30f, 0f);
+                GameObject icon = _spawnedIcons[i];
+                if (icon == null || i >= total) continue;
 
-                    bool isTop = (i == EditorSessionManager.SelectedAssetIndex);
-                    float baseScale = EditorSessionManager.ActiveTabAssets[i].DefaultScale * IconScaleMultiplier;
-                    _spawnedIcons[i].transform.localScale = Vector3.one * (isTop ? baseScale * 1.35f : baseScale);
+                float diff = i - _currentOffset;
+
+                while (diff > total * 0.5f) diff -= total;
+                while (diff < -total * 0.5f) diff += total;
+
+                float absDiff = Mathf.Abs(diff);
+
+                if (absDiff > 3.4f)
+                {
+                    if (icon.activeSelf) icon.SetActive(false);
+                    continue;
                 }
+
+                if (!icon.activeSelf) icon.SetActive(true);
+
+                float angleDeg = 90f - (diff * slotSpacingAngle);
+                float angleRad = angleDeg * Mathf.Deg2Rad;
+
+                Vector3 targetPos = new Vector3(Mathf.Cos(angleRad) * ArcRadius, (Mathf.Sin(angleRad) - 1.0f) * ArcRadius, 0f);
+                icon.transform.localPosition = targetPos;
+                icon.transform.localRotation = Quaternion.Euler(15f, Time.time * 30f, 0f);
+
+                bool isSelected = (i == EditorSessionManager.SelectedAssetIndex);
+                float baseScale = list[i].DefaultScale * IconScaleMultiplier;
+                float falloff = Mathf.Clamp01(1.0f - (absDiff / 3.4f));
+
+                float finalScale = isSelected ? (baseScale * 1.35f) : (baseScale * Mathf.Lerp(0.5f, 1.0f, falloff));
+                icon.transform.localScale = Vector3.one * finalScale;
+
+                ApplyIconAlpha(icon, isSelected, falloff);
             }
 
             if (_lastHighlightedIndex != EditorSessionManager.SelectedAssetIndex)
             {
                 _lastHighlightedIndex = EditorSessionManager.SelectedAssetIndex;
-                for (int i = 0; i < _spawnedIcons.Count; i++)
-                {
-                    if (_spawnedIcons[i] != null)
-                    {
-                        ApplyIconHighlight(_spawnedIcons[i], i == EditorSessionManager.SelectedAssetIndex);
-                    }
-                }
             }
 
             if (Input.GetMouseButtonDown(0) && !Input.GetMouseButton(1) && !EditorSessionManager.IsBlockSelected)
@@ -4106,7 +4674,7 @@ namespace DeadCoreEditor
             }
         }
 
-        public static void ApplyIconHighlight(GameObject icon, bool isSelected)
+        private static void ApplyIconAlpha(GameObject icon, bool isSelected, float alpha)
         {
             if (icon == null) return;
 
@@ -4124,16 +4692,17 @@ namespace DeadCoreEditor
 
                     if (isSelected)
                     {
-                        mat.color = new Color(0.5f, 1.25f, 1.55f, 1f);
+                        mat.color = new Color(0.5f, 1.3f, 1.6f, 1f);
                         if (mat.HasProperty("_EmissionColor"))
                         {
-                            mat.SetColor("_EmissionColor", new Color(0.35f, 0.95f, 1.35f, 1f));
+                            mat.SetColor("_EmissionColor", new Color(0.4f, 1.0f, 1.4f, 1f));
                             mat.EnableKeyword("_EMISSION");
                         }
                     }
                     else
                     {
-                        mat.color = new Color(0.42f, 0.46f, 0.52f, 0.65f);
+                        Color c = new Color(0.45f, 0.5f, 0.58f, alpha);
+                        mat.color = c;
                         if (mat.HasProperty("_EmissionColor"))
                         {
                             mat.SetColor("_EmissionColor", Color.black);
@@ -4155,15 +4724,13 @@ namespace DeadCoreEditor
             int total = currentList.Count;
             if (total == 0 || _wheelRoot == null) return;
 
-            float stepAngle = 360f / total;
-
             for (int i = 0; i < total; i++)
             {
                 CatalogAsset asset = currentList[i];
                 if (asset.SourceTemplate == null) continue;
 
                 GameObject icon = GameObject.Instantiate(asset.SourceTemplate);
-                icon.name = $"Icon_{i}_{asset.DisplayName}";
+                icon.name = $"ArcIcon_{i}_{asset.DisplayName}";
                 icon.transform.SetParent(_wheelRoot.transform, false);
 
                 icon.layer = 2;
@@ -4171,10 +4738,6 @@ namespace DeadCoreEditor
                 {
                     tr.gameObject.layer = 2;
                 }
-
-                float angleRad = (i * stepAngle + 90f) * Mathf.Deg2Rad;
-                icon.transform.localPosition = new Vector3(Mathf.Cos(angleRad) * WheelRadius, Mathf.Sin(angleRad) * WheelRadius, 0f);
-                icon.transform.localScale = Vector3.one * (asset.DefaultScale * IconScaleMultiplier);
 
                 foreach (var mb in icon.GetComponentsInChildren<MonoBehaviour>(true)) GameObject.DestroyImmediate(mb);
                 foreach (var col in icon.GetComponentsInChildren<Collider>(true)) GameObject.DestroyImmediate(col);
@@ -4193,15 +4756,26 @@ namespace DeadCoreEditor
                 {
                     EditorSessionManager.ApplyGateVisualTint(icon, new Color(0.1f, 0.65f, 1.0f));
                 }
-
-                ApplyIconHighlight(icon, i == EditorSessionManager.SelectedAssetIndex);
+                else if (asset.IsSunlight)
+                {
+                    Renderer r = icon.GetComponentInChildren<Renderer>();
+                    if (r != null && r.material != null)
+                    {
+                        r.material.color = new Color(1f, 0.85f, 0.2f, 1f);
+                        if (r.material.HasProperty("_EmissionColor"))
+                        {
+                            r.material.SetColor("_EmissionColor", new Color(1.5f, 1.2f, 0.3f, 1f));
+                            r.material.EnableKeyword("_EMISSION");
+                        }
+                    }
+                }
 
                 icon.SetActive(true);
                 _spawnedIcons.Add(icon);
             }
 
             SetTargetIndex(EditorSessionManager.SelectedAssetIndex);
-            _currentAngle = _targetAngle;
+            _currentOffset = _targetOffset;
         }
 
         public static void DestroyToolbar()
@@ -4302,12 +4876,26 @@ namespace DeadCoreEditor
                 else if (EditorSessionManager.PlacedLights.ContainsKey(obj))
                 {
                     LightConfig cfg = EditorSessionManager.PlacedLights[obj];
-                    param = cfg.Range;
+                    param = cfg.Intensity;
                     string hexColor = ColorToHex(cfg.Color);
-                    extraParams = $";{cfg.SpotAngle.ToString("F1", inv)};{cfg.Intensity.ToString("F2", inv)};{hexColor};{cfg.VolumetricDimmer.ToString("F2", inv)}";
+                    extraParams = $";{cfg.SpotAngle.ToString("F1", inv)};{hexColor};{cfg.VolumetricIntensity.ToString("F2", inv)}";
                 }
 
-                lines.Add($"{name};{pos.x.ToString("F4", inv)};{pos.y.ToString("F4", inv)};{pos.z.ToString("F4", inv)};{scale.ToString("F4", inv)};{rot.x.ToString("F4", inv)};{rot.y.ToString("F4", inv)};{rot.z.ToString("F4", inv)};{rot.w.ToString("F4", inv)};{param.ToString("F2", inv)}{extraParams}");
+                string pathParams = ";PATH:0";
+                if (EditorSessionManager.MotionPaths.ContainsKey(obj))
+                {
+                    var mp = EditorSessionManager.MotionPaths[obj];
+                    pathParams = $";PATH:1:{mp.Speed.ToString("F2", inv)}:{mp.PointB.x.ToString("F4", inv)}:{mp.PointB.y.ToString("F4", inv)}:{mp.PointB.z.ToString("F4", inv)}";
+                }
+
+                int parentIdx = -1;
+                if (obj.transform.parent != null && EditorSessionManager.PlacedObjects.Contains(obj.transform.parent.gameObject))
+                {
+                    parentIdx = EditorSessionManager.PlacedObjects.IndexOf(obj.transform.parent.gameObject);
+                }
+                string parentParams = $";PARENT:{parentIdx}";
+
+                lines.Add($"{name};{pos.x.ToString("F4", inv)};{pos.y.ToString("F4", inv)};{pos.z.ToString("F4", inv)};{scale.ToString("F4", inv)};{rot.x.ToString("F4", inv)};{rot.y.ToString("F4", inv)};{rot.z.ToString("F4", inv)};{rot.w.ToString("F4", inv)};{param.ToString("F2", inv)}{extraParams}{pathParams}{parentParams}");
             }
 
             File.WriteAllLines(path, lines.ToArray());
@@ -4344,7 +4932,9 @@ namespace DeadCoreEditor
             string[] lines = File.ReadAllLines(fullPath);
             EditorSessionManager.ClearAllPlacedObjects();
 
+            List<int> loadedParentIndices = new List<int>();
             int count = 0;
+
             foreach (string line in lines)
             {
                 if (string.IsNullOrWhiteSpace(line)) continue;
@@ -4394,18 +4984,15 @@ namespace DeadCoreEditor
                         EditorSessionManager.LaserRotationSpeeds[obj] = customParam;
                     }
 
-                    if (lowName.Contains("spotlight") || obj.name.ToLower().Contains("spotlight"))
+                    if (lowName.Contains("spotlight") || lowName.Contains("sunlight") || obj.name.ToLower().Contains("spotlight") || obj.name.ToLower().Contains("sunlight"))
                     {
                         LightConfig cfg = new LightConfig();
-                        if (customParam > 0f) cfg.Range = customParam;
+                        cfg.IsDirectional = lowName.Contains("sunlight") || obj.name.ToLower().Contains("sunlight");
+                        if (customParam > 0f) cfg.Intensity = customParam;
 
                         if (p.Length >= 11) cfg.SpotAngle = ParseFloat(p[10]);
-                        if (p.Length >= 12) cfg.Intensity = ParseFloat(p[11]);
-                        if (p.Length >= 13)
-                        {
-                            cfg.Color = HexToColor(p[12]);
-                        }
-                        if (p.Length >= 14) cfg.VolumetricDimmer = ParseFloat(p[13]);
+                        if (p.Length >= 12) cfg.Color = HexToColor(p[11]);
+                        if (p.Length >= 13) cfg.VolumetricIntensity = ParseFloat(p[12]);
 
                         EditorSessionManager.ApplyLightConfig(obj, cfg);
                         if (EditorSessionManager.SelectedLightObject == null)
@@ -4414,8 +5001,48 @@ namespace DeadCoreEditor
                         }
                     }
 
-                    EditorSessionManager.PlacedObjects.Add(obj);
+                    int pathTagIdx = trimmed.IndexOf(";PATH:");
+                    if (pathTagIdx != -1)
+                    {
+                        string pathSub = trimmed.Substring(pathTagIdx + 6).Split(';')[0];
+                        string[] pathParts = pathSub.Split(':');
+                        if (pathParts.Length >= 5 && pathParts[0] == "1")
+                        {
+                            float spd = ParseFloat(pathParts[1]);
+                            Vector3 pB = new Vector3(ParseFloat(pathParts[2]), ParseFloat(pathParts[3]), ParseFloat(pathParts[4]));
+                            EditorSessionManager.MotionPaths[obj] = new ObjectMotionPath
+                            {
+                                PointA = pos,
+                                PointB = pB,
+                                Speed = spd > 0.1f ? spd : 3.5f
+                            };
+                        }
+                    }
+
+                    int pIndex = -1;
+                    int parentTagIdx = trimmed.IndexOf(";PARENT:");
+                    if (parentTagIdx != -1)
+                    {
+                        string pVal = trimmed.Substring(parentTagIdx + 8).Split(';')[0].Trim();
+                        int.TryParse(pVal, out pIndex);
+                    }
+                    loadedParentIndices.Add(pIndex);
+
+                    EditorSessionManager.RegisterPlacedObject(obj);
                     count++;
+                }
+            }
+
+            for (int i = 0; i < EditorSessionManager.PlacedObjects.Count; i++)
+            {
+                if (i < loadedParentIndices.Count && loadedParentIndices[i] >= 0 && loadedParentIndices[i] < EditorSessionManager.PlacedObjects.Count)
+                {
+                    GameObject child = EditorSessionManager.PlacedObjects[i];
+                    GameObject parent = EditorSessionManager.PlacedObjects[loadedParentIndices[i]];
+                    if (child != null && parent != null && child != parent)
+                    {
+                        child.transform.SetParent(parent.transform, true);
+                    }
                 }
             }
 
@@ -4430,6 +5057,66 @@ namespace DeadCoreEditor
     // =========================================================================================================
     public static class SceneHarvestingService
     {
+        public static Light NativeSceneSun = null;
+
+        public static void DebugDumpSceneLighting()
+        {
+            MelonLogger.Msg("==================================================");
+            MelonLogger.Msg("          SCENE LIGHTING & ATMOSPHERE DUMP        ");
+            MelonLogger.Msg("==================================================");
+
+            // 1. Ambient & Environment RenderSettings
+            MelonLogger.Msg($"[RenderSettings] Ambient Mode: {RenderSettings.ambientMode}");
+            MelonLogger.Msg($"[RenderSettings] Ambient Light Color: {RenderSettings.ambientLight}");
+            MelonLogger.Msg($"[RenderSettings] Ambient Sky Color: {RenderSettings.ambientSkyColor}");
+            MelonLogger.Msg($"[RenderSettings] Ambient Equator Color: {RenderSettings.ambientEquatorColor}");
+            MelonLogger.Msg($"[RenderSettings] Ambient Ground Color: {RenderSettings.ambientGroundColor}");
+            MelonLogger.Msg($"[RenderSettings] Ambient Intensity: {RenderSettings.ambientIntensity}");
+            MelonLogger.Msg($"[RenderSettings] Current Sun: {(RenderSettings.sun != null ? RenderSettings.sun.name : "NONE")}");
+
+            // --- HOOK THE NATIVE SUN FIRST ---
+            NativeSceneSun = null;
+
+            // A. Prefer the official sun assigned to the scene's RenderSettings
+            if (RenderSettings.sun != null && RenderSettings.sun.gameObject.scene.isLoaded)
+            {
+                NativeSceneSun = RenderSettings.sun;
+                MelonLogger.Msg($"[Native Sun] Successfully hooked from RenderSettings.sun: '{NativeSceneSun.name}'");
+            }
+
+            // 2. Scan every single Light in memory
+            Light[] allLights = Resources.FindObjectsOfTypeAll<Light>();
+            MelonLogger.Msg($"[Scene Lights] Found {allLights.Length} total Light components in scene/memory:");
+
+            for (int i = 0; i < allLights.Length; i++)
+            {
+                Light l = allLights[i];
+                if (l == null) continue;
+
+                string path = l.name;
+                Transform parent = l.transform.parent;
+                while (parent != null)
+                {
+                    path = parent.name + "/" + path;
+                    parent = parent.parent;
+                }
+
+                bool isSceneObject = l.gameObject.scene.isLoaded;
+                MelonLogger.Msg($"  #{i:D2} [{(isSceneObject ? "SCENE" : "ASSET")}] Path: '{path}' | Type: {l.type} | Active: {l.gameObject.activeInHierarchy} (CompEnabled: {l.enabled}) | Color: {l.color} | Int: {l.intensity} | Range: {l.range} | CullingMask: {l.cullingMask}");
+
+                // B. Fallback: if RenderSettings.sun was null, grab the first REAL scene sun (excluding templates/custom objects)
+                if (NativeSceneSun == null && isSceneObject && l.type == LightType.Directional)
+                {
+                    if (!l.name.Contains("Template") && !l.name.StartsWith("Custom_"))
+                    {
+                        NativeSceneSun = l;
+                        MelonLogger.Msg($"  >>> [CANDIDATE FOUND] Hooked native sun fallback: '{path}'");
+                    }
+                }
+            }
+
+            MelonLogger.Msg("==================================================");
+        }
         public static Mesh CreateDoubleSidedPlaneMesh(float width, float height)
         {
             Mesh m = new Mesh();
@@ -4440,9 +5127,7 @@ namespace DeadCoreEditor
 
             Vector3[] vertices = new Vector3[]
             {
-                // Front surface
                 new Vector3(-hw, -hh, 0), new Vector3(hw, -hh, 0), new Vector3(hw, hh, 0), new Vector3(-hw, hh, 0),
-                // Reverse surface
                 new Vector3(-hw, -hh, 0), new Vector3(hw, -hh, 0), new Vector3(hw, hh, 0), new Vector3(-hw, hh, 0)
             };
 
@@ -4475,14 +5160,14 @@ namespace DeadCoreEditor
         public static void HarvestAllSceneModels()
         {
             EditorSessionManager.AllAssets.Clear();
-            HashSet<string> seenMeshes = new HashSet<string>();
+            HashSet<string> seenMeshes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
             MeshRenderer[] renderers = GameObject.FindObjectsOfType<MeshRenderer>();
             foreach (var r in renderers)
             {
-                if (r != null && r.material != null)
+                if (r != null && r.sharedMaterial != null && !r.sharedMaterial.name.ToLower().Contains("laser"))
                 {
-                    EditorSessionManager.CachedSceneMaterial = r.material;
+                    EditorSessionManager.CachedSceneMaterial = r.sharedMaterial;
                     break;
                 }
             }
@@ -4511,7 +5196,7 @@ namespace DeadCoreEditor
                     IsJumper = true,
                     DefaultScale = 1.0f,
                     VerticalOffset = 0f,
-                    BaseRotation = Quaternion.Euler(0f, 0f, 0f)
+                    BaseRotation = Quaternion.identity
                 });
             }
 
@@ -4565,20 +5250,35 @@ namespace DeadCoreEditor
                 });
             }
 
-            // 3. Dynamic Technical Spotlights
+            // 3A. Dynamic Technical Spotlight
             GameObject spotTemplate = new GameObject("Template_Spotlight");
             Light spotLight = spotTemplate.AddComponent<Light>();
             spotLight.type = LightType.Spot;
-            spotLight.range = 50f;
+            spotLight.range = 120f;
             spotLight.spotAngle = 60f;
             spotLight.color = Color.cyan;
-            spotLight.intensity = 3.0f;
+            spotLight.intensity = 28000f;
 
-            GameObject bulb = GameObject.CreatePrimitive(PrimitiveType.Sphere);
-            bulb.transform.SetParent(spotTemplate.transform, false);
-            bulb.transform.localScale = Vector3.one * 0.35f;
-            Collider bulbCol = bulb.GetComponent<Collider>();
-            if (bulbCol != null) bulbCol.isTrigger = true;
+            GameObject housing = GameObject.CreatePrimitive(PrimitiveType.Cylinder);
+            housing.name = "Light_Housing";
+            housing.transform.SetParent(spotTemplate.transform, false);
+            housing.transform.localScale = new Vector3(0.6f, 0.4f, 0.6f);
+            housing.transform.localRotation = Quaternion.Euler(90f, 0f, 0f);
+
+            Collider housingCol = housing.GetComponent<Collider>();
+            if (housingCol != null) GameObject.DestroyImmediate(housingCol);
+
+            GameObject lens = GameObject.CreatePrimitive(PrimitiveType.Sphere);
+            lens.name = "Light_Lens";
+            lens.transform.SetParent(spotTemplate.transform, false);
+            lens.transform.localScale = new Vector3(0.55f, 0.55f, 0.35f);
+            lens.transform.localPosition = new Vector3(0f, 0f, 0.38f);
+
+            if (EditorSessionManager.CachedSceneMaterial != null)
+            {
+                Renderer hr = housing.GetComponent<Renderer>();
+                if (hr != null) hr.material = EditorSessionManager.CachedSceneMaterial;
+            }
 
             spotTemplate.SetActive(false);
 
@@ -4586,11 +5286,64 @@ namespace DeadCoreEditor
             {
                 DisplayName = "Tech Spotlight",
                 SourceTemplate = spotTemplate,
+                FilterMesh = housing.GetComponent<MeshFilter>()?.sharedMesh,
                 Category = AssetCategory.Gameplay,
                 IsSpotlight = true,
                 DefaultScale = 1.0f,
                 VerticalOffset = 0f,
                 BaseRotation = Quaternion.identity
+            });
+
+            // 3B. GLOBAL SUNLIGHT ASSET (Directional map-wide sun, placed in world but shines everywhere)
+            GameObject sunTemplate = new GameObject("Template_Sunlight");
+            Light sunLight = sunTemplate.AddComponent<Light>();
+            sunLight.type = LightType.Directional;
+            sunLight.renderMode = LightRenderMode.ForcePixel;
+            sunLight.cullingMask = ~0;
+            sunLight.color = new Color(1f, 0.85f, 0.6f);
+            sunLight.intensity = 3.5f;
+
+            // Visual Sun Orb with golden rays icon for easy aiming & wheel selection
+            GameObject sunOrb = GameObject.CreatePrimitive(PrimitiveType.Sphere);
+            sunOrb.name = "Light_Housing";
+            sunOrb.transform.SetParent(sunTemplate.transform, false);
+            sunOrb.transform.localScale = new Vector3(1.2f, 1.2f, 1.2f);
+
+            Collider sunCol = sunOrb.GetComponent<Collider>();
+            if (sunCol != null) GameObject.DestroyImmediate(sunCol);
+
+            // Sun Core Pointer Arrow (indicating light direction)
+            GameObject sunRay = GameObject.CreatePrimitive(PrimitiveType.Cylinder);
+            sunRay.name = "Light_Lens";
+            sunRay.transform.SetParent(sunTemplate.transform, false);
+            sunRay.transform.localScale = new Vector3(0.25f, 1.4f, 0.25f);
+            sunRay.transform.localRotation = Quaternion.Euler(90f, 0f, 0f);
+            sunRay.transform.localPosition = new Vector3(0f, 0f, 1.2f);
+
+            Collider rayCol = sunRay.GetComponent<Collider>();
+            if (rayCol != null) GameObject.DestroyImmediate(rayCol);
+
+            Shader unlitShader = Shader.Find("Unlit/Color") ?? Shader.Find("Particles/Standard Unlit");
+            if (unlitShader != null)
+            {
+                Material sunMat = new Material(unlitShader);
+                sunMat.color = new Color(1f, 0.88f, 0.35f, 1f);
+                sunOrb.GetComponent<Renderer>().material = sunMat;
+                sunRay.GetComponent<Renderer>().material = sunMat;
+            }
+
+            sunTemplate.SetActive(false);
+
+            EditorSessionManager.AllAssets.Add(new CatalogAsset
+            {
+                DisplayName = "Global Sunlight",
+                SourceTemplate = sunTemplate,
+                FilterMesh = sunOrb.GetComponent<MeshFilter>()?.sharedMesh,
+                Category = AssetCategory.Gameplay,
+                IsSunlight = true,
+                DefaultScale = 1.0f,
+                VerticalOffset = 0f,
+                BaseRotation = Quaternion.Euler(50f, -30f, 0f)
             });
 
             // 4. Laser Shader Material Acquisition
@@ -4799,7 +5552,7 @@ namespace DeadCoreEditor
                 });
             }
 
-            // 7. Extract Scene Geometry for Architecture and Props
+            // 7. Extract Scene Geometry from DeadCore
             MeshFilter[] allFilters = GameObject.FindObjectsOfType<MeshFilter>();
 
             foreach (MeshFilter mf in allFilters)
@@ -4809,26 +5562,42 @@ namespace DeadCoreEditor
                 string goName = mf.gameObject.name.ToLower();
                 string mLow = mName.ToLower();
 
-                // Exclude procedural elements, secondary LOD stages, and runtime entities
+                // Exclude dynamic actors and low-detail wall assets
                 if (goName.Contains("helice") || goName.Contains("helix") || mLow.Contains("helix")) continue;
                 if (goName.Contains("tourelle") || goName.Contains("turret") || mLow.Contains("tourelle")) continue;
-
-                // Exclude specific low-detail wall assets
                 if (mLow.Contains("wall_12x12x01_lod0") || mLow.Contains("wall 12x12x01 lod0") || goName.Contains("wall_12x12x01_lod0")) continue;
 
+                // Exclude combined scene roots, hole meshes, and secondary LODs
                 if (mLow.Contains("impostor") || mLow.Contains("hole")) continue;
                 if (mLow.Contains("lod1") || mLow.Contains("lod2") || mLow.Contains("lod3")) continue;
                 if (mLow.StartsWith("combined")) continue;
+
+                // Exclude Cylinder001 explicitly
+                if (mLow.Contains("cylinder001") || goName.Contains("cylinder001") || mLow.Contains("cylinder 001") || goName.Contains("cylinder 001")) continue;
+
+                // Eliminate micro-props (screws, bolts, cables, decals, debris)
+                if (mLow.Contains("decal") || mLow.Contains("bolt") || mLow.Contains("screw") ||
+                    mLow.Contains("debris") || mLow.Contains("shard") || mLow.Contains("cable") ||
+                    mLow.Contains("wire") || mLow.Contains("rivet"))
+                {
+                    continue;
+                }
+
+                Vector3 size = mf.sharedMesh.bounds.size;
+                float maxDim = Mathf.Max(size.x, size.y, size.z);
+
+                // Reject geometry smaller than 1.5m in every single axis (cleans micro-props, keeps platforms and Gate-bar LOD0)
+                if (maxDim < 1.5f) continue;
+                if (mf.sharedMesh.vertexCount < 8) continue;
 
                 if (!seenMeshes.Contains(mName))
                 {
                     seenMeshes.Add(mName);
 
                     string friendly = CleanDisplayName(mName, goName);
-                    Vector3 size = mf.sharedMesh.bounds.size;
                     float defScale = DetermineDefaultScale(friendly, size);
                     Quaternion baseRot = DetermineBaseRotation(friendly, mf.gameObject);
-                    AssetCategory cat = CategorizeAsset(friendly, goName, size);
+                    AssetCategory cat = CategorizeAsset(friendly, goName);
 
                     EditorSessionManager.AllAssets.Add(new CatalogAsset
                     {
@@ -4844,23 +5613,18 @@ namespace DeadCoreEditor
             }
         }
 
-        // Categorize geometry into Structural (Architecture) or Detail (Props) based on dimensional thresholds
-        private static AssetCategory CategorizeAsset(string friendly, string goName, Vector3 size)
+        private static AssetCategory CategorizeAsset(string friendly, string goName)
         {
             string low = (friendly + " " + goName).ToLower();
-            float maxDim = Mathf.Max(size.x, size.y, size.z);
 
-            // Large structural meshes: Platforms, walls, columns, monoliths
-            if (low.Contains("platform") || low.Contains("plateforme") || low.Contains("floor") ||
-                low.Contains("16x2x16") || low.Contains("12x4x2") || low.Contains("monolith") ||
-                low.Contains("pillar") || low.Contains("wall") || low.Contains("cube") ||
-                low.Contains("tower") || maxDim >= 3.8f)
+            // Only interactive triggers/switches belong in Gameplay
+            if (low.Contains("switch") || low.Contains("spark") || low.Contains("activat") || low.Contains("trigger"))
             {
-                return AssetCategory.Architecture;
+                return AssetCategory.Gameplay;
             }
 
-            // Smaller environmental and interactive details
-            return AssetCategory.Props;
+            // Everything else (platforms, walls, gate-bars, pillars, catwalks, crates) belongs in Building
+            return AssetCategory.Building;
         }
 
         private static string CleanDisplayName(string meshName, string goName)
@@ -4907,10 +5671,43 @@ namespace DeadCoreEditor
             {
                 if (root == null) continue;
                 string r = root.name;
-                if (r == "_LA" || r == "_LD" || r == "L_A" || r == "L_D")
+
+                // If this root holds our captured sun, don't blindly turn off the entire object
+                if (r == "_LA" || r == "L_A")
+                {
+                    if (NativeSceneSun != null && NativeSceneSun.transform.IsChildOf(root.transform))
+                    {
+                        // Detach native sun so it survives hiding the art geometry
+                        NativeSceneSun.transform.SetParent(null, true);
+                        NativeSceneSun.gameObject.SetActive(true);
+                        NativeSceneSun.enabled = true;
+                        MelonLogger.Msg(">> Preserved native directional sun before hiding _LA!");
+                    }
+                    root.SetActive(false);
+                }
+                else if (r == "_LD" || r == "L_D")
                 {
                     root.SetActive(false);
                 }
+            }
+        }
+    }
+
+    // =========================================================================================================
+    // HARMONY HOOKS: LEVEL LIFECYCLE & TURRET BEHAVIOR
+    // =========================================================================================================
+    [HarmonyPatch(typeof(StartLevelManager), nameof(StartLevelManager.StartLevelSequence))]
+    public static class StartLevelPatch
+    {
+        [HarmonyPostfix]
+        public static void Postfix()
+        {
+            string currentScene = SceneManager.GetActiveScene().name.ToLower();
+            if (currentScene.Contains("menu")) return;
+
+            if (EditorSessionManager.IsCustomSessionActive)
+            {
+                EditorSessionManager.InitializeCustomLevel();
             }
         }
     }
@@ -4928,11 +5725,9 @@ namespace DeadCoreEditor
                 string bulletPrefabName = __instance._bulletPrefab.name;
                 Vector3 turretPos = __instance.transform.position;
 
-                // Collect all colliders on this turret (head, body, base, trigger)
                 Collider[] turretCols = __instance.GetComponentsInChildren<Collider>(true);
                 SphereCollider triggerSphere = __instance._triggerAnimation;
 
-                // Find the bullet spawned in this firing cycle
                 Collider[] hits = Physics.OverlapSphere(turretPos, 8.0f, ~0, QueryTriggerInteraction.Collide);
                 for (int i = 0; i < hits.Length; i++)
                 {
@@ -4947,8 +5742,6 @@ namespace DeadCoreEditor
 
                     if (!isBullet) continue;
 
-                    // 1. Tell Unity Physics this bullet must IGNORE all colliders on this turret.
-                    //    This prevents muzzle self-collision while leaving the turret's hitboxes intact for the player.
                     Collider[] bulletCols = hitCol.transform.root.GetComponentsInChildren<Collider>(true);
                     for (int b = 0; b < bulletCols.Length; b++)
                     {
@@ -4968,7 +5761,6 @@ namespace DeadCoreEditor
                         }
                     }
 
-                    // 2. Nudge the bullet 0.95m forward along its firing trajectory so it clears the barrel
                     Rigidbody rb = hitGo.GetComponent<Rigidbody>();
                     Vector3 forwardDir = (rb != null && rb.velocity.sqrMagnitude > 0.1f)
                         ? rb.velocity.normalized
@@ -4978,25 +5770,6 @@ namespace DeadCoreEditor
                 }
             }
             catch { }
-        }
-    }
-
-    // =========================================================================================================
-    // HARMONY HOOKS: LEVEL LIFECYCLE
-    // =========================================================================================================
-    [HarmonyPatch(typeof(StartLevelManager), nameof(StartLevelManager.StartLevelSequence))]
-    public static class StartLevelPatch
-    {
-        [HarmonyPostfix]
-        public static void Postfix()
-        {
-            string currentScene = SceneManager.GetActiveScene().name.ToLower();
-            if (currentScene.Contains("menu")) return;
-
-            if (EditorSessionManager.IsCustomSessionActive)
-            {
-                EditorSessionManager.InitializeCustomLevel();
-            }
         }
     }
 }
