@@ -1484,7 +1484,6 @@ namespace DeadCoreEditor
         public static GameObject SelectedLightObject = null;
         public static Dictionary<GameObject, LightConfig> PlacedLights = new Dictionary<GameObject, LightConfig>();
         private static float _lightRefreshTimer = 0f;
-        private static string _hexColorBuffer = "00FFFF";
 
         public static Material CachedSceneMaterial = null;
 
@@ -3824,7 +3823,6 @@ namespace DeadCoreEditor
             if (SelectedLightObject != null && PlacedLights.ContainsKey(SelectedLightObject))
             {
                 Color c = PlacedLights[SelectedLightObject].Color;
-                _hexColorBuffer = ColorUtility.ToHtmlStringRGB(c);
             }
         }
 
@@ -3833,25 +3831,32 @@ namespace DeadCoreEditor
          * Features normalized sliders, calibrated Lux readouts, direct Hex code integration,
          * live dual-swatch previewing, and an expanded palette of tuned atmospheric presets.
          */
+        /*
+         * Atmosphere, Sunlight, and Spotlight Inspector (F3).
+         * Features normalized RGB channel sliders, calibrated Lux readouts,
+         * a live dual-swatch preview, and tuned atmospheric color presets.
+         */
         private static void DrawParametersWindow()
         {
-            float winW = 360f;
-            float winH = 530f;
+            float winW = 340f;
+            float winH = 490f;
             float winX = Screen.width - winW - 20f;
             float winY = 20f;
             Rect winRect = new Rect(winX, winY, winW, winH);
 
             Color orig = GUI.color;
 
+            // Window Background & Border
             GUI.color = new Color(0.04f, 0.07f, 0.12f, 0.95f);
             GUI.Box(winRect, "");
             GUI.color = new Color(0.12f, 0.65f, 0.95f, 0.85f);
             GUI.Box(new Rect(winX + 2, winY + 2, winW - 4, winH - 4), "");
 
+            // Window Title Header
             GUI.color = new Color(0.08f, 0.14f, 0.22f, 1f);
             GUI.Box(new Rect(winX + 8, winY + 8, winW - 16, 32), "");
             GUI.color = Color.yellow;
-            GUI.Label(new Rect(winX + 20, winY + 14, 280, 25), "ATMOSPHERE & LIGHT INSPECTOR (F3)");
+            GUI.Label(new Rect(winX + 20, winY + 14, 280, 25), "LIGHT & ATMOSPHERE (F3)");
 
             float curY = winY + 46f;
 
@@ -3860,12 +3865,14 @@ namespace DeadCoreEditor
                 SelectedLightObject = null;
             }
 
+            // Collect active lights
             List<GameObject> allLights = new List<GameObject>();
             foreach (var kvp in PlacedLights)
             {
                 if (kvp.Key != null && kvp.Key.activeSelf) allLights.Add(kvp.Key);
             }
 
+            // Light Navigation Carousel Bar
             if (allLights.Count > 0)
             {
                 int curIdx = SelectedLightObject != null ? allLights.IndexOf(SelectedLightObject) : -1;
@@ -3876,26 +3883,24 @@ namespace DeadCoreEditor
                 {
                     curIdx = (curIdx - 1 + allLights.Count) % allLights.Count;
                     SelectedLightObject = allLights[curIdx];
-                    SyncLightBufferColor();
                     IsBlockSelected = false;
                     PlacementHologramController.DestroyPreview();
                 }
 
                 GUI.color = Color.white;
-                GUI.Label(new Rect(winX + 62, curY + 3, 140, 20), lightLabel);
+                GUI.Label(new Rect(winX + 62, curY + 3, 120, 20), lightLabel);
 
                 GUI.color = new Color(0.2f, 0.55f, 0.85f);
-                if (GUI.Button(new Rect(winX + 205, curY, 40, 24), ">"))
+                if (GUI.Button(new Rect(winX + 185, curY, 40, 24), ">"))
                 {
                     curIdx = (curIdx + 1) % allLights.Count;
                     SelectedLightObject = allLights[curIdx];
-                    SyncLightBufferColor();
                     IsBlockSelected = false;
                     PlacementHologramController.DestroyPreview();
                 }
 
                 GUI.color = new Color(0.8f, 0.3f, 0.3f);
-                if (GUI.Button(new Rect(winX + 255, curY, 85, 24), "Deselect"))
+                if (GUI.Button(new Rect(winX + 235, curY, 80, 24), "Deselect"))
                 {
                     SelectedLightObject = null;
                 }
@@ -3909,14 +3914,14 @@ namespace DeadCoreEditor
 
                 GUI.color = new Color(1f, 0.9f, 0.3f);
                 string title = cfg.IsDirectional ? "[GLOBAL SUNLIGHT SOURCE]" : "[TECH SPOTLIGHT]";
-                GUI.Label(new Rect(winX + 15, curY, winW - 30, 18), $"{title} Aim: Arrows | [ ] Roll");
+                GUI.Label(new Rect(winX + 15, curY, winW - 30, 18), $"{title} Aim with Arrows | [ ] Roll");
                 curY += 22f;
 
-                // 1. Intensity Slider
+                // 1. Light Intensity
                 GUI.color = Color.white;
                 float displayLux = cfg.IsDirectional ? (cfg.Intensity * 4000f) : cfg.Intensity;
                 string unitLabel = cfg.IsDirectional ? $"{displayLux:F0} Lux" : $"{cfg.Intensity:F1}x";
-                GUI.Label(new Rect(winX + 15, curY, winW - 30, 18), $"Light Intensity: <b><color=#00E5FF>{unitLabel}</color></b>");
+                GUI.Label(new Rect(winX + 15, curY, 200, 18), $"Light Intensity: <b><color=#00E5FF>{unitLabel}</color></b>");
                 curY += 18f;
 
                 float newInt = GUI.HorizontalSlider(new Rect(winX + 15, curY, winW - 30, 16), cfg.Intensity, 0.1f, 30.0f);
@@ -3930,7 +3935,7 @@ namespace DeadCoreEditor
                 // 2. Cone Angle Slider
                 if (!cfg.IsDirectional)
                 {
-                    GUI.Label(new Rect(winX + 15, curY, winW - 30, 18), $"Cone Angle: <b><color=#FFEB3B>{cfg.SpotAngle:F0}°</color></b>");
+                    GUI.Label(new Rect(winX + 15, curY, 200, 18), $"Cone Angle: <b><color=#FFEB3B>{cfg.SpotAngle:F0}°</color></b>");
                     curY += 18f;
                     float newAngle = GUI.HorizontalSlider(new Rect(winX + 15, curY, winW - 30, 16), cfg.SpotAngle, 10f, 150f);
                     if (Mathf.Abs(newAngle - cfg.SpotAngle) > 0.5f)
@@ -3943,13 +3948,13 @@ namespace DeadCoreEditor
                 else
                 {
                     GUI.color = Color.gray;
-                    GUI.Label(new Rect(winX + 15, curY, winW - 30, 18), "Cone Angle: [INFINITE / GLOBAL DIRECTIONAL]");
-                    curY += 26f;
+                    GUI.Label(new Rect(winX + 15, curY, 280, 18), "Cone Angle: [INFINITE / GLOBAL SUN]");
+                    curY += 36f;
                 }
 
-                // 3. Volumetric Density Slider
+                // 3. Volumetric Fog Intensity
                 GUI.color = new Color(0.6f, 0.9f, 1f);
-                GUI.Label(new Rect(winX + 15, curY, winW - 30, 18), $"Volumetric Fog Intensity: <b><color=#E040FB>{cfg.VolumetricIntensity:F1}x</color></b>");
+                GUI.Label(new Rect(winX + 15, curY, 240, 18), $"Volumetric Intensity: <b><color=#E040FB>{cfg.VolumetricIntensity:F1}x</color></b>");
                 curY += 18f;
                 float newVol = GUI.HorizontalSlider(new Rect(winX + 15, curY, winW - 30, 16), cfg.VolumetricIntensity, 0.0f, 10.0f);
                 if (Mathf.Abs(newVol - cfg.VolumetricIntensity) > 0.05f)
@@ -3959,84 +3964,58 @@ namespace DeadCoreEditor
                 }
                 curY += 26f;
 
-                // 4. Overhauled RGB Color & Hex Dashboard
+                // 4. Classic RGB Sliders with Color Swatch
                 GUI.color = Color.white;
-                GUI.Label(new Rect(winX + 15, curY, 140, 20), "<b>Color Dashboard:</b>");
+                GUI.Label(new Rect(winX + 15, curY, 180, 18), "Light Color (RGB Picker):");
 
-                // Live Color Swatch with Solid Border
+                // Live Color Swatch
                 Color oldGuiCol = GUI.color;
-                GUI.color = Color.black;
-                GUI.Box(new Rect(winX + 160f, curY - 2f, 44f, 24f), "");
                 GUI.color = cfg.Color;
-                GUI.Box(new Rect(winX + 162f, curY, 40f, 20f), "");
+                GUI.Box(new Rect(winX + winW - 65f, curY - 2f, 50f, 22f), "");
                 GUI.color = oldGuiCol;
-
-                // Safe Hex Badge & Clipboard Sync (Avoids stripped GUI.TextField)
-                string currentHex = ColorUtility.ToHtmlStringRGB(cfg.Color);
-                GUI.color = new Color(0.15f, 0.22f, 0.32f);
-                GUI.Box(new Rect(winX + 215f, curY - 2f, 75f, 24f), "");
-                GUI.color = Color.white;
-                GUI.Label(new Rect(winX + 217f, curY, 70f, 20f), $"#{currentHex}");
-
-                // Copy / Paste buttons for Hex colors
-                GUI.color = new Color(0.25f, 0.6f, 0.9f);
-                if (GUI.Button(new Rect(winX + 295f, curY - 2f, 45f, 24f), "Copy"))
-                {
-                    GUIUtility.systemCopyBuffer = "#" + currentHex;
-                    ShowNotification($"Copied #{currentHex} to clipboard!");
-                }
-                curY += 26f;
-
-                // Precision Red Channel Slider
-                GUI.color = new Color(1f, 0.4f, 0.4f);
-                GUI.Label(new Rect(winX + 15, curY, 65, 16), $"R: {cfg.Color.r:F2}");
-                float r = GUI.HorizontalSlider(new Rect(winX + 85, curY + 2, winW - 105, 14), cfg.Color.r, 0f, 1f);
-                curY += 18f;
-
-                // Precision Green Channel Slider
-                GUI.color = new Color(0.4f, 1f, 0.5f);
-                GUI.Label(new Rect(winX + 15, curY, 65, 16), $"G: {cfg.Color.g:F2}");
-                float g = GUI.HorizontalSlider(new Rect(winX + 85, curY + 2, winW - 105, 14), cfg.Color.g, 0f, 1f);
-                curY += 18f;
-
-                // Precision Blue Channel Slider
-                GUI.color = new Color(0.4f, 0.8f, 1f);
-                GUI.Label(new Rect(winX + 15, curY, 65, 16), $"B: {cfg.Color.b:F2}");
-                float b = GUI.HorizontalSlider(new Rect(winX + 85, curY + 2, winW - 105, 14), cfg.Color.b, 0f, 1f);
                 curY += 24f;
 
-                if (Mathf.Abs(r - cfg.Color.r) > 0.005f || Mathf.Abs(g - cfg.Color.g) > 0.005f || Mathf.Abs(b - cfg.Color.b) > 0.005f)
+                // Red Channel
+                GUI.color = new Color(1f, 0.3f, 0.3f);
+                GUI.Label(new Rect(winX + 15, curY, 60, 16), $"R: {cfg.Color.r:F2}");
+                float r = GUI.HorizontalSlider(new Rect(winX + 75, curY + 2, winW - 95, 14), cfg.Color.r, 0f, 1f);
+                curY += 18f;
+
+                // Green Channel
+                GUI.color = new Color(0.3f, 1f, 0.4f);
+                GUI.Label(new Rect(winX + 15, curY, 60, 16), $"G: {cfg.Color.g:F2}");
+                float g = GUI.HorizontalSlider(new Rect(winX + 75, curY + 2, winW - 95, 14), cfg.Color.g, 0f, 1f);
+                curY += 18f;
+
+                // Blue Channel
+                GUI.color = new Color(0.3f, 0.7f, 1f);
+                GUI.Label(new Rect(winX + 15, curY, 60, 16), $"B: {cfg.Color.b:F2}");
+                float b = GUI.HorizontalSlider(new Rect(winX + 75, curY + 2, winW - 95, 14), cfg.Color.b, 0f, 1f);
+                curY += 24f;
+
+                if (Mathf.Abs(r - cfg.Color.r) > 0.01f || Mathf.Abs(g - cfg.Color.g) > 0.01f || Mathf.Abs(b - cfg.Color.b) > 0.01f)
                 {
                     cfg.Color = new Color(r, g, b, 1f);
-                    _hexColorBuffer = ColorUtility.ToHtmlStringRGB(cfg.Color);
                     changed = true;
                 }
 
-                // Quick Color Preset Swatches
-                float cW = (winW - 40) / 4f;
-
+                // Quick Palette Presets
+                float cW = (winW - 50) / 5f;
                 GUI.color = Color.cyan;
-                if (GUI.Button(new Rect(winX + 15, curY, cW - 4, 20), "Cyan")) { cfg.Color = Color.cyan; SyncLightBufferColor(); changed = true; }
-                GUI.color = new Color(1f, 0.85f, 0.45f);
-                if (GUI.Button(new Rect(winX + 15 + cW, curY, cW - 4, 20), "Sunlight")) { cfg.Color = new Color(1f, 0.85f, 0.45f); SyncLightBufferColor(); changed = true; }
+                if (GUI.Button(new Rect(winX + 15, curY, cW, 20), "Cyan")) { cfg.Color = Color.cyan; changed = true; }
+                GUI.color = new Color(1f, 0.75f, 0.3f);
+                if (GUI.Button(new Rect(winX + 15 + cW + 4, curY, cW, 20), "Sun")) { cfg.Color = new Color(1f, 0.75f, 0.3f); changed = true; }
                 GUI.color = new Color(0.2f, 1f, 0.35f);
-                if (GUI.Button(new Rect(winX + 15 + cW * 2, curY, cW - 4, 20), "Green")) { cfg.Color = new Color(0.2f, 1f, 0.35f); SyncLightBufferColor(); changed = true; }
+                if (GUI.Button(new Rect(winX + 15 + (cW + 4) * 2, curY, cW, 20), "Green")) { cfg.Color = Color.green; changed = true; }
                 GUI.color = new Color(1f, 0.25f, 0.25f);
-                if (GUI.Button(new Rect(winX + 15 + cW * 3, curY, cW - 4, 20), "Laser Red")) { cfg.Color = new Color(1f, 0.25f, 0.25f); SyncLightBufferColor(); changed = true; }
-                curY += 24f;
-
-                GUI.color = new Color(0.85f, 0.3f, 1f);
-                if (GUI.Button(new Rect(winX + 15, curY, cW - 4, 20), "Violet")) { cfg.Color = new Color(0.85f, 0.3f, 1f); SyncLightBufferColor(); changed = true; }
-                GUI.color = new Color(1f, 0.55f, 0.1f);
-                if (GUI.Button(new Rect(winX + 15 + cW, curY, cW - 4, 20), "Amber")) { cfg.Color = new Color(1f, 0.55f, 0.1f); SyncLightBufferColor(); changed = true; }
-                GUI.color = new Color(0.3f, 0.65f, 1f);
-                if (GUI.Button(new Rect(winX + 15 + cW * 2, curY, cW - 4, 20), "Steel Blue")) { cfg.Color = new Color(0.3f, 0.65f, 1f); SyncLightBufferColor(); changed = true; }
+                if (GUI.Button(new Rect(winX + 15 + (cW + 4) * 3, curY, cW, 20), "Red")) { cfg.Color = Color.red; changed = true; }
                 GUI.color = Color.white;
-                if (GUI.Button(new Rect(winX + 15 + cW * 3, curY, cW - 4, 20), "White")) { cfg.Color = Color.white; SyncLightBufferColor(); changed = true; }
+                if (GUI.Button(new Rect(winX + 15 + (cW + 4) * 4, curY, cW, 20), "White")) { cfg.Color = Color.white; changed = true; }
                 curY += 28f;
 
+                // Reset Aim Orientation
                 GUI.color = new Color(0.2f, 0.65f, 0.95f);
-                if (GUI.Button(new Rect(winX + 15, curY, winW - 30, 24), "Reset Aim (0°, 0°, 0°)"))
+                if (GUI.Button(new Rect(winX + 15, curY, winW - 30, 22), "Reset Aim (0°, 0°, 0°)"))
                 {
                     SelectedLightObject.transform.rotation = Quaternion.identity;
                 }
@@ -4049,7 +4028,7 @@ namespace DeadCoreEditor
             else
             {
                 GUI.color = Color.gray;
-                GUI.Label(new Rect(winX + 15, curY + 25, 310, 90), allLights.Count > 0
+                GUI.Label(new Rect(winX + 15, curY + 25, 290, 80), allLights.Count > 0
                     ? "Click '<' or '>' above to select a light,\nor click any Tech Spotlight or Sunlight in the world."
                     : "No lights placed yet.\nSelect 'Global Sunlight' or 'Tech Spotlight' from Gameplay to place one.");
             }
