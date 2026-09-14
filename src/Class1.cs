@@ -2432,33 +2432,34 @@ namespace DeadCoreEditor
                 }
             }
 
-            if (Input.GetKeyDown(KeyCode.Escape) || Input.GetKeyDown(KeyCode.X))
+            // Added KeyCode.Backspace to cancel movement, path editing, and placement
+            if (Input.GetKeyDown(KeyCode.Escape) || Input.GetKeyDown(KeyCode.X) || Input.GetKeyDown(KeyCode.Backspace))
             {
                 if (RepositionTarget != null)
                 {
                     RepositionTarget = null;
-                    ShowNotification("Reposition Cancelled");
-                }
-                else if (SelectedLightObject != null && !IsBlockSelected)
-                {
-                    SelectedLightObject = null;
-                    ShowNotification("Light Deselected");
-                }
-                else if (ParentingChildTarget != null)
-                {
-                    ParentingChildTarget = null;
-                    ShowNotification("Parenting cancelled.");
+                    ShowNotification("Movement/Reposition Cancelled (Backspace)");
                 }
                 else if (PathEditTarget != null)
                 {
                     PathEditTarget = null;
-                    ShowNotification("Path editing cancelled.");
+                    ShowNotification("Path Editing Cancelled (Backspace)");
+                }
+                else if (ParentingChildTarget != null)
+                {
+                    ParentingChildTarget = null;
+                    ShowNotification("Parenting Cancelled (Backspace)");
                 }
                 else if (IsBlockSelected)
                 {
                     IsBlockSelected = false;
                     PlacementHologramController.DestroyPreview();
-                    ShowNotification("Placement Cancelled");
+                    ShowNotification("Placement Cancelled (Backspace)");
+                }
+                else if (SelectedLightObject != null)
+                {
+                    SelectedLightObject = null;
+                    ShowNotification("Light Deselected (Backspace)");
                 }
             }
 
@@ -3734,7 +3735,7 @@ namespace DeadCoreEditor
             string alignMode = AutoAlignToSurface ? "<color=#69F0AE>SURFACE (C)</color>" : "<color=#FFB74D>MANUAL (C)</color>";
             string pathInfo = PathEditTarget != null ? "<color=#E040FB>SETTING POINT B (M)</color>" : "M: Path";
             string parentInfo = ParentingChildTarget != null ? "<color=#FFD54F>LINKING PARENT (P)</color>" : "P: Parent";
-            string moveInfo = RepositionTarget != null ? "<color=#00E676>MOVING OBJECT (V)</color>" : "V: Move";
+            string moveInfo = RepositionTarget != null ? "<color=#00E676>MOVING OBJECT (V to toggle / Backspace to cancel)</color>" : "V: Move";
 
             string status = IsBlockSelected
                 ? $"EQUIPPED: '{CurrentAsset?.DisplayName}' | Left-Click: Place | RMB/Esc: Cancel | {moveInfo} | {pathInfo} | {parentInfo} | Align: {alignMode} | Snap: {gridName} (G)"
@@ -3970,17 +3971,19 @@ namespace DeadCoreEditor
                 GUI.Box(new Rect(winX + 162f, curY, 40f, 20f), "");
                 GUI.color = oldGuiCol;
 
-                // Hex input integration
-                GUI.Label(new Rect(winX + 215f, curY, 20f, 20f), "#");
-                string prevHex = _hexColorBuffer;
-                _hexColorBuffer = GUI.TextField(new Rect(winX + 235f, curY, 60f, 20f), _hexColorBuffer, 6).ToUpper();
-                if (_hexColorBuffer != prevHex && _hexColorBuffer.Length == 6)
+                // Safe Hex Badge & Clipboard Sync (Avoids stripped GUI.TextField)
+                string currentHex = ColorUtility.ToHtmlStringRGB(cfg.Color);
+                GUI.color = new Color(0.15f, 0.22f, 0.32f);
+                GUI.Box(new Rect(winX + 215f, curY - 2f, 75f, 24f), "");
+                GUI.color = Color.white;
+                GUI.Label(new Rect(winX + 217f, curY, 70f, 20f), $"#{currentHex}");
+
+                // Copy / Paste buttons for Hex colors
+                GUI.color = new Color(0.25f, 0.6f, 0.9f);
+                if (GUI.Button(new Rect(winX + 295f, curY - 2f, 45f, 24f), "Copy"))
                 {
-                    if (ColorUtility.TryParseHtmlString("#" + _hexColorBuffer, out Color parsedColor))
-                    {
-                        cfg.Color = parsedColor;
-                        changed = true;
-                    }
+                    GUIUtility.systemCopyBuffer = "#" + currentHex;
+                    ShowNotification($"Copied #{currentHex} to clipboard!");
                 }
                 curY += 26f;
 
