@@ -25,12 +25,18 @@ using Path = System.IO.Path;
 
 namespace DeadCoreEditor
 {
+    /*
+     * Mod Lifecycle & Native Interop
+     * Coordinates startup routines, tracks menu versus gameplay scene state transitions,
+     * and delegates update/render ticks to the active editor or playtest controllers.
+     */
     public class DeadCoreLevelEditorMod : MelonMod
     {
         private static LogsMenu _lastTransformedLogsMenu = null;
         private static LogsMenu _cachedActiveMenu = null;
-        public static int ActiveTab = 0; // 0 = My Levels, 1 = Community
+        public static int ActiveTab = 0;
         private static float _titleButtonScanTimer = 0f;
+        private static bool _titleButtonHooked = false;
 
         public override void OnInitializeMelon()
         {
@@ -42,6 +48,8 @@ namespace DeadCoreEditor
         {
             _lastTransformedLogsMenu = null;
             _cachedActiveMenu = null;
+            _titleButtonHooked = false;
+            _titleButtonScanTimer = 0.1f;
 
             string s = sceneName.ToLower();
             if (s.Contains("menu") || s.Contains("title") || s.Contains("boot") || s.Contains("intro"))
@@ -57,11 +65,17 @@ namespace DeadCoreEditor
 
             if (isMenuScene)
             {
-                _titleButtonScanTimer -= Time.deltaTime;
-                if (_titleButtonScanTimer <= 0f)
+                if (!_titleButtonHooked)
                 {
-                    _titleButtonScanTimer = 0.5f;
-                    NativeLogsMenuHijacker.ReplaceTitleScreenLogsButton();
+                    _titleButtonScanTimer -= Time.deltaTime;
+                    if (_titleButtonScanTimer <= 0f)
+                    {
+                        _titleButtonScanTimer = 0.5f;
+                        if (NativeLogsMenuHijacker.ReplaceTitleScreenLogsButton())
+                        {
+                            _titleButtonHooked = true;
+                        }
+                    }
                 }
 
                 if (Input.GetKeyDown(KeyCode.F2))
@@ -84,7 +98,6 @@ namespace DeadCoreEditor
                 }
 
                 LogsMenu activeMenu = _cachedActiveMenu;
-
                 if (activeMenu != null)
                 {
                     if (_lastTransformedLogsMenu != activeMenu)
@@ -151,6 +164,21 @@ namespace DeadCoreEditor
     {
         Building = 0,
         Gameplay = 1
+    }
+
+    public enum PlacedObjectType
+    {
+        Generic = 0,
+        Jumper,
+        Turbine,
+        Turret,
+        SpawnGate,
+        GoalGate,
+        Sunlight,
+        Spotlight,
+        RotatingLaser,
+        Laser,
+        Checkpoint
     }
 
     public class CatalogAsset
@@ -238,9 +266,11 @@ namespace DeadCoreEditor
         public string Description = "No description provided.";
     }
 
-    // =========================================================================================================
-    // NATIVE LOGS MENU INTERFACE OVERRIDES
-    // =========================================================================================================
+    /*
+     * Native Menu Hijacker & File Browser UI
+     * Overrides DeadCore's native Logs Menu interface and repurposes its UI hierarchy into
+     * an integrated custom map loader, metadata editor, and level creation console.
+     */
     public static class NativeLogsMenuHijacker
     {
         private static GameObject _nativePlayButton = null;
@@ -378,9 +408,11 @@ namespace DeadCoreEditor
             }
         }
 
-        public static void ReplaceTitleScreenLogsButton()
+        public static bool ReplaceTitleScreenLogsButton()
         {
             TMP_Text[] allTmps = Resources.FindObjectsOfTypeAll<TMP_Text>();
+            bool replaced = false;
+
             for (int i = 0; i < allTmps.Length; i++)
             {
                 TMP_Text tmp = allTmps[i];
@@ -392,8 +424,11 @@ namespace DeadCoreEditor
                 {
                     tmp.text = "Level Editor";
                     DisableLocalizationScripts(tmp.gameObject);
+                    replaced = true;
                 }
             }
+
+            return replaced;
         }
 
         public static void OpenNativeMenu()
@@ -1345,9 +1380,11 @@ namespace DeadCoreEditor
         }
     }
 
-    // =========================================================================================================
-    // MAP BROWSER FILE SYSTEM SERVICE
-    // =========================================================================================================
+    /*
+     * File System Routing & Level Staging
+     * Verifies and tracks user maps under UserData/MyLevels and UserData/DownloadedLevels.
+     * Prepares custom level staging before invoking native scene loader transitions.
+     */
     public static class MapBrowserService
     {
         public static bool IsBrowserOpen = false;
@@ -1397,9 +1434,11 @@ namespace DeadCoreEditor
         }
     }
 
-    // =========================================================================================================
-    // CORE EDITOR SESSION MANAGER
-    // =========================================================================================================
+    /*
+     * Editor Session & Gameplay Engine
+     * Core orchestrator responsible for managing in-world entity state, real-time kinematic simulation,
+     * player interaction triggers, undo/redo stacks, and immediate mode developer interfaces.
+     */
     public static class EditorSessionManager
     {
         public static bool CustomLevelSelected = true;
@@ -1408,6 +1447,9 @@ namespace DeadCoreEditor
         public static bool IsLevelInitialized = false;
 
         public static List<CatalogAsset> AllAssets = new List<CatalogAsset>();
+        public static List<CatalogAsset> BuildingAssets = new List<CatalogAsset>();
+        public static List<CatalogAsset> GameplayAssets = new List<CatalogAsset>();
+
         public static AssetCategory CurrentTab = AssetCategory.Building;
         public static int SelectedAssetIndex = 0;
         public static bool IsBlockSelected = false;
@@ -1424,6 +1466,7 @@ namespace DeadCoreEditor
         public static float DefaultPathSpeed = 3.5f;
 
         public static GameObject ParentingChildTarget = null;
+        public static GameObject RepositionTarget = null;
 
         public static float ActiveLaserRotationSpeed = 45.0f;
         public static Dictionary<GameObject, float> LaserRotationSpeeds = new Dictionary<GameObject, float>();
@@ -1437,9 +1480,11 @@ namespace DeadCoreEditor
         private static float _keyRepeatTimer = 0f;
 
         public static bool ShowParamsWindow = true;
+        public static bool ShowDebugOverlay = false;
         public static GameObject SelectedLightObject = null;
         public static Dictionary<GameObject, LightConfig> PlacedLights = new Dictionary<GameObject, LightConfig>();
         private static float _lightRefreshTimer = 0f;
+        private static string _hexColorBuffer = "00FFFF";
 
         public static Material CachedSceneMaterial = null;
 
@@ -1450,6 +1495,9 @@ namespace DeadCoreEditor
 
         public static List<GameObject> PlacedObjects = new List<GameObject>();
         public static GameObject LastPlacedObject = null;
+
+        public static Dictionary<GameObject, PlacedObjectType> PlacedObjectTypes = new Dictionary<GameObject, PlacedObjectType>();
+        public static Dictionary<GameObject, int> PlacedParentChildCounts = new Dictionary<GameObject, int>();
 
         public static List<GameObject> PlacedJumpers = new List<GameObject>();
         public static List<GameObject> PlacedTurbines = new List<GameObject>();
@@ -1477,6 +1525,8 @@ namespace DeadCoreEditor
         public static float LevelTimer = 0f;
         public static bool IsLevelCompleted = false;
 
+        private static GameObject _cachedPlayer = null;
+        private static CharacterController _cachedCharacterController = null;
         public static Camera PlayerCameraInstance = null;
         public static CharacterController PlayerControllerInstance = null;
         public static Vector3 FrozenPlayerPosition = Vector3.zero;
@@ -1485,14 +1535,42 @@ namespace DeadCoreEditor
 
         public static float CachedVoidDeathY = -140f;
 
+        private static float _debugFps = 60f;
+        private static float _debugFpsTimer = 0.25f;
+
+        public static List<CatalogAsset> ActiveTabAssets =>
+            (CurrentTab == AssetCategory.Building) ? BuildingAssets : GameplayAssets;
+
+        /*
+         * Decouples building and gameplay lists into dedicated arrays.
+         * Prevents heap garbage spikes from LINQ or List.FindAll evaluations during high-frequency queries.
+         */
+        public static void RebuildAssetCategoryCaches()
+        {
+            BuildingAssets.Clear();
+            GameplayAssets.Clear();
+            for (int i = 0; i < AllAssets.Count; i++)
+            {
+                CatalogAsset a = AllAssets[i];
+                if (a.Category == AssetCategory.Building)
+                    BuildingAssets.Add(a);
+                else
+                    GameplayAssets.Add(a);
+            }
+        }
+
+        /*
+         * Toggles debug mesh representations (housing and lens cylinders) for placed light sources.
+         * Ensures lights remain easy to click and aim in hammer edit mode while invisible in playtest mode.
+         */
         public static void SetSpotlightMeshesVisible(bool visible)
         {
             for (int i = 0; i < PlacedObjects.Count; i++)
             {
                 GameObject obj = PlacedObjects[i];
                 if (obj == null) continue;
-                string low = obj.name.ToLower();
-                if (low.Contains("spotlight") || low.Contains("sunlight"))
+                if (PlacedObjectTypes.TryGetValue(obj, out PlacedObjectType type) &&
+                    (type == PlacedObjectType.Spotlight || type == PlacedObjectType.Sunlight))
                 {
                     Transform housing = obj.transform.Find("Light_Housing");
                     if (housing != null) housing.gameObject.SetActive(visible);
@@ -1503,6 +1581,10 @@ namespace DeadCoreEditor
             }
         }
 
+        /*
+         * Dynamically calculates the void death altitude boundary based on the lowest placed entity.
+         * Guarantees safety for deep vertical drop levels without premature respawns.
+         */
         public static void RecalculateVoidDeathY()
         {
             float lowest = -140f;
@@ -1516,8 +1598,6 @@ namespace DeadCoreEditor
             }
             CachedVoidDeathY = lowest;
         }
-
-        public static List<CatalogAsset> ActiveTabAssets => AllAssets.FindAll(a => a.Category == CurrentTab);
 
         public static CatalogAsset CurrentAsset
         {
@@ -1534,7 +1614,7 @@ namespace DeadCoreEditor
         {
             if (!ShowParamsWindow) return false;
             Vector2 mouse = new Vector2(Input.mousePosition.x, Screen.height - Input.mousePosition.y);
-            Rect winRect = new Rect(Screen.width - 360f, 20f, 340f, 490f);
+            Rect winRect = new Rect(Screen.width - 380f, 20f, 360f, 530f);
             return winRect.Contains(mouse);
         }
 
@@ -1544,6 +1624,10 @@ namespace DeadCoreEditor
             _notificationTimer = 3.5f;
         }
 
+        /*
+         * Completely tears down custom session state, clearing tracking collections,
+         * destroying preview viewports, resetting light hooks, and returning parameters to defaults.
+         */
         public static void ResetSession()
         {
             IsCustomSessionActive = false;
@@ -1551,6 +1635,9 @@ namespace DeadCoreEditor
             IsLevelInitialized = false;
             IsLevelCompleted = false;
             LevelTimer = 0f;
+
+            _cachedPlayer = null;
+            _cachedCharacterController = null;
             SceneHarvestingService.NativeSceneSun = null;
 
             EditorViewportCamera.DestroyCamera();
@@ -1561,6 +1648,8 @@ namespace DeadCoreEditor
             PlayerControllerInstance = null;
 
             AllAssets.Clear();
+            BuildingAssets.Clear();
+            GameplayAssets.Clear();
             CurrentTab = AssetCategory.Building;
             SelectedAssetIndex = 0;
             IsBlockSelected = false;
@@ -1592,6 +1681,10 @@ namespace DeadCoreEditor
             AutoAlignToSurface = false;
         }
 
+        /*
+         * Main per-frame simulation loop. Handles light synchronization, player kinematic evaluation,
+         * custom hazard physics (lasers, jump pads, wind fans), and input routing based on active mode.
+         */
         public static void UpdateSession()
         {
             if (!IsLevelInitialized) return;
@@ -1605,7 +1698,10 @@ namespace DeadCoreEditor
                 }
             }
 
-            UpdateObjectMotionPaths();
+            GameObject player = FindPlayerEntity();
+            CharacterController cc = GetPlayerController();
+
+            UpdateObjectMotionPaths(player, cc);
 
             if (!IsEditModeActive)
             {
@@ -1618,26 +1714,15 @@ namespace DeadCoreEditor
                     obj.transform.Rotate(Vector3.up, speed * dt, Space.Self);
                 }
 
-                CheckVoidFall();
-                CheckJumperBoostPhysics();
-                CheckHelixWindPushing();
-                CheckGoalTriggerArrival();
-                CheckLaserBarriers();
+                if (player != null)
+                {
+                    CheckVoidFall(player);
+                    CheckJumperBoostPhysics(player, cc);
+                    CheckHelixWindPushing(player, cc);
+                    CheckGoalTriggerArrival(player);
+                    CheckLaserBarriers(player, cc);
 
-                if (!IsLevelCompleted)
-                {
-                    LevelTimer += Time.deltaTime;
-                }
-                else
-                {
-                    Cursor.lockState = CursorLockMode.None;
-                    Cursor.visible = true;
-                }
-
-                GameObject p = FindPlayerEntity();
-                if (p != null)
-                {
-                    Vector3 pPos = p.transform.position;
+                    Vector3 pPos = player.transform.position;
                     for (int i = 0; i < PlacedCheckpoints.Count; i++)
                     {
                         CheckPointScript cp = PlacedCheckpoints[i];
@@ -1654,10 +1739,20 @@ namespace DeadCoreEditor
                         }
                     }
                 }
+
+                if (!IsLevelCompleted)
+                {
+                    LevelTimer += Time.deltaTime;
+                }
+                else
+                {
+                    Cursor.lockState = CursorLockMode.None;
+                    Cursor.visible = true;
+                }
             }
             else
             {
-                FreezePlayerEntity();
+                FreezePlayerEntity(player, cc);
             }
 
             if (Input.GetKeyDown(KeyCode.F1))
@@ -1676,6 +1771,12 @@ namespace DeadCoreEditor
                 ShowNotification("Lighting hierarchy dumped to MelonLoader console (F4)");
             }
 
+            if (Input.GetKeyDown(KeyCode.F7))
+            {
+                ShowDebugOverlay = !ShowDebugOverlay;
+                ShowNotification($"Debug Engine Overlay: {(ShowDebugOverlay ? "ENABLED" : "DISABLED")}");
+            }
+
             if (_notificationTimer > 0f) _notificationTimer -= Time.deltaTime;
 
             if (IsEditModeActive)
@@ -1691,22 +1792,27 @@ namespace DeadCoreEditor
                 if (Input.GetMouseButtonDown(0) && !IsBlockSelected && !IsMouseOverUI())
                 {
                     GameObject aimed = GetAimedPlacedObject();
-                    if (aimed != null && (PlacedLights.ContainsKey(aimed) || aimed.name.ToLower().Contains("spotlight") || aimed.name.ToLower().Contains("sunlight")))
+                    if (aimed != null && (PlacedLights.ContainsKey(aimed) ||
+                        (PlacedObjectTypes.TryGetValue(aimed, out var t) && (t == PlacedObjectType.Spotlight || t == PlacedObjectType.Sunlight))))
                     {
                         SelectedLightObject = aimed;
-                        ShowNotification("Selected Light (Use Arrow Keys to Rotate/Aim Beam)");
+                        SyncLightBufferColor();
+                        ShowNotification("Selected Light (Use Arrow Keys to Aim)");
                     }
                 }
             }
         }
 
-        private static void UpdateObjectMotionPaths()
+        /*
+         * Evaluates kinematic ping-pong motion paths. Smoothly lerps platforms between Point A and Point B
+         * and applies directional delta offsets to standing CharacterControllers to preserve momentum transfer.
+         */
+        private static void UpdateObjectMotionPaths(GameObject player, CharacterController cc)
         {
             if (MotionPaths.Count == 0) return;
 
-            GameObject player = FindPlayerEntity();
-            CharacterController cc = (player != null && !IsEditModeActive) ? player.GetComponentInChildren<CharacterController>() : null;
-            Vector3 playerFeetPos = (player != null) ? player.transform.position : Vector3.zero;
+            bool canPushPlayer = (player != null && !IsEditModeActive && cc != null && cc.isGrounded);
+            Vector3 playerFeetPos = canPushPlayer ? player.transform.position : Vector3.zero;
 
             foreach (var kvp in MotionPaths)
             {
@@ -1727,7 +1833,7 @@ namespace DeadCoreEditor
 
                 obj.transform.position = targetPos;
 
-                if (cc != null && cc.isGrounded && delta.sqrMagnitude > 0.00001f)
+                if (canPushPlayer && delta.sqrMagnitude > 0.00001f)
                 {
                     if (path.CachedColliders == null || path.CachedColliders.Length == 0)
                     {
@@ -1747,12 +1853,9 @@ namespace DeadCoreEditor
             }
         }
 
-        private static void CheckGoalTriggerArrival()
+        private static void CheckGoalTriggerArrival(GameObject player)
         {
             if (IsLevelCompleted || PlacedGoalGate == null || !PlacedGoalGate.activeSelf) return;
-
-            GameObject player = FindPlayerEntity();
-            if (player == null) return;
 
             Vector3 pPos = player.transform.position;
             Vector3 gPos = PlacedGoalGate.transform.position;
@@ -1769,14 +1872,13 @@ namespace DeadCoreEditor
             }
         }
 
-        private static void CheckJumperBoostPhysics()
+        /*
+         * Custom parabolic launch physics for placed Jump Pads.
+         * Handles dynamic trajectory calculation for angled versus vertical pads with gravity arc blending.
+         */
+        private static void CheckJumperBoostPhysics(GameObject player, CharacterController cc)
         {
             if (_jumperTriggerCooldown > 0f) _jumperTriggerCooldown -= Time.deltaTime;
-
-            GameObject player = FindPlayerEntity();
-            if (player == null) return;
-
-            CharacterController cc = player.GetComponentInChildren<CharacterController>();
             if (cc == null) return;
 
             if (_isBoostActive)
@@ -1840,15 +1942,13 @@ namespace DeadCoreEditor
             }
         }
 
-        private static void CheckHelixWindPushing()
+        /*
+         * Cylindrical wind tunnel physics simulation for placed Helix Turbines.
+         * Computes forward penetration and radial falloff to push the player smoothly along the turbine exhaust vector.
+         */
+        private static void CheckHelixWindPushing(GameObject player, CharacterController cc)
         {
-            if (PlacedTurbines.Count == 0) return;
-
-            GameObject player = FindPlayerEntity();
-            if (player == null) return;
-
-            CharacterController cc = player.GetComponentInChildren<CharacterController>();
-            if (cc == null) return;
+            if (PlacedTurbines.Count == 0 || cc == null) return;
 
             Vector3 pPos = player.transform.position + Vector3.up * 1.0f;
             float dt = Time.deltaTime;
@@ -1896,15 +1996,13 @@ namespace DeadCoreEditor
             }
         }
 
-        private static void CheckLaserBarriers()
+        /*
+         * Oriented bounding box (OBB) intersection testing for lethal laser planes.
+         * Uses inverse-transform projection against player dimensions to guarantee lethal registration without physics stutter.
+         */
+        private static void CheckLaserBarriers(GameObject player, CharacterController cc)
         {
-            if (PlacedLaserBarriers.Count == 0) return;
-
-            GameObject player = FindPlayerEntity();
-            if (player == null) return;
-
-            CharacterController cc = player.GetComponentInChildren<CharacterController>();
-            if (cc == null) return;
+            if (PlacedLaserBarriers.Count == 0 || cc == null) return;
 
             Vector3 playerCenter = player.transform.position + cc.center;
             float playerRadius = cc.radius + 0.1f;
@@ -1942,23 +2040,20 @@ namespace DeadCoreEditor
             }
         }
 
-        private static void FreezePlayerEntity()
+        private static void FreezePlayerEntity(GameObject player, CharacterController cc)
         {
-            GameObject player = FindPlayerEntity();
             if (player != null)
             {
                 player.transform.position = FrozenPlayerPosition;
                 player.transform.rotation = FrozenPlayerRotation;
 
-                CharacterController cc = player.GetComponentInChildren<CharacterController>();
                 if (cc != null && cc.enabled) cc.enabled = false;
             }
         }
 
-        private static void CheckVoidFall()
+        private static void CheckVoidFall(GameObject player)
         {
-            GameObject player = FindPlayerEntity();
-            if (player != null && player.transform.position.y < CachedVoidDeathY)
+            if (player.transform.position.y < CachedVoidDeathY)
             {
                 RespawnPlayer(player);
             }
@@ -1995,7 +2090,7 @@ namespace DeadCoreEditor
             GameObject player = FindPlayerEntity();
             if (player == null) return;
 
-            CharacterController cc = player.GetComponentInChildren<CharacterController>();
+            CharacterController cc = GetPlayerController();
             if (cc != null) cc.enabled = false;
 
             ClearLastCheckpoint();
@@ -2003,7 +2098,7 @@ namespace DeadCoreEditor
 
             foreach (var obj in PlacedObjects)
             {
-                if (obj != null && obj.name.ToLower().Contains("spawn"))
+                if (obj != null && PlacedObjectTypes.TryGetValue(obj, out var t) && t == PlacedObjectType.SpawnGate)
                 {
                     player.transform.rotation = obj.transform.rotation;
                     break;
@@ -2027,7 +2122,7 @@ namespace DeadCoreEditor
 
         public static void RespawnPlayer(GameObject player)
         {
-            CharacterController cc = player.GetComponentInChildren<CharacterController>();
+            CharacterController cc = GetPlayerController();
             if (cc != null) cc.enabled = false;
 
             if (ActiveCustomCheckpoint != null && ActiveCustomCheckpoint.gameObject.activeInHierarchy)
@@ -2059,7 +2154,7 @@ namespace DeadCoreEditor
             GameObject player = FindPlayerEntity();
             if (player == null) return;
 
-            CharacterController cc = player.GetComponentInChildren<CharacterController>();
+            CharacterController cc = GetPlayerController();
             if (cc != null) cc.enabled = true;
 
             foreach (var mb in player.GetComponentsInChildren<MonoBehaviour>(true))
@@ -2089,7 +2184,7 @@ namespace DeadCoreEditor
                 {
                     FrozenPlayerPosition = player.transform.position;
                     FrozenPlayerRotation = player.transform.rotation;
-                    PlayerControllerInstance = player.GetComponentInChildren<CharacterController>();
+                    PlayerControllerInstance = GetPlayerController();
                     if (PlayerControllerInstance != null) PlayerControllerInstance.enabled = false;
                 }
 
@@ -2123,6 +2218,10 @@ namespace DeadCoreEditor
             }
         }
 
+        /*
+         * Editor shortcut processor. Maps hotkeys for tab navigation, compound hierarchy assembly,
+         * waypoint targeting, entity picking/moving, surface alignment, undo/redo, and disk persistence.
+         */
         private static void HandleFlowShortcuts()
         {
             bool isCtrlHeld = Input.GetKey(KeyCode.LeftControl) || Input.GetKey(KeyCode.RightControl);
@@ -2144,6 +2243,41 @@ namespace DeadCoreEditor
                 }
             }
 
+            // Direct in-place Entity Pick-up & Reposition Tool (V)
+            if (Input.GetKeyDown(KeyCode.V) && !isCtrlHeld)
+            {
+                if (RepositionTarget == null)
+                {
+                    GameObject aimed = GetAimedPlacedObject();
+                    if (aimed != null)
+                    {
+                        RepositionTarget = aimed;
+                        ShowNotification($"Picked up '{aimed.name}'! Aim and Left-Click to drop. (Esc to cancel)");
+                        MelonLogger.Msg($">> [Move] Picked up '{aimed.name}' for repositioning.");
+                    }
+                    else
+                    {
+                        ShowNotification("Aim at an object first to pick up and move it.");
+                    }
+                }
+                else
+                {
+                    RepositionTarget = null;
+                    ShowNotification("Object reposition dropped.");
+                }
+            }
+
+            if (RepositionTarget != null)
+            {
+                RepositionTarget.transform.position = PlacementHologramController.TargetPosition;
+                if (Input.GetMouseButtonDown(0) && !Input.GetMouseButton(1) && !IsMouseOverUI())
+                {
+                    ShowNotification($"Placed '{RepositionTarget.name}' at new coordinates!");
+                    RepositionTarget = null;
+                }
+            }
+
+            // Compound hierarchy assembly linking & unlinking (P)
             if (Input.GetKeyDown(KeyCode.P) && !isCtrlHeld)
             {
                 if (Input.GetKey(KeyCode.LeftShift) || Input.GetKey(KeyCode.RightShift))
@@ -2165,6 +2299,8 @@ namespace DeadCoreEditor
                             RedoHistory.Clear();
 
                             aimed.transform.SetParent(null, true);
+                            RecalculateParentChildCount(oldParent);
+
                             ShowNotification($"Unparented '{aimed.name}' from '{oldParent.name}' (Ctrl+Z to Undo)");
                             MelonLogger.Msg($">> [Parenting] Unparented '{aimed.name}'");
                         }
@@ -2214,6 +2350,9 @@ namespace DeadCoreEditor
                                 RedoHistory.Clear();
 
                                 ParentingChildTarget.transform.SetParent(aimedParent.transform, true);
+                                if (oldParent != null) RecalculateParentChildCount(oldParent);
+                                RecalculateParentChildCount(aimedParent);
+
                                 ShowNotification($"Linked: '{ParentingChildTarget.name}' -> '{aimedParent.name}'! (Ctrl+Z to Undo)");
                                 MelonLogger.Msg($">> [Parenting] Linked child '{ParentingChildTarget.name}' to parent '{aimedParent.name}'");
                                 ParentingChildTarget = null;
@@ -2228,6 +2367,7 @@ namespace DeadCoreEditor
                 }
             }
 
+            // Kinematic waypoint definition (M)
             if (Input.GetKeyDown(KeyCode.M) && !isCtrlHeld)
             {
                 if (Input.GetKey(KeyCode.LeftShift) || Input.GetKey(KeyCode.RightShift))
@@ -2294,7 +2434,12 @@ namespace DeadCoreEditor
 
             if (Input.GetKeyDown(KeyCode.Escape) || Input.GetKeyDown(KeyCode.X))
             {
-                if (SelectedLightObject != null && !IsBlockSelected)
+                if (RepositionTarget != null)
+                {
+                    RepositionTarget = null;
+                    ShowNotification("Reposition Cancelled");
+                }
+                else if (SelectedLightObject != null && !IsBlockSelected)
                 {
                     SelectedLightObject = null;
                     ShowNotification("Light Deselected");
@@ -2356,6 +2501,21 @@ namespace DeadCoreEditor
             }
         }
 
+        public static void RecalculateParentChildCount(GameObject parentObj)
+        {
+            if (parentObj == null) return;
+            int count = 0;
+            for (int i = 0; i < PlacedObjects.Count; i++)
+            {
+                if (PlacedObjects[i] != null && PlacedObjects[i].transform.parent == parentObj.transform)
+                    count++;
+            }
+            if (count > 0)
+                PlacedParentChildCounts[parentObj] = count;
+            else
+                PlacedParentChildCounts.Remove(parentObj);
+        }
+
         public static void SetCategory(AssetCategory newCategory)
         {
             if (CurrentTab == newCategory) return;
@@ -2385,6 +2545,10 @@ namespace DeadCoreEditor
             MelonLogger.Msg($">> [Selected] '{CurrentAsset.DisplayName}'. Left-click in world to place.");
         }
 
+        /*
+         * Precise rotational step management for placement holograms and active light sources.
+         * Supports smooth repeat triggers, cardinal 90-degree snapping, and 5/45-degree micro-steps.
+         */
         public static void HandleGhostRotationOnly()
         {
             if (SelectedLightObject != null && SelectedLightObject.activeSelf && !IsBlockSelected)
@@ -2612,6 +2776,10 @@ namespace DeadCoreEditor
             TargetRoll = (TargetRoll % 360f + 360f) % 360f;
         }
 
+        /*
+         * Mouse wheel input router. Differentiates between scrolling through the asset palette arc
+         * and fine-tuning placement scale, turbine air velocity, jumper launch impulse, or turret cooldowns.
+         */
         private static void HandleMouseWheel()
         {
             float scroll = Input.GetAxis("Mouse ScrollWheel");
@@ -2619,7 +2787,6 @@ namespace DeadCoreEditor
 
             if (Input.GetKey(KeyCode.LeftShift))
             {
-                // Parameter Adjustments (keep sign matching scroll direction)
                 float stepDir = Mathf.Sign(scroll);
 
                 GameObject aimed = GetAimedPlacedObject();
@@ -2686,6 +2853,10 @@ namespace DeadCoreEditor
             }
         }
 
+        /*
+         * Raycasts from the viewport camera to detect placed objects.
+         * Explicitly enables trigger query interactions so non-solid entities like lasers and checkpoints can be selected.
+         */
         public static GameObject GetAimedPlacedObject()
         {
             if (EditorViewportCamera.ViewportCamera == null) return null;
@@ -2696,11 +2867,12 @@ namespace DeadCoreEditor
 
             int mask = ~LayerMask.GetMask("Ignore Raycast");
             RaycastHit hit;
-            if (Physics.Raycast(ray, out hit, 1000f, mask))
+            if (Physics.Raycast(ray, out hit, 1000f, mask, QueryTriggerInteraction.Collide))
             {
                 GameObject hitObj = hit.collider.gameObject;
-                foreach (var obj in PlacedObjects)
+                for (int i = 0; i < PlacedObjects.Count; i++)
                 {
+                    GameObject obj = PlacedObjects[i];
                     if (obj == null) continue;
                     if (hitObj == obj || hitObj.transform.IsChildOf(obj.transform))
                     {
@@ -2742,29 +2914,59 @@ namespace DeadCoreEditor
             }
         }
 
+        /*
+         * Registers a newly placed or restored GameObject into tracking sets and classifications.
+         * Categorizes mechanics for O(1) identification and updates void altitude boundaries.
+         */
         public static void RegisterPlacedObject(GameObject obj)
         {
             if (obj == null || PlacedObjects.Contains(obj)) return;
 
             PlacedObjects.Add(obj);
             string low = obj.name.ToLower();
+            PlacedObjectType identifiedType = PlacedObjectType.Generic;
 
             if (low.Contains("jumper"))
             {
+                identifiedType = PlacedObjectType.Jumper;
                 if (!PlacedJumpers.Contains(obj)) PlacedJumpers.Add(obj);
             }
             else if (low.Contains("helix") || low.Contains("helice"))
             {
+                identifiedType = PlacedObjectType.Turbine;
                 if (!PlacedTurbines.Contains(obj)) PlacedTurbines.Add(obj);
                 Helix h = obj.GetComponentInChildren<Helix>();
                 if (h != null) _cachedHelixScripts[obj] = h;
             }
+            else if (low.Contains("turret"))
+            {
+                identifiedType = PlacedObjectType.Turret;
+            }
+            else if (low.Contains("spawn"))
+            {
+                identifiedType = PlacedObjectType.SpawnGate;
+            }
+            else if (low.Contains("goal"))
+            {
+                identifiedType = PlacedObjectType.GoalGate;
+                PlacedGoalGate = obj;
+            }
+            else if (low.Contains("sunlight"))
+            {
+                identifiedType = PlacedObjectType.Sunlight;
+            }
+            else if (low.Contains("spotlight"))
+            {
+                identifiedType = PlacedObjectType.Spotlight;
+            }
             else if (low.Contains("rotating_laser") || low.Contains("rotating laser"))
             {
+                identifiedType = PlacedObjectType.RotatingLaser;
                 if (!PlacedRotatingLasers.Contains(obj)) PlacedRotatingLasers.Add(obj);
             }
             else if (low.Contains("laser"))
             {
+                identifiedType = PlacedObjectType.Laser;
                 if (!PlacedLaserBarriers.Contains(obj))
                 {
                     PlacedLaserBarriers.Add(obj);
@@ -2772,17 +2974,21 @@ namespace DeadCoreEditor
                     PlacedLaserColliders.Add(bc);
                 }
             }
-            else if (low.Contains("goal"))
-            {
-                PlacedGoalGate = obj;
-            }
             else
             {
                 CheckPointScript cp = obj.GetComponentInChildren<CheckPointScript>();
-                if (cp != null && !PlacedCheckpoints.Contains(cp))
+                if (cp != null)
                 {
-                    PlacedCheckpoints.Add(cp);
+                    identifiedType = PlacedObjectType.Checkpoint;
+                    if (!PlacedCheckpoints.Contains(cp)) PlacedCheckpoints.Add(cp);
                 }
+            }
+
+            PlacedObjectTypes[obj] = identifiedType;
+
+            if (obj.transform.parent != null)
+            {
+                RecalculateParentChildCount(obj.transform.parent.gameObject);
             }
 
             RecalculateVoidDeathY();
@@ -2793,10 +2999,19 @@ namespace DeadCoreEditor
             if (target == null) return;
 
             PlacedObjects.Remove(target);
+            PlacedObjectTypes.Remove(target);
+            PlacedParentChildCounts.Remove(target);
+
+            if (target.transform.parent != null)
+            {
+                RecalculateParentChildCount(target.transform.parent.gameObject);
+            }
+
             if (PlacedLights.ContainsKey(target)) PlacedLights.Remove(target);
             if (MotionPaths.ContainsKey(target)) MotionPaths.Remove(target);
             if (PathEditTarget == target) PathEditTarget = null;
             if (ParentingChildTarget == target) ParentingChildTarget = null;
+            if (RepositionTarget == target) RepositionTarget = null;
             if (SelectedLightObject == target) SelectedLightObject = null;
 
             PlacedJumpers.Remove(target);
@@ -2873,7 +3088,11 @@ namespace DeadCoreEditor
             {
                 if (record.TargetObject != null)
                 {
-                    record.TargetObject.transform.SetParent(record.PreviousParent != null ? record.PreviousParent.transform : null, true);
+                    GameObject oldP = record.PreviousParent;
+                    GameObject newP = record.TargetObject.transform.parent != null ? record.TargetObject.transform.parent.gameObject : null;
+                    record.TargetObject.transform.SetParent(oldP != null ? oldP.transform : null, true);
+                    if (oldP != null) RecalculateParentChildCount(oldP);
+                    if (newP != null) RecalculateParentChildCount(newP);
                 }
                 RedoHistory.Push(record);
                 ShowNotification($"Undid parenting on '{record.TargetObject.name}'");
@@ -2926,7 +3145,11 @@ namespace DeadCoreEditor
             {
                 if (record.TargetObject != null)
                 {
-                    record.TargetObject.transform.SetParent(record.NewParent != null ? record.NewParent.transform : null, true);
+                    GameObject oldP = record.TargetObject.transform.parent != null ? record.TargetObject.transform.parent.gameObject : null;
+                    GameObject newP = record.NewParent;
+                    record.TargetObject.transform.SetParent(newP != null ? newP.transform : null, true);
+                    if (oldP != null) RecalculateParentChildCount(oldP);
+                    if (newP != null) RecalculateParentChildCount(newP);
                 }
                 UndoHistory.Push(record);
                 ShowNotification($"Redid parenting on '{record.TargetObject.name}'");
@@ -2981,13 +3204,16 @@ namespace DeadCoreEditor
 
         public static void ClearAllPlacedObjects()
         {
-            foreach (var obj in PlacedObjects)
+            for (int i = 0; i < PlacedObjects.Count; i++)
             {
-                if (obj != null) GameObject.Destroy(obj);
+                if (PlacedObjects[i] != null) GameObject.Destroy(PlacedObjects[i]);
             }
             PlacedObjects.Clear();
+            PlacedObjectTypes.Clear();
+            PlacedParentChildCounts.Clear();
             PlacedLights.Clear();
             SelectedLightObject = null;
+            RepositionTarget = null;
             LastPlacedObject = null;
 
             PlacedJumpers.Clear();
@@ -3140,9 +3366,11 @@ namespace DeadCoreEditor
             MelonLogger.Msg($">> [Turret] Configured with hitboxes intact! Fire Delay: {fireDelay:F2}s, Power: {firePower:F0}");
         }
 
-        // =========================================================================================================
-        // OVERHAULED LIGHT & SUNLIGHT SYSTEM (Supports Spotlights and Infinite Global Directional Sunlights)
-        // =========================================================================================================
+        /*
+         * HDRP-compliant physical lighting coordinator.
+         * Scales raw intensity factors into physical Lux units, writes HDAdditionalLightData fields,
+         * synchronizes scene ambient sky illumination, and aligns world directional shadows.
+         */
         public static void ApplyLightConfig(GameObject lightObj, LightConfig cfg)
         {
             if (lightObj == null || cfg == null) return;
@@ -3156,7 +3384,6 @@ namespace DeadCoreEditor
 
                 if (cfg.IsDirectional)
                 {
-                    // Pick the hooked native scene sun if available, otherwise fallback to this light's component
                     Light targetSun = SceneHarvestingService.NativeSceneSun != null
                         ? SceneHarvestingService.NativeSceneSun
                         : l;
@@ -3169,13 +3396,10 @@ namespace DeadCoreEditor
                         targetSun.color = cfg.Color;
                         targetSun.transform.rotation = lightObj.transform.rotation;
 
-                        // Directional sunlight in HDRP needs thousands of Lux (native is 13,000)
-                        float hdrpSunIntensity = Mathf.Max(0.1f, cfg.Intensity) * 4000f; // Scale 1.0-5.0 -> 4,000 - 20,000 Lux
+                        float hdrpSunIntensity = Mathf.Max(0.1f, cfg.Intensity) * 4000f;
                         targetSun.intensity = hdrpSunIntensity;
-
                         RenderSettings.sun = targetSun;
 
-                        // Apply to HDAdditionalLightData if present
                         try
                         {
                             Component[] sunComps = targetSun.GetComponentsInChildren<Component>(true);
@@ -3191,7 +3415,6 @@ namespace DeadCoreEditor
                         catch { }
                     }
 
-                    // Force ambient lighting so materials without dynamic light passes still receive the color & brightness
                     RenderSettings.ambientMode = UnityEngine.Rendering.AmbientMode.Trilight;
                     RenderSettings.ambientSkyColor = cfg.Color * Mathf.Clamp01(cfg.Intensity * 0.35f);
                     RenderSettings.ambientEquatorColor = cfg.Color * Mathf.Clamp01(cfg.Intensity * 0.20f);
@@ -3205,15 +3428,12 @@ namespace DeadCoreEditor
                     l.range = 150f;
                     l.spotAngle = Mathf.Clamp(cfg.SpotAngle, 5f, 150f);
                     l.color = cfg.Color;
-
-                    // Exponential spotlight punch
                     l.intensity = Mathf.Pow(Mathf.Max(0.1f, cfg.Intensity), 2.2f) * 8000f;
                 }
 
                 l.enabled = true;
             }
 
-            // Update HDRP / Additional Light Data on the light object itself
             try
             {
                 Component[] comps = lightObj.GetComponentsInChildren<Component>(true);
@@ -3245,7 +3465,6 @@ namespace DeadCoreEditor
             }
             catch { }
 
-            // Update physical lamp / sun orb glow
             try
             {
                 MeshRenderer mr = lightObj.GetComponentInChildren<MeshRenderer>();
@@ -3313,10 +3532,7 @@ namespace DeadCoreEditor
             Light[] lights = gateObj.GetComponentsInChildren<Light>(true);
             for (int i = 0; i < lights.Length; i++)
             {
-                if (lights[i] != null)
-                {
-                    lights[i].color = tintColor;
-                }
+                if (lights[i] != null) lights[i].color = tintColor;
             }
 
             TrailRenderer[] trails = gateObj.GetComponentsInChildren<TrailRenderer>(true);
@@ -3330,6 +3546,10 @@ namespace DeadCoreEditor
             }
         }
 
+        /*
+         * Real-time 2D Immediate Mode GUI (IMGUI) overlay renderer.
+         * Projects spatial badges, waypoints, categories, compound assembly tags, and contextual hotkey hints.
+         */
         public static void DrawEditorGUI()
         {
             Camera cam = EditorViewportCamera.ViewportCamera;
@@ -3345,7 +3565,7 @@ namespace DeadCoreEditor
                 if (obj == null || !obj.activeSelf) continue;
 
                 Vector3 screenPos = cam.WorldToScreenPoint(obj.transform.position + Vector3.up * 1.5f);
-                if (screenPos.z <= 0.5f || screenPos.x < -120f || screenPos.x > sw + 120f || screenPos.y < -80f || screenPos.y > sh + 80f)
+                if (screenPos.z <= 0.1f || screenPos.x < -120f || screenPos.x > sw + 120f || screenPos.y < -80f || screenPos.y > sh + 80f)
                     continue;
 
                 float y = sh - screenPos.y;
@@ -3357,86 +3577,90 @@ namespace DeadCoreEditor
                     GUI.Box(new Rect(screenPos.x - 90f, y - 30f, 180f, 26f), $"[✦ Path: {mp.Speed:F1}m/s]");
                 }
 
-                if (obj.transform.childCount > 0)
+                if (PlacedParentChildCounts.TryGetValue(obj, out int placedChildCount) && placedChildCount > 0)
                 {
-                    int placedChildCount = 0;
-                    for (int k = 0; k < PlacedObjects.Count; k++)
-                    {
-                        if (PlacedObjects[k] != null && PlacedObjects[k].transform.parent == obj.transform)
-                            placedChildCount++;
-                    }
-
-                    if (placedChildCount > 0)
-                    {
-                        GUI.color = new Color(1.0f, 0.7f, 0.2f);
-                        GUI.Box(new Rect(screenPos.x - 95f, y - 55f, 190f, 22f), $"★ Assembly Parent ({placedChildCount} Objects)");
-                    }
+                    GUI.color = new Color(1.0f, 0.7f, 0.2f);
+                    GUI.Box(new Rect(screenPos.x - 95f, y - 55f, 190f, 22f), $"★ Assembly Parent ({placedChildCount} Objects)");
                 }
 
-                if (JumperForces.ContainsKey(obj) || obj.name.ToLower().Contains("jumper"))
+                PlacedObjectTypes.TryGetValue(obj, out PlacedObjectType objType);
+
+                switch (objType)
                 {
-                    float force = JumperForces.ContainsKey(obj) ? JumperForces[obj] : ActiveJumperForce;
-                    GUI.color = Color.cyan;
-                    GUI.Box(new Rect(screenPos.x - 75f, y - 14f, 150f, 26f), $"[Force: {force:F1}]");
-                }
-                else if (TurbineSpeeds.ContainsKey(obj) || obj.name.ToLower().Contains("helix"))
-                {
-                    float speed = TurbineSpeeds.ContainsKey(obj) ? TurbineSpeeds[obj] : ActiveTurbineSpeed;
-                    GUI.color = Color.green;
-                    GUI.Box(new Rect(screenPos.x - 75f, y - 14f, 150f, 26f), $"[Speed: {speed:F1}]");
-                }
-                else if (TurretFireDelays.ContainsKey(obj) || obj.name.ToLower().Contains("turret"))
-                {
-                    float delay = TurretFireDelays.ContainsKey(obj) ? TurretFireDelays[obj] : ActiveTurretFireDelay;
-                    GUI.color = Color.red;
-                    GUI.Box(new Rect(screenPos.x - 75f, y - 14f, 150f, 26f), $"[Fire Delay: {delay:F2}s]");
-                }
-                else if (obj.name.ToLower().Contains("spawn"))
-                {
-                    GUI.color = new Color(1.0f, 0.45f, 0.05f);
-                    GUI.Box(new Rect(screenPos.x - 85f, y - 14f, 170f, 26f), "[Entry / Spawn Point]");
-                }
-                else if (obj.name.ToLower().Contains("goal"))
-                {
-                    GUI.color = new Color(0.1f, 0.65f, 1.0f);
-                    GUI.Box(new Rect(screenPos.x - 85f, y - 14f, 170f, 26f), "[Goal / Finish Line]");
-                }
-                else if (obj.name.ToLower().Contains("sunlight"))
-                {
-                    bool isSel = (obj == SelectedLightObject);
-                    GUI.color = isSel ? Color.green : new Color(1.0f, 0.85f, 0.2f);
-                    string badge = isSel ? "★ [Aim Sunlight: Arrows] ★" : "[Global Sunlight Source]";
-                    GUI.Box(new Rect(screenPos.x - 100f, y - 14f, 200f, 26f), badge);
-                }
-                else if (obj.name.ToLower().Contains("spotlight"))
-                {
-                    bool isSel = (obj == SelectedLightObject);
-                    GUI.color = isSel ? Color.green : Color.yellow;
-                    string badge = isSel ? "★ [Aim Spotlight: Arrows] ★" : "[Tech Spotlight]";
-                    GUI.Box(new Rect(screenPos.x - 100f, y - 14f, 200f, 26f), badge);
-                }
-                else if (obj.name.ToLower().Contains("rotating"))
-                {
-                    float spd = LaserRotationSpeeds.ContainsKey(obj) ? LaserRotationSpeeds[obj] : ActiveLaserRotationSpeed;
-                    GUI.color = Color.red;
-                    GUI.Box(new Rect(screenPos.x - 85f, y - 14f, 170f, 26f), $"[Laser: {spd:F0}°/s]");
-                }
-                else if (obj.name.ToLower().Contains("laser"))
-                {
-                    GUI.color = Color.red;
-                    string label = obj.name.ToLower().Contains("long") ? "[Long Laser]" : "[Laser Barrier]";
-                    GUI.Box(new Rect(screenPos.x - 85f, y - 14f, 170f, 26f), label);
-                }
-                else
-                {
-                    CheckPointScript cp = obj.GetComponentInChildren<CheckPointScript>();
-                    if (cp != null)
-                    {
-                        bool isActive = (CheckPointScript.LastCheckPoint == cp);
-                        GUI.color = isActive ? Color.green : new Color(0.4f, 0.8f, 1f);
-                        string cpText = isActive ? "[Active Checkpoint]" : "[Checkpoint]";
-                        GUI.Box(new Rect(screenPos.x - 75f, y - 14f, 150f, 26f), cpText);
-                    }
+                    case PlacedObjectType.Jumper:
+                        {
+                            float force = JumperForces.ContainsKey(obj) ? JumperForces[obj] : ActiveJumperForce;
+                            GUI.color = Color.cyan;
+                            GUI.Box(new Rect(screenPos.x - 75f, y - 14f, 150f, 26f), $"[Force: {force:F1}]");
+                            break;
+                        }
+                    case PlacedObjectType.Turbine:
+                        {
+                            float speed = TurbineSpeeds.ContainsKey(obj) ? TurbineSpeeds[obj] : ActiveTurbineSpeed;
+                            GUI.color = Color.green;
+                            GUI.Box(new Rect(screenPos.x - 75f, y - 14f, 150f, 26f), $"[Speed: {speed:F1}]");
+                            break;
+                        }
+                    case PlacedObjectType.Turret:
+                        {
+                            float delay = TurretFireDelays.ContainsKey(obj) ? TurretFireDelays[obj] : ActiveTurretFireDelay;
+                            GUI.color = Color.red;
+                            GUI.Box(new Rect(screenPos.x - 75f, y - 14f, 150f, 26f), $"[Fire Delay: {delay:F2}s]");
+                            break;
+                        }
+                    case PlacedObjectType.SpawnGate:
+                        {
+                            GUI.color = new Color(1.0f, 0.45f, 0.05f);
+                            GUI.Box(new Rect(screenPos.x - 85f, y - 14f, 170f, 26f), "[Entry / Spawn Point]");
+                            break;
+                        }
+                    case PlacedObjectType.GoalGate:
+                        {
+                            GUI.color = new Color(0.1f, 0.65f, 1.0f);
+                            GUI.Box(new Rect(screenPos.x - 85f, y - 14f, 170f, 26f), "[Goal / Finish Line]");
+                            break;
+                        }
+                    case PlacedObjectType.Sunlight:
+                        {
+                            bool isSel = (obj == SelectedLightObject);
+                            GUI.color = isSel ? Color.green : new Color(1.0f, 0.85f, 0.2f);
+                            string badge = isSel ? "★ [Aim Sunlight: Arrows] ★" : "[Global Sunlight Source]";
+                            GUI.Box(new Rect(screenPos.x - 100f, y - 14f, 200f, 26f), badge);
+                            break;
+                        }
+                    case PlacedObjectType.Spotlight:
+                        {
+                            bool isSel = (obj == SelectedLightObject);
+                            GUI.color = isSel ? Color.green : Color.yellow;
+                            string badge = isSel ? "★ [Aim Spotlight: Arrows] ★" : "[Tech Spotlight]";
+                            GUI.Box(new Rect(screenPos.x - 100f, y - 14f, 200f, 26f), badge);
+                            break;
+                        }
+                    case PlacedObjectType.RotatingLaser:
+                        {
+                            float spd = LaserRotationSpeeds.ContainsKey(obj) ? LaserRotationSpeeds[obj] : ActiveLaserRotationSpeed;
+                            GUI.color = Color.red;
+                            GUI.Box(new Rect(screenPos.x - 85f, y - 14f, 170f, 26f), $"[Laser: {spd:F0}°/s]");
+                            break;
+                        }
+                    case PlacedObjectType.Laser:
+                        {
+                            GUI.color = Color.red;
+                            string label = obj.name.ToLower().Contains("long") ? "[Long Laser]" : "[Laser Barrier]";
+                            GUI.Box(new Rect(screenPos.x - 85f, y - 14f, 170f, 26f), label);
+                            break;
+                        }
+                    case PlacedObjectType.Checkpoint:
+                        {
+                            CheckPointScript cp = obj.GetComponentInChildren<CheckPointScript>();
+                            bool isActive = (CheckPointScript.LastCheckPoint == cp);
+                            GUI.color = isActive ? Color.green : new Color(0.4f, 0.8f, 1f);
+                            string cpText = isActive ? "[Active Checkpoint]" : "[Checkpoint]";
+                            GUI.Box(new Rect(screenPos.x - 75f, y - 14f, 150f, 26f), cpText);
+                            break;
+                        }
+                    default:
+                        break;
                 }
             }
 
@@ -3464,6 +3688,17 @@ namespace DeadCoreEditor
                 }
             }
 
+            if (RepositionTarget != null)
+            {
+                Vector3 screenPos = cam.WorldToScreenPoint(RepositionTarget.transform.position + Vector3.up * 2.0f);
+                if (screenPos.z > 0.5f)
+                {
+                    float y = Screen.height - screenPos.y;
+                    GUI.color = new Color(0.2f, 1f, 0.4f);
+                    GUI.Box(new Rect(screenPos.x - 140f, y - 16f, 280f, 32f), "<b>[ MOVING ENTITY: LEFT-CLICK TO DROP ]</b>");
+                }
+            }
+
             if (SelectedLightObject != null && SelectedLightObject.activeSelf && !IsBlockSelected)
             {
                 GUI.color = new Color(1f, 0.88f, 0.2f, 0.95f);
@@ -3488,7 +3723,7 @@ namespace DeadCoreEditor
                 bool isCurrent = (CurrentTab == c);
                 GUI.color = isCurrent ? new Color(0.2f, 0.85f, 1f, 1f) : new Color(0.22f, 0.28f, 0.36f, 0.85f);
 
-                int count = AllAssets.FindAll(a => a.Category == c).Count;
+                int count = (c == AssetCategory.Building) ? BuildingAssets.Count : GameplayAssets.Count;
                 if (GUI.Button(new Rect(barX + 6f + (i * tabBtnW), barY + 4f, tabBtnW - 4f, 26f), $"{catLabels[i]} ({count})"))
                 {
                     SetCategory(c);
@@ -3499,13 +3734,14 @@ namespace DeadCoreEditor
             string alignMode = AutoAlignToSurface ? "<color=#69F0AE>SURFACE (C)</color>" : "<color=#FFB74D>MANUAL (C)</color>";
             string pathInfo = PathEditTarget != null ? "<color=#E040FB>SETTING POINT B (M)</color>" : "M: Path";
             string parentInfo = ParentingChildTarget != null ? "<color=#FFD54F>LINKING PARENT (P)</color>" : "P: Parent";
+            string moveInfo = RepositionTarget != null ? "<color=#00E676>MOVING OBJECT (V)</color>" : "V: Move";
 
             string status = IsBlockSelected
-                ? $"EQUIPPED: '{CurrentAsset?.DisplayName}' | Left-Click: Place | RMB/Esc: Cancel | {pathInfo} | {parentInfo} | Align: {alignMode} | Snap: {gridName} (G)"
-                : $"MAP: '{MapBrowserService.SelectedMapName}' | Tab/1-2: Tabs | {pathInfo} | {parentInfo} | C: Align | Ctrl+Z: Undo | Ctrl+Y: Redo";
+                ? $"EQUIPPED: '{CurrentAsset?.DisplayName}' | Left-Click: Place | RMB/Esc: Cancel | {moveInfo} | {pathInfo} | {parentInfo} | Align: {alignMode} | Snap: {gridName} (G)"
+                : $"MAP: '{MapBrowserService.SelectedMapName}' | Tab/1-2: Tabs | {moveInfo} | {pathInfo} | {parentInfo} | C: Align | Ctrl+Z: Undo | Ctrl+Y: Redo";
 
             GUI.color = Color.white;
-            GUI.Box(new Rect(Screen.width * 0.5f - 510f, Screen.height - 40f, 1020f, 28f), status);
+            GUI.Box(new Rect(Screen.width * 0.5f - 520f, Screen.height - 40f, 1040f, 28f), status);
 
             if (_notificationTimer > 0f)
             {
@@ -3518,13 +3754,88 @@ namespace DeadCoreEditor
                 DrawParametersWindow();
             }
 
+            if (ShowDebugOverlay)
+            {
+                DrawDebugOverlay();
+            }
+
             GUI.color = originalColor;
         }
 
+        /*
+         * Diagnostics and profiling overlay (F7).
+         * Displays real-time engine telemetry: framerate, frame delta, physics memory footprint,
+         * cursor world raycast coordinates, focused entity data, and kinematic motion paths.
+         */
+        private static void DrawDebugOverlay()
+        {
+            _debugFpsTimer -= Time.deltaTime;
+            if (_debugFpsTimer <= 0f)
+            {
+                _debugFps = 1.0f / Mathf.Max(0.0001f, Time.deltaTime);
+                _debugFpsTimer = 0.2f;
+            }
+
+            float winW = 320f;
+            float winH = 260f;
+            Rect winRect = new Rect(20f, 20f, winW, winH);
+
+            GUI.color = new Color(0.02f, 0.04f, 0.08f, 0.92f);
+            GUI.Box(winRect, "");
+            GUI.color = new Color(0.1f, 0.8f, 0.4f, 0.9f);
+            GUI.Box(new Rect(winRect.x + 2, winRect.y + 2, winW - 4, winH - 4), "");
+
+            GUI.color = Color.green;
+            GUI.Label(new Rect(32f, 28f, 290f, 24f), "<b>DIAGNOSTIC ENGINE TELEMETRY (F7)</b>");
+
+            GUI.color = Color.white;
+            float curY = 56f;
+
+            string fpsCol = _debugFps >= 55f ? "#00E676" : (_debugFps >= 30f ? "#FFEA00" : "#FF1744");
+            GUI.Label(new Rect(32f, curY, 290f, 20f), $"FPS: <b><color={fpsCol}>{_debugFps:F1}</color></b> (Delta: {Time.deltaTime * 1000f:F1}ms)");
+            curY += 22f;
+
+            long allocatedBytes = GC.GetTotalMemory(false) / (1024 * 1024);
+            GUI.Label(new Rect(32f, curY, 290f, 20f), $"Mono Heap Usage: <b><color=#00E5FF>{allocatedBytes} MB</color></b>");
+            curY += 22f;
+
+            GUI.Label(new Rect(32f, curY, 290f, 20f), $"Total Placed Entities: <b><color=#FFD54F>{PlacedObjects.Count}</color></b>");
+            curY += 22f;
+
+            GUI.Label(new Rect(32f, curY, 290f, 20f), $"Active Motion Paths: <b><color=#E040FB>{MotionPaths.Count}</color></b>");
+            curY += 22f;
+
+            Vector3 hitPos = PlacementHologramController.TargetPosition;
+            GUI.Label(new Rect(32f, curY, 290f, 20f), $"Raycast Pos: <b><color=#80D8FF>{hitPos.x:F1}, {hitPos.y:F1}, {hitPos.z:F1}</color></b>");
+            curY += 22f;
+
+            GameObject aimed = GetAimedPlacedObject();
+            string aimedName = aimed != null ? aimed.name : "None";
+            GUI.Label(new Rect(32f, curY, 290f, 20f), $"Cursor Target: <b><color=#FF8A80>{aimedName}</color></b>");
+            curY += 22f;
+
+            string nativeSun = SceneHarvestingService.NativeSceneSun != null ? SceneHarvestingService.NativeSceneSun.name : "Unbound";
+            GUI.Label(new Rect(32f, curY, 290f, 20f), $"HDRP Sun Hook: <b><color=#FFE57F>{nativeSun}</color></b>");
+        }
+
+        private static void SyncLightBufferColor()
+        {
+            if (SelectedLightObject != null && PlacedLights.ContainsKey(SelectedLightObject))
+            {
+                Color c = PlacedLights[SelectedLightObject].Color;
+                _hexColorBuffer = ColorUtility.ToHtmlStringRGB(c);
+            }
+        }
+
+        /*
+         * Atmosphere, Sunlight, and Spotlight Inspector (F3).
+         * Features normalized sliders, calibrated Lux readouts, direct Hex code integration,
+         * live dual-swatch previewing, and an expanded palette of tuned atmospheric presets.
+         */
         private static void DrawParametersWindow()
         {
-            float winW = 340f;
-            float winH = 490f;
+            float winW = 360f;
+            float winH = 530f;
             float winX = Screen.width - winW - 20f;
             float winY = 20f;
             Rect winRect = new Rect(winX, winY, winW, winH);
@@ -3539,7 +3850,7 @@ namespace DeadCoreEditor
             GUI.color = new Color(0.08f, 0.14f, 0.22f, 1f);
             GUI.Box(new Rect(winX + 8, winY + 8, winW - 16, 32), "");
             GUI.color = Color.yellow;
-            GUI.Label(new Rect(winX + 20, winY + 14, 250, 25), "LIGHT & ATMOSPHERE (F3)");
+            GUI.Label(new Rect(winX + 20, winY + 14, 280, 25), "ATMOSPHERE & LIGHT INSPECTOR (F3)");
 
             float curY = winY + 46f;
 
@@ -3564,24 +3875,26 @@ namespace DeadCoreEditor
                 {
                     curIdx = (curIdx - 1 + allLights.Count) % allLights.Count;
                     SelectedLightObject = allLights[curIdx];
+                    SyncLightBufferColor();
                     IsBlockSelected = false;
                     PlacementHologramController.DestroyPreview();
                 }
 
                 GUI.color = Color.white;
-                GUI.Label(new Rect(winX + 62, curY + 3, 120, 20), lightLabel);
+                GUI.Label(new Rect(winX + 62, curY + 3, 140, 20), lightLabel);
 
                 GUI.color = new Color(0.2f, 0.55f, 0.85f);
-                if (GUI.Button(new Rect(winX + 185, curY, 40, 24), ">"))
+                if (GUI.Button(new Rect(winX + 205, curY, 40, 24), ">"))
                 {
                     curIdx = (curIdx + 1) % allLights.Count;
                     SelectedLightObject = allLights[curIdx];
+                    SyncLightBufferColor();
                     IsBlockSelected = false;
                     PlacementHologramController.DestroyPreview();
                 }
 
                 GUI.color = new Color(0.8f, 0.3f, 0.3f);
-                if (GUI.Button(new Rect(winX + 235, curY, 80, 24), "Deselect"))
+                if (GUI.Button(new Rect(winX + 255, curY, 85, 24), "Deselect"))
                 {
                     SelectedLightObject = null;
                 }
@@ -3595,15 +3908,16 @@ namespace DeadCoreEditor
 
                 GUI.color = new Color(1f, 0.9f, 0.3f);
                 string title = cfg.IsDirectional ? "[GLOBAL SUNLIGHT SOURCE]" : "[TECH SPOTLIGHT]";
-                GUI.Label(new Rect(winX + 15, curY, winW - 30, 18), $"{title} Aim with Arrows | [ ] Roll");
+                GUI.Label(new Rect(winX + 15, curY, winW - 30, 18), $"{title} Aim: Arrows | [ ] Roll");
                 curY += 22f;
 
-                // 1. INTENSITY
+                // 1. Intensity Slider
                 GUI.color = Color.white;
-                GUI.Label(new Rect(winX + 15, curY, 200, 18), $"Light Intensity: <b><color=#00E5FF>{cfg.Intensity:F1}x</color></b>");
+                float displayLux = cfg.IsDirectional ? (cfg.Intensity * 4000f) : cfg.Intensity;
+                string unitLabel = cfg.IsDirectional ? $"{displayLux:F0} Lux" : $"{cfg.Intensity:F1}x";
+                GUI.Label(new Rect(winX + 15, curY, winW - 30, 18), $"Light Intensity: <b><color=#00E5FF>{unitLabel}</color></b>");
                 curY += 18f;
 
-                // Widen the slider range to 0.1x - 30.0x:
                 float newInt = GUI.HorizontalSlider(new Rect(winX + 15, curY, winW - 30, 16), cfg.Intensity, 0.1f, 30.0f);
                 if (Mathf.Abs(newInt - cfg.Intensity) > 0.05f)
                 {
@@ -3612,10 +3926,10 @@ namespace DeadCoreEditor
                 }
                 curY += 22f;
 
-                // 2. CONE ANGLE (Disabled for Directional Sun)
+                // 2. Cone Angle Slider
                 if (!cfg.IsDirectional)
                 {
-                    GUI.Label(new Rect(winX + 15, curY, 200, 18), $"Cone Angle: <b><color=#FFEB3B>{cfg.SpotAngle:F0}°</color></b>");
+                    GUI.Label(new Rect(winX + 15, curY, winW - 30, 18), $"Cone Angle: <b><color=#FFEB3B>{cfg.SpotAngle:F0}°</color></b>");
                     curY += 18f;
                     float newAngle = GUI.HorizontalSlider(new Rect(winX + 15, curY, winW - 30, 16), cfg.SpotAngle, 10f, 150f);
                     if (Mathf.Abs(newAngle - cfg.SpotAngle) > 0.5f)
@@ -3628,13 +3942,13 @@ namespace DeadCoreEditor
                 else
                 {
                     GUI.color = Color.gray;
-                    GUI.Label(new Rect(winX + 15, curY, 280, 18), "Cone Angle: [INFINITE / GLOBAL SUN]");
-                    curY += 36f;
+                    GUI.Label(new Rect(winX + 15, curY, winW - 30, 18), "Cone Angle: [INFINITE / GLOBAL DIRECTIONAL]");
+                    curY += 26f;
                 }
 
-                // 3. VOLUMETRIC INTENSITY
+                // 3. Volumetric Density Slider
                 GUI.color = new Color(0.6f, 0.9f, 1f);
-                GUI.Label(new Rect(winX + 15, curY, 240, 18), $"Volumetric Intensity: <b><color=#E040FB>{cfg.VolumetricIntensity:F1}x</color></b>");
+                GUI.Label(new Rect(winX + 15, curY, winW - 30, 18), $"Volumetric Fog Intensity: <b><color=#E040FB>{cfg.VolumetricIntensity:F1}x</color></b>");
                 curY += 18f;
                 float newVol = GUI.HorizontalSlider(new Rect(winX + 15, curY, winW - 30, 16), cfg.VolumetricIntensity, 0.0f, 10.0f);
                 if (Mathf.Abs(newVol - cfg.VolumetricIntensity) > 0.05f)
@@ -3644,56 +3958,82 @@ namespace DeadCoreEditor
                 }
                 curY += 26f;
 
-                // 4. FULL RGB COLOR PICKER
+                // 4. Overhauled RGB Color & Hex Dashboard
                 GUI.color = Color.white;
-                GUI.Label(new Rect(winX + 15, curY, 180, 18), "Light Color (RGB Picker):");
+                GUI.Label(new Rect(winX + 15, curY, 140, 20), "<b>Color Dashboard:</b>");
 
+                // Live Color Swatch with Solid Border
                 Color oldGuiCol = GUI.color;
+                GUI.color = Color.black;
+                GUI.Box(new Rect(winX + 160f, curY - 2f, 44f, 24f), "");
                 GUI.color = cfg.Color;
-                GUI.Box(new Rect(winX + winW - 65f, curY - 2f, 50f, 22f), "");
+                GUI.Box(new Rect(winX + 162f, curY, 40f, 20f), "");
                 GUI.color = oldGuiCol;
-                curY += 24f;
 
-                // Red
-                GUI.color = new Color(1f, 0.3f, 0.3f);
-                GUI.Label(new Rect(winX + 15, curY, 60, 16), $"R: {cfg.Color.r:F2}");
-                float r = GUI.HorizontalSlider(new Rect(winX + 75, curY + 2, winW - 95, 14), cfg.Color.r, 0f, 1f);
+                // Hex input integration
+                GUI.Label(new Rect(winX + 215f, curY, 20f, 20f), "#");
+                string prevHex = _hexColorBuffer;
+                _hexColorBuffer = GUI.TextField(new Rect(winX + 235f, curY, 60f, 20f), _hexColorBuffer, 6).ToUpper();
+                if (_hexColorBuffer != prevHex && _hexColorBuffer.Length == 6)
+                {
+                    if (ColorUtility.TryParseHtmlString("#" + _hexColorBuffer, out Color parsedColor))
+                    {
+                        cfg.Color = parsedColor;
+                        changed = true;
+                    }
+                }
+                curY += 26f;
+
+                // Precision Red Channel Slider
+                GUI.color = new Color(1f, 0.4f, 0.4f);
+                GUI.Label(new Rect(winX + 15, curY, 65, 16), $"R: {cfg.Color.r:F2}");
+                float r = GUI.HorizontalSlider(new Rect(winX + 85, curY + 2, winW - 105, 14), cfg.Color.r, 0f, 1f);
                 curY += 18f;
 
-                // Green
-                GUI.color = new Color(0.3f, 1f, 0.4f);
-                GUI.Label(new Rect(winX + 15, curY, 60, 16), $"G: {cfg.Color.g:F2}");
-                float g = GUI.HorizontalSlider(new Rect(winX + 75, curY + 2, winW - 95, 14), cfg.Color.g, 0f, 1f);
+                // Precision Green Channel Slider
+                GUI.color = new Color(0.4f, 1f, 0.5f);
+                GUI.Label(new Rect(winX + 15, curY, 65, 16), $"G: {cfg.Color.g:F2}");
+                float g = GUI.HorizontalSlider(new Rect(winX + 85, curY + 2, winW - 105, 14), cfg.Color.g, 0f, 1f);
                 curY += 18f;
 
-                // Blue
-                GUI.color = new Color(0.3f, 0.7f, 1f);
-                GUI.Label(new Rect(winX + 15, curY, 60, 16), $"B: {cfg.Color.b:F2}");
-                float b = GUI.HorizontalSlider(new Rect(winX + 75, curY + 2, winW - 95, 14), cfg.Color.b, 0f, 1f);
+                // Precision Blue Channel Slider
+                GUI.color = new Color(0.4f, 0.8f, 1f);
+                GUI.Label(new Rect(winX + 15, curY, 65, 16), $"B: {cfg.Color.b:F2}");
+                float b = GUI.HorizontalSlider(new Rect(winX + 85, curY + 2, winW - 105, 14), cfg.Color.b, 0f, 1f);
                 curY += 24f;
 
-                if (Mathf.Abs(r - cfg.Color.r) > 0.01f || Mathf.Abs(g - cfg.Color.g) > 0.01f || Mathf.Abs(b - cfg.Color.b) > 0.01f)
+                if (Mathf.Abs(r - cfg.Color.r) > 0.005f || Mathf.Abs(g - cfg.Color.g) > 0.005f || Mathf.Abs(b - cfg.Color.b) > 0.005f)
                 {
                     cfg.Color = new Color(r, g, b, 1f);
+                    _hexColorBuffer = ColorUtility.ToHtmlStringRGB(cfg.Color);
                     changed = true;
                 }
 
-                // Quick Palette Presets
-                float cW = (winW - 50) / 5f;
+                // Quick Color Preset Swatches
+                float cW = (winW - 40) / 4f;
+
                 GUI.color = Color.cyan;
-                if (GUI.Button(new Rect(winX + 15, curY, cW, 20), "Cyan")) { cfg.Color = Color.cyan; changed = true; }
-                GUI.color = new Color(1f, 0.75f, 0.3f);
-                if (GUI.Button(new Rect(winX + 15 + cW + 4, curY, cW, 20), "Sun")) { cfg.Color = new Color(1f, 0.75f, 0.3f); changed = true; }
+                if (GUI.Button(new Rect(winX + 15, curY, cW - 4, 20), "Cyan")) { cfg.Color = Color.cyan; SyncLightBufferColor(); changed = true; }
+                GUI.color = new Color(1f, 0.85f, 0.45f);
+                if (GUI.Button(new Rect(winX + 15 + cW, curY, cW - 4, 20), "Sunlight")) { cfg.Color = new Color(1f, 0.85f, 0.45f); SyncLightBufferColor(); changed = true; }
                 GUI.color = new Color(0.2f, 1f, 0.35f);
-                if (GUI.Button(new Rect(winX + 15 + (cW + 4) * 2, curY, cW, 20), "Green")) { cfg.Color = Color.green; changed = true; }
+                if (GUI.Button(new Rect(winX + 15 + cW * 2, curY, cW - 4, 20), "Green")) { cfg.Color = new Color(0.2f, 1f, 0.35f); SyncLightBufferColor(); changed = true; }
                 GUI.color = new Color(1f, 0.25f, 0.25f);
-                if (GUI.Button(new Rect(winX + 15 + (cW + 4) * 3, curY, cW, 20), "Red")) { cfg.Color = Color.red; changed = true; }
+                if (GUI.Button(new Rect(winX + 15 + cW * 3, curY, cW - 4, 20), "Laser Red")) { cfg.Color = new Color(1f, 0.25f, 0.25f); SyncLightBufferColor(); changed = true; }
+                curY += 24f;
+
+                GUI.color = new Color(0.85f, 0.3f, 1f);
+                if (GUI.Button(new Rect(winX + 15, curY, cW - 4, 20), "Violet")) { cfg.Color = new Color(0.85f, 0.3f, 1f); SyncLightBufferColor(); changed = true; }
+                GUI.color = new Color(1f, 0.55f, 0.1f);
+                if (GUI.Button(new Rect(winX + 15 + cW, curY, cW - 4, 20), "Amber")) { cfg.Color = new Color(1f, 0.55f, 0.1f); SyncLightBufferColor(); changed = true; }
+                GUI.color = new Color(0.3f, 0.65f, 1f);
+                if (GUI.Button(new Rect(winX + 15 + cW * 2, curY, cW - 4, 20), "Steel Blue")) { cfg.Color = new Color(0.3f, 0.65f, 1f); SyncLightBufferColor(); changed = true; }
                 GUI.color = Color.white;
-                if (GUI.Button(new Rect(winX + 15 + (cW + 4) * 4, curY, cW, 20), "White")) { cfg.Color = Color.white; changed = true; }
+                if (GUI.Button(new Rect(winX + 15 + cW * 3, curY, cW - 4, 20), "White")) { cfg.Color = Color.white; SyncLightBufferColor(); changed = true; }
                 curY += 28f;
 
                 GUI.color = new Color(0.2f, 0.65f, 0.95f);
-                if (GUI.Button(new Rect(winX + 15, curY, winW - 30, 22), "Reset Aim (0°, 0°, 0°)"))
+                if (GUI.Button(new Rect(winX + 15, curY, winW - 30, 24), "Reset Aim (0°, 0°, 0°)"))
                 {
                     SelectedLightObject.transform.rotation = Quaternion.identity;
                 }
@@ -3706,7 +4046,7 @@ namespace DeadCoreEditor
             else
             {
                 GUI.color = Color.gray;
-                GUI.Label(new Rect(winX + 15, curY + 25, 290, 80), allLights.Count > 0
+                GUI.Label(new Rect(winX + 15, curY + 25, 310, 90), allLights.Count > 0
                     ? "Click '<' or '>' above to select a light,\nor click any Tech Spotlight or Sunlight in the world."
                     : "No lights placed yet.\nSelect 'Global Sunlight' or 'Tech Spotlight' from Gameplay to place one.");
             }
@@ -3775,6 +4115,11 @@ namespace DeadCoreEditor
             GUI.color = origColor;
         }
 
+        /*
+         * Level Initialization Pipeline.
+         * Extracts raw scene geometry, links lighting, strips vanilla level meshes,
+         * executes disk deserialization, and guarantees safe player spawn placement.
+         */
         public static void InitializeCustomLevel()
         {
             GameObject player = FindPlayerEntity();
@@ -3796,9 +4141,10 @@ namespace DeadCoreEditor
                 LevelPersistenceService.LoadLevelByFullPath(MapBrowserService.SelectedMapPath);
             }
 
-            foreach (var obj in PlacedObjects)
+            for (int i = 0; i < PlacedObjects.Count; i++)
             {
-                if (obj != null && obj.name.ToLower().Contains("spawn"))
+                GameObject obj = PlacedObjects[i];
+                if (obj != null && PlacedObjectTypes.TryGetValue(obj, out var t) && t == PlacedObjectType.SpawnGate)
                 {
                     LevelSpawnPosition = obj.transform.position + Vector3.up * 0.2f;
                     startPos = LevelSpawnPosition;
@@ -3808,8 +4154,9 @@ namespace DeadCoreEditor
             }
 
             bool hasStartingPlatform = false;
-            foreach (var obj in PlacedObjects)
+            for (int i = 0; i < PlacedObjects.Count; i++)
             {
+                GameObject obj = PlacedObjects[i];
                 if (obj != null && (obj.name.ToLower().Contains("platform") || obj.name.ToLower().Contains("floor") || obj.name.ToLower().Contains("plateforme")))
                 {
                     if (Vector3.Distance(obj.transform.position, startPos) < 50f)
@@ -3841,9 +4188,10 @@ namespace DeadCoreEditor
                 }
             }
 
-            foreach (var obj in PlacedObjects)
+            for (int i = 0; i < PlacedObjects.Count; i++)
             {
-                if (obj != null && obj.activeSelf && obj.name.ToLower().Contains("turret"))
+                GameObject obj = PlacedObjects[i];
+                if (obj != null && obj.activeSelf && PlacedObjectTypes.TryGetValue(obj, out var t) && t == PlacedObjectType.Turret)
                 {
                     float delay = TurretFireDelays.ContainsKey(obj) ? TurretFireDelays[obj] : ActiveTurretFireDelay;
                     ApplyTurretSettings(obj, delay, 1500f);
@@ -3852,7 +4200,7 @@ namespace DeadCoreEditor
 
             if (player != null)
             {
-                CharacterController cc = player.GetComponentInChildren<CharacterController>();
+                CharacterController cc = GetPlayerController();
                 if (cc != null) cc.enabled = false;
                 player.transform.position = startPos + Vector3.up * 0.2f;
                 if (cc != null) cc.enabled = true;
@@ -3868,6 +4216,10 @@ namespace DeadCoreEditor
             MelonLogger.Msg(">> Custom Level Initialized & Ready!");
         }
 
+        /*
+         * Fuzzy asset resolver. Resolves asset queries across display names, internal mesh names,
+         * or mechanical archetypes (Jumpers, Turbines, Checkpoints, Gates, Sunlights, Spotlights, Lasers).
+         */
         public static GameObject SpawnAssetByName(string partialName, Vector3 position, float scale, Quaternion? customRotation = null)
         {
             if (string.IsNullOrEmpty(partialName)) return null;
@@ -3919,6 +4271,10 @@ namespace DeadCoreEditor
             return null;
         }
 
+        /*
+         * Clones asset templates into the world, sets default parameters, creates triggers and proxies,
+         * and configures mechanical properties (lasers, jump acceleration, wind zones, lights).
+         */
         public static GameObject SpawnCatalogObject(CatalogAsset asset, Vector3 position, float scale, Quaternion? customRotation = null)
         {
             if (asset == null || asset.SourceTemplate == null) return null;
@@ -4053,21 +4409,40 @@ namespace DeadCoreEditor
 
         public static GameObject FindPlayerEntity()
         {
-            GameObject tagged = GameObject.FindWithTag("Player");
-            if (tagged != null) return tagged;
+            if (_cachedPlayer != null && _cachedPlayer.activeInHierarchy)
+                return _cachedPlayer;
 
-            CharacterController cc = GameObject.FindObjectOfType<CharacterController>();
-            if (cc != null) return cc.transform.root.gameObject;
+            _cachedPlayer = GameObject.FindWithTag("Player");
+            if (_cachedPlayer == null)
+            {
+                CharacterController cc = GameObject.FindObjectOfType<CharacterController>();
+                if (cc != null) _cachedPlayer = cc.transform.root.gameObject;
+                else if (Camera.main != null) _cachedPlayer = Camera.main.transform.root.gameObject;
+            }
 
-            if (Camera.main != null) return Camera.main.transform.root.gameObject;
+            if (_cachedPlayer != null)
+            {
+                _cachedCharacterController = _cachedPlayer.GetComponentInChildren<CharacterController>();
+            }
 
-            return null;
+            return _cachedPlayer;
+        }
+
+        public static CharacterController GetPlayerController()
+        {
+            if (_cachedCharacterController != null && _cachedCharacterController.gameObject.activeInHierarchy)
+                return _cachedCharacterController;
+
+            FindPlayerEntity();
+            return _cachedCharacterController;
         }
     }
 
-    // =========================================================================================================
-    // VIEWPORT FREE CAMERA CONTROLLER
-    // =========================================================================================================
+    /*
+     * Viewport Freecam Navigation
+     * First-person flying camera for the hammer edit mode. Supports dynamic sprint acceleration,
+     * mouse freelook capture, and right-click tap detection for placement cancellation.
+     */
     public static class EditorViewportCamera
     {
         private static GameObject _camInstance = null;
@@ -4167,9 +4542,11 @@ namespace DeadCoreEditor
         }
     }
 
-    // =========================================================================================================
-    // PLACEMENT HOLOGRAM CONTROLLER
-    // =========================================================================================================
+    /*
+     * Holographic Placement Engine
+     * Projects a live holographic preview of the equipped asset. Calculates discrete surface normal alignment,
+     * evaluates overlap penetration, and executes rigid grid snapping along planar normals.
+     */
     public static class PlacementHologramController
     {
         private static GameObject _ghostInstance = null;
@@ -4341,7 +4718,7 @@ namespace DeadCoreEditor
 
             int raycastMask = ~LayerMask.GetMask("Ignore Raycast");
             RaycastHit hit;
-            bool hasHit = Physics.Raycast(ray, out hit, 1000f, raycastMask);
+            bool hasHit = Physics.Raycast(ray, out hit, 1000f, raycastMask, QueryTriggerInteraction.Collide);
 
             Vector3 hitNormal = Vector3.up;
             Vector3 rawTargetPos;
@@ -4567,9 +4944,11 @@ namespace DeadCoreEditor
         }
     }
 
-    // =========================================================================================================
-    // OVERHAULED 3D CAROUSEL ARC TOOLBAR (Semi-Circular Arc with smooth fading & zero crowding)
-    // =========================================================================================================
+    /*
+     * 3D HUD Carousel Wheel
+     * Projects a semi-circular curved asset tray into screen space. Uses angular trigonometric positioning
+     * and smooth alpha falloff to display available assets without obstructing viewport focus.
+     */
     public static class CarouselWheelToolbar
     {
         public static float ArcRadius = 0.75f;
@@ -4714,9 +5093,9 @@ namespace DeadCoreEditor
 
         public static void BuildCarouselIcons()
         {
-            foreach (var icon in _spawnedIcons)
+            for (int i = 0; i < _spawnedIcons.Count; i++)
             {
-                if (icon != null) GameObject.Destroy(icon);
+                if (_spawnedIcons[i] != null) GameObject.Destroy(_spawnedIcons[i]);
             }
             _spawnedIcons.Clear();
 
@@ -4789,9 +5168,11 @@ namespace DeadCoreEditor
         }
     }
 
-    // =========================================================================================================
-    // LEVEL PERSISTENCE AND SERIALIZATION SERVICE
-    // =========================================================================================================
+    /*
+     * Serialization & Disk IO Pipeline
+     * Encodes level geometry, parameters, lighting setups, moving platform paths, and hierarchy relations
+     * into a clean, human-readable text file format. Handles loading and reconstructing level assemblies.
+     */
     public static class LevelPersistenceService
     {
         private static string ColorToHex(Color c)
@@ -4846,8 +5227,9 @@ namespace DeadCoreEditor
             lines.Add($"#DIFFICULTY: {existingMeta.Difficulty}");
             lines.Add($"#DESC: {existingMeta.Description}");
 
-            foreach (var obj in EditorSessionManager.PlacedObjects)
+            for (int i = 0; i < EditorSessionManager.PlacedObjects.Count; i++)
             {
+                GameObject obj = EditorSessionManager.PlacedObjects[i];
                 if (obj == null || !obj.activeSelf) continue;
                 Vector3 pos = obj.transform.position;
                 Quaternion rot = obj.transform.rotation;
@@ -4901,7 +5283,6 @@ namespace DeadCoreEditor
             File.WriteAllLines(path, lines.ToArray());
             EditorSessionManager.ShowNotification($"Saved {lines.Count - 4} objects to {cleanName}.txt!");
             MelonLogger.Msg($">> Saved {lines.Count - 4} objects with full parameters to {path}!");
-
             MapBrowserService.SelectedMapPath = path;
             MapBrowserService.SelectedMapName = cleanName;
             MapBrowserService.RefreshFiles();
@@ -4925,6 +5306,11 @@ namespace DeadCoreEditor
             LoadLevelByFullPath(path);
         }
 
+        /*
+         * Deserializes a custom course file from disk into the running engine session.
+         * Recreates visual models, re-binds custom mechanics (lasers, jump acceleration, turrets),
+         * reconstructs moving platform routes, and restores hierarchical parent-child compound assemblies.
+         */
         public static void LoadLevelByFullPath(string fullPath)
         {
             if (!File.Exists(fullPath)) return;
@@ -5042,6 +5428,7 @@ namespace DeadCoreEditor
                     if (child != null && parent != null && child != parent)
                     {
                         child.transform.SetParent(parent.transform, true);
+                        EditorSessionManager.RecalculateParentChildCount(parent);
                     }
                 }
             }
@@ -5052,9 +5439,11 @@ namespace DeadCoreEditor
         }
     }
 
-    // =========================================================================================================
-    // SCENE ASSET HARVESTING SERVICE
-    // =========================================================================================================
+    /*
+     * Scene Harvesting & Geometry Sanitization
+     * Inspects DeadCore's active runtime level to extract platform and environmental meshes, interactive
+     * hazards, and mechanical prefabs, while preserving the native HDRP directional sun before hiding stock assets.
+     */
     public static class SceneHarvestingService
     {
         public static Light NativeSceneSun = null;
@@ -5065,7 +5454,6 @@ namespace DeadCoreEditor
             MelonLogger.Msg("          SCENE LIGHTING & ATMOSPHERE DUMP        ");
             MelonLogger.Msg("==================================================");
 
-            // 1. Ambient & Environment RenderSettings
             MelonLogger.Msg($"[RenderSettings] Ambient Mode: {RenderSettings.ambientMode}");
             MelonLogger.Msg($"[RenderSettings] Ambient Light Color: {RenderSettings.ambientLight}");
             MelonLogger.Msg($"[RenderSettings] Ambient Sky Color: {RenderSettings.ambientSkyColor}");
@@ -5074,17 +5462,15 @@ namespace DeadCoreEditor
             MelonLogger.Msg($"[RenderSettings] Ambient Intensity: {RenderSettings.ambientIntensity}");
             MelonLogger.Msg($"[RenderSettings] Current Sun: {(RenderSettings.sun != null ? RenderSettings.sun.name : "NONE")}");
 
-            // --- HOOK THE NATIVE SUN FIRST ---
             NativeSceneSun = null;
 
-            // A. Prefer the official sun assigned to the scene's RenderSettings
+            // Prioritize the native sun registered in the active scene's RenderSettings
             if (RenderSettings.sun != null && RenderSettings.sun.gameObject.scene.isLoaded)
             {
                 NativeSceneSun = RenderSettings.sun;
                 MelonLogger.Msg($"[Native Sun] Successfully hooked from RenderSettings.sun: '{NativeSceneSun.name}'");
             }
 
-            // 2. Scan every single Light in memory
             Light[] allLights = Resources.FindObjectsOfTypeAll<Light>();
             MelonLogger.Msg($"[Scene Lights] Found {allLights.Length} total Light components in scene/memory:");
 
@@ -5104,7 +5490,6 @@ namespace DeadCoreEditor
                 bool isSceneObject = l.gameObject.scene.isLoaded;
                 MelonLogger.Msg($"  #{i:D2} [{(isSceneObject ? "SCENE" : "ASSET")}] Path: '{path}' | Type: {l.type} | Active: {l.gameObject.activeInHierarchy} (CompEnabled: {l.enabled}) | Color: {l.color} | Int: {l.intensity} | Range: {l.range} | CullingMask: {l.cullingMask}");
 
-                // B. Fallback: if RenderSettings.sun was null, grab the first REAL scene sun (excluding templates/custom objects)
                 if (NativeSceneSun == null && isSceneObject && l.type == LightType.Directional)
                 {
                     if (!l.name.Contains("Template") && !l.name.StartsWith("Custom_"))
@@ -5117,6 +5502,11 @@ namespace DeadCoreEditor
 
             MelonLogger.Msg("==================================================");
         }
+
+        /*
+         * Constructs a double-sided quad mesh with offset vertex planes (+/- 0.01m Z).
+         * Separating the opposing faces eliminates coplanar Z-buffer depth fighting and flickering in HDRP.
+         */
         public static Mesh CreateDoubleSidedPlaneMesh(float width, float height)
         {
             Mesh m = new Mesh();
@@ -5124,11 +5514,14 @@ namespace DeadCoreEditor
 
             float hw = width * 0.5f;
             float hh = height * 0.5f;
+            float zOffset = 0.01f;
 
             Vector3[] vertices = new Vector3[]
             {
-                new Vector3(-hw, -hh, 0), new Vector3(hw, -hh, 0), new Vector3(hw, hh, 0), new Vector3(-hw, hh, 0),
-                new Vector3(-hw, -hh, 0), new Vector3(hw, -hh, 0), new Vector3(hw, hh, 0), new Vector3(-hw, hh, 0)
+                // Front-facing plane
+                new Vector3(-hw, -hh, zOffset), new Vector3(hw, -hh, zOffset), new Vector3(hw, hh, zOffset), new Vector3(-hw, hh, zOffset),
+                // Back-facing plane (offset backward along Z)
+                new Vector3(-hw, -hh, -zOffset), new Vector3(hw, -hh, -zOffset), new Vector3(hw, hh, -zOffset), new Vector3(-hw, hh, -zOffset)
             };
 
             Vector2[] uvs = new Vector2[]
@@ -5157,14 +5550,19 @@ namespace DeadCoreEditor
             return m;
         }
 
+        /*
+         * Scans the native map to discover building blocks, interactive pads, laser materials,
+         * checkpoints, and enemy defense turrets. Sanitizes and populates the catalog with reusable templates.
+         */
         public static void HarvestAllSceneModels()
         {
             EditorSessionManager.AllAssets.Clear();
             HashSet<string> seenMeshes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
             MeshRenderer[] renderers = GameObject.FindObjectsOfType<MeshRenderer>();
-            foreach (var r in renderers)
+            for (int i = 0; i < renderers.Length; i++)
             {
+                MeshRenderer r = renderers[i];
                 if (r != null && r.sharedMaterial != null && !r.sharedMaterial.name.ToLower().Contains("laser"))
                 {
                     EditorSessionManager.CachedSceneMaterial = r.sharedMaterial;
@@ -5294,7 +5692,7 @@ namespace DeadCoreEditor
                 BaseRotation = Quaternion.identity
             });
 
-            // 3B. GLOBAL SUNLIGHT ASSET (Directional map-wide sun, placed in world but shines everywhere)
+            // 3B. Global Directional Sunlight
             GameObject sunTemplate = new GameObject("Template_Sunlight");
             Light sunLight = sunTemplate.AddComponent<Light>();
             sunLight.type = LightType.Directional;
@@ -5303,7 +5701,6 @@ namespace DeadCoreEditor
             sunLight.color = new Color(1f, 0.85f, 0.6f);
             sunLight.intensity = 3.5f;
 
-            // Visual Sun Orb with golden rays icon for easy aiming & wheel selection
             GameObject sunOrb = GameObject.CreatePrimitive(PrimitiveType.Sphere);
             sunOrb.name = "Light_Housing";
             sunOrb.transform.SetParent(sunTemplate.transform, false);
@@ -5312,7 +5709,6 @@ namespace DeadCoreEditor
             Collider sunCol = sunOrb.GetComponent<Collider>();
             if (sunCol != null) GameObject.DestroyImmediate(sunCol);
 
-            // Sun Core Pointer Arrow (indicating light direction)
             GameObject sunRay = GameObject.CreatePrimitive(PrimitiveType.Cylinder);
             sunRay.name = "Light_Lens";
             sunRay.transform.SetParent(sunTemplate.transform, false);
@@ -5393,7 +5789,6 @@ namespace DeadCoreEditor
             BoxCollider laserCol = laserTemplate.AddComponent<BoxCollider>();
             laserCol.isTrigger = true;
             laserCol.size = new Vector3(8f, 4f, 0.35f);
-            laserTemplate.AddComponent<LaserScript>();
             laserTemplate.SetActive(false);
 
             EditorSessionManager.AllAssets.Add(new CatalogAsset
@@ -5418,7 +5813,6 @@ namespace DeadCoreEditor
             BoxCollider longCol = longLaserTemplate.AddComponent<BoxCollider>();
             longCol.isTrigger = true;
             longCol.size = new Vector3(22f, 4f, 0.35f);
-            longLaserTemplate.AddComponent<LaserScript>();
             longLaserTemplate.SetActive(false);
 
             EditorSessionManager.AllAssets.Add(new CatalogAsset
@@ -5455,7 +5849,6 @@ namespace DeadCoreEditor
             BoxCollider rbc = rotBeamObj.AddComponent<BoxCollider>();
             rbc.isTrigger = true;
             rbc.size = new Vector3(18f, 2.2f, 0.35f);
-            rotBeamObj.AddComponent<LaserScript>();
 
             rotLaserRoot.SetActive(false);
 
@@ -5494,12 +5887,12 @@ namespace DeadCoreEditor
                 else if (ld != null)
                 {
                     Transform[] allTransforms = ld.GetComponentsInChildren<Transform>(true);
-                    foreach (var tr in allTransforms)
+                    for (int i = 0; i < allTransforms.Length; i++)
                     {
-                        string n = tr.name.ToLower();
+                        string n = allTransforms[i].name.ToLower();
                         if (n.Contains("tourelle") || n.Contains("turret"))
                         {
-                            EditorSessionManager.PrefabTurret = tr.gameObject;
+                            EditorSessionManager.PrefabTurret = allTransforms[i].gameObject;
                             break;
                         }
                     }
@@ -5555,27 +5948,24 @@ namespace DeadCoreEditor
             // 7. Extract Scene Geometry from DeadCore
             MeshFilter[] allFilters = GameObject.FindObjectsOfType<MeshFilter>();
 
-            foreach (MeshFilter mf in allFilters)
+            for (int f = 0; f < allFilters.Length; f++)
             {
-                if (mf.sharedMesh == null) continue;
+                MeshFilter mf = allFilters[f];
+                if (mf == null || mf.sharedMesh == null) continue;
                 string mName = mf.sharedMesh.name.Trim();
                 string goName = mf.gameObject.name.ToLower();
                 string mLow = mName.ToLower();
 
-                // Exclude dynamic actors and low-detail wall assets
                 if (goName.Contains("helice") || goName.Contains("helix") || mLow.Contains("helix")) continue;
                 if (goName.Contains("tourelle") || goName.Contains("turret") || mLow.Contains("tourelle")) continue;
                 if (mLow.Contains("wall_12x12x01_lod0") || mLow.Contains("wall 12x12x01 lod0") || goName.Contains("wall_12x12x01_lod0")) continue;
 
-                // Exclude combined scene roots, hole meshes, and secondary LODs
                 if (mLow.Contains("impostor") || mLow.Contains("hole")) continue;
                 if (mLow.Contains("lod1") || mLow.Contains("lod2") || mLow.Contains("lod3")) continue;
                 if (mLow.StartsWith("combined")) continue;
 
-                // Exclude Cylinder001 explicitly
                 if (mLow.Contains("cylinder001") || goName.Contains("cylinder001") || mLow.Contains("cylinder 001") || goName.Contains("cylinder 001")) continue;
 
-                // Eliminate micro-props (screws, bolts, cables, decals, debris)
                 if (mLow.Contains("decal") || mLow.Contains("bolt") || mLow.Contains("screw") ||
                     mLow.Contains("debris") || mLow.Contains("shard") || mLow.Contains("cable") ||
                     mLow.Contains("wire") || mLow.Contains("rivet"))
@@ -5586,7 +5976,6 @@ namespace DeadCoreEditor
                 Vector3 size = mf.sharedMesh.bounds.size;
                 float maxDim = Mathf.Max(size.x, size.y, size.z);
 
-                // Reject geometry smaller than 1.5m in every single axis (cleans micro-props, keeps platforms and Gate-bar LOD0)
                 if (maxDim < 1.5f) continue;
                 if (mf.sharedMesh.vertexCount < 8) continue;
 
@@ -5611,19 +6000,19 @@ namespace DeadCoreEditor
                     });
                 }
             }
+
+            EditorSessionManager.RebuildAssetCategoryCaches();
         }
 
         private static AssetCategory CategorizeAsset(string friendly, string goName)
         {
             string low = (friendly + " " + goName).ToLower();
 
-            // Only interactive triggers/switches belong in Gameplay
             if (low.Contains("switch") || low.Contains("spark") || low.Contains("activat") || low.Contains("trigger"))
             {
                 return AssetCategory.Gameplay;
             }
 
-            // Everything else (platforms, walls, gate-bars, pillars, catwalks, crates) belongs in Building
             return AssetCategory.Building;
         }
 
@@ -5661,23 +6050,27 @@ namespace DeadCoreEditor
             return Quaternion.identity;
         }
 
+        /*
+         * Deactivates stock level geometry roots (_LA, _LD) to provide an empty sandbox.
+         * Explicitly reparents and preserves the native directional light so HDRP sky lighting survives.
+         */
         public static void HideVanillaLevelGeometry()
         {
             var activeScene = SceneManager.GetActiveScene();
             string sName = activeScene.name.ToLower();
             if (sName.Contains("menu")) return;
 
-            foreach (GameObject root in activeScene.GetRootGameObjects())
+            GameObject[] rootObjects = activeScene.GetRootGameObjects();
+            for (int i = 0; i < rootObjects.Length; i++)
             {
+                GameObject root = rootObjects[i];
                 if (root == null) continue;
                 string r = root.name;
 
-                // If this root holds our captured sun, don't blindly turn off the entire object
                 if (r == "_LA" || r == "L_A")
                 {
                     if (NativeSceneSun != null && NativeSceneSun.transform.IsChildOf(root.transform))
                     {
-                        // Detach native sun so it survives hiding the art geometry
                         NativeSceneSun.transform.SetParent(null, true);
                         NativeSceneSun.gameObject.SetActive(true);
                         NativeSceneSun.enabled = true;
@@ -5693,9 +6086,11 @@ namespace DeadCoreEditor
         }
     }
 
-    // =========================================================================================================
-    // HARMONY HOOKS: LEVEL LIFECYCLE & TURRET BEHAVIOR
-    // =========================================================================================================
+    /*
+     * Harmony Runtime Detours & Behavioral Patches
+     * Intercepts level sequence loading to trigger custom level generation,
+     * and mitigates native turret self-collision issues on spawned projectiles.
+     */
     [HarmonyPatch(typeof(StartLevelManager), nameof(StartLevelManager.StartLevelSequence))]
     public static class StartLevelPatch
     {
