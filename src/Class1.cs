@@ -1575,16 +1575,24 @@ namespace DeadCoreEditor
             AvailableStagingScenes.Clear();
             int count = SceneManager.sceneCountInBuildSettings;
 
+            MelonLogger.Msg("==================================================");
+            MelonLogger.Msg($"[Scene Scanner] Scanning {count} scenes in Build Settings:");
+
             for (int i = 0; i < count; i++)
             {
                 string p = SceneUtility.GetScenePathByBuildIndex(i);
                 string sceneName = Path.GetFileNameWithoutExtension(p);
                 string sLower = sceneName.ToLower();
 
+                // Print every real scene found in the game to the console
+                MelonLogger.Msg($"  -> Build #{i}: '{sceneName}' (Path: '{p}')");
+
+                // Filter out non-gameplay scenes
                 if (!string.IsNullOrEmpty(sceneName) &&
                     !sLower.Contains("menu") && !sLower.Contains("boot") &&
                     !sLower.Contains("title") && !sLower.Contains("intro") &&
-                    !sLower.Contains("root"))
+                    !sLower.Contains("root") && !sLower.Contains("loader") &&
+                    !sLower.Contains("load"))
                 {
                     if (!AvailableStagingScenes.Contains(sceneName))
                     {
@@ -1593,25 +1601,14 @@ namespace DeadCoreEditor
                 }
             }
 
-            // Fallback: Guarantee DeadCore's primary campaign levels are always selectable
-            string[] defaultCampaignLevels = new string[]
+            // Always ensure level01_Spark01 is available as the primary sandbox
+            if (!AvailableStagingScenes.Contains("level01_Spark01"))
             {
-                "level01_Spark01",
-                "level02_Spark01",
-                "level03_Spark01",
-                "level04_Spark01",
-                "level05_Spark01"
-            };
-
-            for (int d = 0; d < defaultCampaignLevels.Length; d++)
-            {
-                if (!AvailableStagingScenes.Contains(defaultCampaignLevels[d]))
-                {
-                    AvailableStagingScenes.Add(defaultCampaignLevels[d]);
-                }
+                AvailableStagingScenes.Insert(0, "level01_Spark01");
             }
 
-            MelonLogger.Msg($">> Registered {AvailableStagingScenes.Count} staging campaign scene(s).");
+            MelonLogger.Msg($"[Scene Scanner] Registered {AvailableStagingScenes.Count} valid gameplay scene(s).");
+            MelonLogger.Msg("==================================================");
         }
 
         public static void EnsureDirectories()
