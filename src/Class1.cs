@@ -532,13 +532,7 @@ namespace DeadCoreEditor
         private static void CycleStagingScene(int dir)
         {
             var list = MapBrowserService.AvailableStagingScenes;
-
-            // Guarantee levels 1-5 exist so arrows always work
-            string[] defaultLevels = new string[] { "level01_Spark01", "level02_Spark01", "level03_Spark01", "level04_Spark01", "level05_Spark01" };
-            foreach (var lvl in defaultLevels)
-            {
-                if (!list.Contains(lvl)) list.Add(lvl);
-            }
+            if (list == null || list.Count <= 1) return;
 
             int idx = list.IndexOf(MapBrowserService.SelectedStagingScene);
             if (idx < 0) idx = 0;
@@ -1573,41 +1567,12 @@ namespace DeadCoreEditor
         public static void ScanStagingScenes()
         {
             AvailableStagingScenes.Clear();
-            int count = SceneManager.sceneCountInBuildSettings;
+
+            // level01_Spark01 is the tested, confirmed working staging environment
+            AvailableStagingScenes.Add("level01_Spark01");
 
             MelonLogger.Msg("==================================================");
-            MelonLogger.Msg($"[Scene Scanner] Scanning {count} scenes in Build Settings:");
-
-            for (int i = 0; i < count; i++)
-            {
-                string p = SceneUtility.GetScenePathByBuildIndex(i);
-                string sceneName = Path.GetFileNameWithoutExtension(p);
-                string sLower = sceneName.ToLower();
-
-                // Print every real scene found in the game to the console
-                MelonLogger.Msg($"  -> Build #{i}: '{sceneName}' (Path: '{p}')");
-
-                // Filter out non-gameplay scenes
-                if (!string.IsNullOrEmpty(sceneName) &&
-                    !sLower.Contains("menu") && !sLower.Contains("boot") &&
-                    !sLower.Contains("title") && !sLower.Contains("intro") &&
-                    !sLower.Contains("root") && !sLower.Contains("loader") &&
-                    !sLower.Contains("load"))
-                {
-                    if (!AvailableStagingScenes.Contains(sceneName))
-                    {
-                        AvailableStagingScenes.Add(sceneName);
-                    }
-                }
-            }
-
-            // Always ensure level01_Spark01 is available as the primary sandbox
-            if (!AvailableStagingScenes.Contains("level01_Spark01"))
-            {
-                AvailableStagingScenes.Insert(0, "level01_Spark01");
-            }
-
-            MelonLogger.Msg($"[Scene Scanner] Registered {AvailableStagingScenes.Count} valid gameplay scene(s).");
+            MelonLogger.Msg($"[Scene Scanner] Active staging environment: '{AvailableStagingScenes[0]}'");
             MelonLogger.Msg("==================================================");
         }
 
@@ -1646,11 +1611,17 @@ namespace DeadCoreEditor
             EditorSessionManager.IsCustomSessionActive = true;
             EditorSessionManager.IsLevelInitialized = false;
 
-            // Strict sanitization: never pass a blank or invalid string to SceneLoader
             string targetScene = "level01_Spark01";
-            if (!string.IsNullOrWhiteSpace(SelectedStagingScene) && SelectedStagingScene.Trim().Length > 3)
+            string requested = !string.IsNullOrWhiteSpace(SelectedStagingScene) ? SelectedStagingScene.Trim() : "";
+
+            // Only load the requested scene if it is verified to exist in the game
+            if (!string.IsNullOrEmpty(requested) && AvailableStagingScenes.Contains(requested))
             {
-                targetScene = SelectedStagingScene.Trim();
+                targetScene = requested;
+            }
+            else if (!string.IsNullOrEmpty(requested) && requested != "level01_Spark01")
+            {
+                MelonLogger.Warning($">> [Map Browser] Scene '{requested}' is not a verified level bundle. Safely falling back to 'level01_Spark01' to prevent freeze.");
             }
 
             MelonLogger.Msg($">> [Map Browser] Launching: '{SelectedMapName}' via Scene: ['{targetScene}']");
