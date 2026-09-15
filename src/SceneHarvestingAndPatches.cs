@@ -458,15 +458,22 @@ namespace DeadCoreEditor
             });
 
             // -----------------------------------------------------------------
-            // 6. HAZARDS: TURRETS & ENEMIES
+            // 6. HAZARDS: TURRETS & ENEMIES (NATIVE SCAN + ROBUST PROCEDURAL FALLBACK)
             // -----------------------------------------------------------------
             try
             {
                 TurretScript nativeTurret = GameObject.FindObjectOfType<TurretScript>();
-                if (ld != null && nativeTurret == null)
+                if (nativeTurret == null)
                 {
-                    TurretScript[] turrets = ld.GetComponentsInChildren<TurretScript>(true);
-                    if (turrets.Length > 0) nativeTurret = turrets[0];
+                    TurretScript[] allTurrets = Resources.FindObjectsOfTypeAll<TurretScript>();
+                    for (int t = 0; t < allTurrets.Length; t++)
+                    {
+                        if (allTurrets[t] != null && allTurrets[t].gameObject != null)
+                        {
+                            nativeTurret = allTurrets[t];
+                            break;
+                        }
+                    }
                 }
 
                 if (nativeTurret != null)
@@ -480,6 +487,55 @@ namespace DeadCoreEditor
                 }
             }
             catch { }
+
+            // Procedural fallback if the vanilla level environment doesn't contain a turret
+            if (EditorSessionManager.PrefabTurret == null)
+            {
+                GameObject procTurret = new GameObject("Template_Defense_Turret");
+
+                // Pedestal
+                GameObject tBase = GameObject.CreatePrimitive(PrimitiveType.Cylinder);
+                tBase.name = "Base";
+                tBase.transform.SetParent(procTurret.transform, false);
+                tBase.transform.localScale = new Vector3(1.6f, 0.4f, 1.6f);
+
+                // Turret Head
+                GameObject tHead = GameObject.CreatePrimitive(PrimitiveType.Sphere);
+                tHead.name = "Head";
+                tHead.transform.SetParent(procTurret.transform, false);
+                tHead.transform.localPosition = new Vector3(0f, 0.85f, 0f);
+                tHead.transform.localScale = new Vector3(1.2f, 1.2f, 1.2f);
+
+                // Barrel
+                GameObject tBarrel = GameObject.CreatePrimitive(PrimitiveType.Cylinder);
+                tBarrel.name = "Barrel";
+                tBarrel.transform.SetParent(tHead.transform, false);
+                tBarrel.transform.localPosition = new Vector3(0f, 0f, 0.85f);
+                tBarrel.transform.localRotation = Quaternion.Euler(90f, 0f, 0f);
+                tBarrel.transform.localScale = new Vector3(0.3f, 0.75f, 0.3f);
+
+                if (EditorSessionManager.CachedSceneMaterial != null)
+                {
+                    tBase.GetComponent<Renderer>().material = EditorSessionManager.CachedSceneMaterial;
+                    tHead.GetComponent<Renderer>().material = EditorSessionManager.CachedSceneMaterial;
+                    tBarrel.GetComponent<Renderer>().material = EditorSessionManager.CachedSceneMaterial;
+                }
+
+                try
+                {
+                    TurretScript ts = procTurret.AddComponent<TurretScript>();
+                    ts._fireDelay = 1.0f;
+                    ts._firePower = 1500f;
+                }
+                catch { }
+
+                BoxCollider bc = procTurret.AddComponent<BoxCollider>();
+                bc.center = new Vector3(0f, 0.85f, 0f);
+                bc.size = new Vector3(1.8f, 1.8f, 2.0f);
+
+                procTurret.SetActive(false);
+                EditorSessionManager.PrefabTurret = procTurret;
+            }
 
             if (EditorSessionManager.PrefabTurret != null)
             {

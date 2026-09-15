@@ -22,13 +22,9 @@ using Path = System.IO.Path;
 namespace DeadCoreEditor
 {
     // =========================================================================
-    // SECTION 1: STUDIO UGUI SYSTEM (DOCKED, SLIMMER PANELS, ZERO OVERLAPS)
+    // SECTION 1: STUDIO UGUI SYSTEM (DOCKED, TREE-HIERARCHY, ZERO OVERLAPS)
     // =========================================================================
 
-    /// <summary>
-    /// Programmatic Unity Engine-styled uGUI interface.
-    /// Manages docked hierarchy, contextual inspector, top toolbar, and asset drawer.
-    /// </summary>
     public static class StudioUIManager
     {
         private static GameObject _canvasRoot = null;
@@ -41,16 +37,21 @@ namespace DeadCoreEditor
         private static TMP_Text _surfaceAlignBtnText = null;
         private static TMP_Text _gridSnapBtnText = null;
 
-        // Scene Hierarchy (Left Panel: 215px)
+        // Scene Hierarchy (Left Panel: 245px Tree View)
         private static GameObject _hierarchyPanel = null;
         private static RectTransform _hierarchyContent = null;
         private static TMP_InputField _hierarchySearchInput = null;
         private static readonly List<GameObject> _hierarchyRows = new List<GameObject>();
+        private static readonly HashSet<GameObject> _collapsedParents = new HashSet<GameObject>();
 
-        // Contextual Inspector (Right Panel: 260px)
+        // Contextual Inspector (Right Panel: 280px - 380px)
         private static GameObject _inspectorPanel = null;
+        private static RectTransform _inspectorPanelRt = null;
         private static RectTransform _inspectorContent = null;
         private static TMP_Text _inspectorTitleText = null;
+        private static Button _inspectorExpandBtn = null;
+        private static TMP_Text _inspectorExpandBtnText = null;
+        private static bool _isInspectorExpanded = false;
 
         // Transform Coordinate Inputs
         private static TMP_InputField _posXInput = null;
@@ -61,7 +62,7 @@ namespace DeadCoreEditor
         private static TMP_InputField _rotZInput = null;
         private static TMP_InputField _scaleInput = null;
 
-        // Specialized Component Inspector Sections
+        // Section Cards
         private static GameObject _jumperSection = null;
         private static Slider _jumperSlider = null;
         private static TMP_Text _jumperValueText = null;
@@ -78,22 +79,27 @@ namespace DeadCoreEditor
         private static Slider _laserSlider = null;
         private static TMP_Text _laserValueText = null;
 
+        // Merged Lighting & Atmosphere Section
         private static GameObject _lightSection = null;
+        private static TMP_Text _lightTypeBadgeText = null;
         private static Slider _lightIntensitySlider = null;
         private static TMP_Text _lightIntensityValText = null;
+        private static GameObject _spotAngleRowObj = null;
         private static Slider _lightAngleSlider = null;
         private static TMP_Text _lightAngleValText = null;
         private static Slider _lightVolSlider = null;
         private static TMP_Text _lightVolValText = null;
+        private static Image _lightColorPreviewSwatch = null;
 
         private static GameObject _motionPathSection = null;
         private static TMP_Text _motionPathStatusText = null;
+        private static GameObject _parentingSection = null;
 
-        // Docked Bottom Asset Browser (Height: 150px)
+        // Docked Bottom Asset Browser
         private static GameObject _assetBrowserPanel = null;
         private static RectTransform _browserContent = null;
         private static TMP_InputField _browserSearchInput = null;
-        private static string _activeBrowserCategory = "All";
+        private static string _activeBrowserCategory = "Architecture";
         private static readonly List<GameObject> _browserCards = new List<GameObject>();
 
         // Toast Notification Banner
@@ -151,6 +157,7 @@ namespace DeadCoreEditor
             BuildAssetBrowserPanel();
             BuildToastOverlay();
 
+            EnsureSelectableColliders();
             RefreshHierarchy();
             RefreshAssetBrowser();
             RefreshModeDisplay();
@@ -164,6 +171,37 @@ namespace DeadCoreEditor
             {
                 GameObject.Destroy(_canvasRoot);
                 _canvasRoot = null;
+            }
+        }
+
+        public static void EnsureSelectableColliders()
+        {
+            if (EditorSessionManager.PlacedObjects == null) return;
+
+            for (int i = 0; i < EditorSessionManager.PlacedObjects.Count; i++)
+            {
+                GameObject obj = EditorSessionManager.PlacedObjects[i];
+                if (obj == null) continue;
+
+                if (EditorSessionManager.PlacedObjectTypes.TryGetValue(obj, out var pType) &&
+                    (pType == PlacedObjectType.Spotlight || pType == PlacedObjectType.Sunlight))
+                {
+                    BoxCollider bc = obj.GetComponent<BoxCollider>();
+                    if (bc == null)
+                    {
+                        bc = obj.AddComponent<BoxCollider>();
+                        bc.size = new Vector3(1.4f, 1.4f, 1.6f);
+                        bc.center = new Vector3(0f, 0f, 0.4f);
+                        bc.isTrigger = false;
+                        bc.enabled = true;
+                    }
+
+                    obj.layer = 0;
+                    Transform housing = obj.transform.Find("Light_Housing");
+                    if (housing != null) housing.gameObject.layer = 0;
+                    Transform lens = obj.transform.Find("Light_Lens");
+                    if (lens != null) lens.gameObject.layer = 0;
+                }
             }
         }
 
@@ -183,9 +221,10 @@ namespace DeadCoreEditor
             }
         }
 
-        /// <summary>
-        /// Offscreen 3D studio that renders isometric preview icons for catalog assets.
-        /// </summary>
+        // =========================================================================
+        // THUMBNAIL RENDERER
+        // =========================================================================
+
         public static class AssetThumbnailRenderer
         {
             private static Camera _previewCam = null;
@@ -207,9 +246,9 @@ namespace DeadCoreEditor
                 camObj.transform.SetParent(_studioStage.transform, false);
                 _previewCam = camObj.AddComponent<Camera>();
                 _previewCam.clearFlags = CameraClearFlags.Color;
-                _previewCam.backgroundColor = new Color(0.14f, 0.16f, 0.20f, 1f); // Dark studio background
-                _previewCam.cullingMask = 1 << 2; // Only render layer 2
-                _previewCam.fieldOfView = 28f;   // Narrow FOV for an isometric look
+                _previewCam.backgroundColor = new Color(0.14f, 0.16f, 0.20f, 1f);
+                _previewCam.cullingMask = 1 << 2;
+                _previewCam.fieldOfView = 28f;
                 _previewCam.nearClipPlane = 0.1f;
                 _previewCam.farClipPlane = 500f;
 
@@ -232,25 +271,21 @@ namespace DeadCoreEditor
 
                 EnsureStudio();
 
-                // Instantiate temporary model on the offscreen stage
                 GameObject tempModel = GameObject.Instantiate(asset.SourceTemplate);
                 tempModel.SetActive(true);
                 tempModel.transform.position = StagePosition;
                 tempModel.transform.rotation = Quaternion.Euler(18f, -38f, 0f) * asset.BaseRotation;
                 tempModel.transform.localScale = Vector3.one * asset.DefaultScale;
 
-                // Move to layer 2 so only the thumbnail camera sees it
                 foreach (var tr in tempModel.GetComponentsInChildren<Transform>(true))
                 {
                     tr.gameObject.layer = 2;
                 }
 
-                // Remove gameplay scripts, colliders, and native scene lights from the preview clone
                 foreach (var l in tempModel.GetComponentsInChildren<Light>(true)) GameObject.DestroyImmediate(l);
                 foreach (var col in tempModel.GetComponentsInChildren<Collider>(true)) GameObject.DestroyImmediate(col);
                 foreach (var mb in tempModel.GetComponentsInChildren<MonoBehaviour>(true)) GameObject.DestroyImmediate(mb);
 
-                // Compute bounds to frame the camera
                 Bounds b = new Bounds(tempModel.transform.position, Vector3.zero);
                 bool hasBounds = false;
                 foreach (var mf in tempModel.GetComponentsInChildren<MeshFilter>(true))
@@ -275,7 +310,6 @@ namespace DeadCoreEditor
                 _previewCam.transform.position = camPos;
                 _previewCam.transform.LookAt(modelCenter);
 
-                // Render to texture
                 RenderTexture.active = _previewRt;
                 _previewCam.Render();
 
@@ -307,6 +341,11 @@ namespace DeadCoreEditor
                 }
             }
         }
+
+        // =========================================================================
+        // TOP TOOLBAR
+        // =========================================================================
+
         private static void BuildTopToolbar()
         {
             _toolbarPanel = CreatePanel(_canvasRoot.transform, "Top_Toolbar", new Vector2(0f, 1f), new Vector2(1f, 1f), new Vector2(0f, -20f), new Vector2(0f, 40f), new Color(0.11f, 0.12f, 0.14f, 0.98f));
@@ -319,7 +358,6 @@ namespace DeadCoreEditor
             hlg.childForceExpandWidth = false;
             hlg.childForceExpandHeight = true;
 
-            // Discrete Mode Toggle (Select vs Placement)
             _modeToggleBtn = CreateButton(_toolbarPanel.transform, "Btn_ModeToggle", "MODE: [SELECT]", 145f, () =>
             {
                 if (EditorSessionManager.InteractionMode == EditorInteractionMode.SelectMode)
@@ -333,12 +371,10 @@ namespace DeadCoreEditor
             }, new Color(0.18f, 0.45f, 0.85f, 1f));
             _modeToggleBtnText = _modeToggleBtn.GetComponentInChildren<TMP_Text>();
 
-            // Gizmo state toggles
-            CreateButton(_toolbarPanel.transform, "Btn_Translate", "Move", 65f, () => SetGizmoMode(EditorGizmoMode.Translate));
-            CreateButton(_toolbarPanel.transform, "Btn_Rotate", "Rotate", 65f, () => SetGizmoMode(EditorGizmoMode.Rotate));
-            CreateButton(_toolbarPanel.transform, "Btn_Scale", "Scale", 65f, () => SetGizmoMode(EditorGizmoMode.Scale));
+            CreateButton(_toolbarPanel.transform, "Btn_Translate", "Move (W)", 75f, () => SetGizmoMode(EditorGizmoMode.Translate));
+            CreateButton(_toolbarPanel.transform, "Btn_Rotate", "Rotate (E)", 75f, () => SetGizmoMode(EditorGizmoMode.Rotate));
+            CreateButton(_toolbarPanel.transform, "Btn_Scale", "Scale (R)", 75f, () => SetGizmoMode(EditorGizmoMode.Scale));
 
-            // Surface align button
             Button alignBtn = CreateButton(_toolbarPanel.transform, "Btn_SurfaceAlign", "Align: OFF", 95f, () =>
             {
                 EditorSessionManager.AutoAlignToSurface = !EditorSessionManager.AutoAlignToSurface;
@@ -349,7 +385,6 @@ namespace DeadCoreEditor
             });
             _surfaceAlignBtnText = alignBtn.GetComponentInChildren<TMP_Text>();
 
-            // Grid snap button
             Button snapBtn = CreateButton(_toolbarPanel.transform, "Btn_GridSnap", "Snap: 1.0m", 95f, () =>
             {
                 if (EditorSessionManager.CurrentGridSnap == 1.0f) EditorSessionManager.CurrentGridSnap = 2.0f;
@@ -364,17 +399,13 @@ namespace DeadCoreEditor
             });
             _gridSnapBtnText = snapBtn.GetComponentInChildren<TMP_Text>();
 
-            // 3D Isometric Aerial Snapshot Capture
             CreateButton(_toolbarPanel.transform, "Btn_Snapshot", "📷 3D Snapshot", 115f, () =>
             {
                 ThumbnailCaptureService.CaptureLevelThumbnail(MapBrowserService.SelectedMapPath, EditorSessionManager.PlacedObjects, EditorSessionManager.LevelSpawnPosition);
                 EditorSessionManager.ShowNotification("Captured 3D diagonal overhead thumbnail!");
             }, new Color(0.2f, 0.5f, 0.8f));
 
-            // Playtest toggle button
             CreateButton(_toolbarPanel.transform, "Btn_Playtest", "▶ PLAYTEST (F1)", 140f, () => EditorSessionManager.ToggleEditMode(), new Color(0.18f, 0.65f, 0.32f));
-
-            // Quick Save and Load
             CreateButton(_toolbarPanel.transform, "Btn_Save", "Save (F5)", 80f, () => LevelPersistenceService.SaveLevel(MapBrowserService.SelectedMapName));
             CreateButton(_toolbarPanel.transform, "Btn_Load", "Load (F6)", 80f, () => LevelPersistenceService.LoadLevel(MapBrowserService.SelectedMapName));
         }
@@ -386,49 +417,103 @@ namespace DeadCoreEditor
             EditorSessionManager.ShowNotification($"Active Gizmo Tool: {mode}");
         }
 
+        // =========================================================================
+        // HIERARCHY PANEL (LEFT: 245px TREE VIEW DOCKED, ZERO BUTTON OVERLAPS)
+        // =========================================================================
+
         private static void BuildHierarchyPanel()
         {
-            // Slimmer width: 215px (Docked Left)
-            _hierarchyPanel = CreatePanel(_canvasRoot.transform, "Hierarchy_Panel", new Vector2(0f, 0f), new Vector2(0f, 1f), new Vector2(107.5f, -20f), new Vector2(215f, -40f), new Color(0.13f, 0.14f, 0.16f, 0.98f));
+            _hierarchyPanel = CreatePanel(_canvasRoot.transform, "Hierarchy_Panel",
+                new Vector2(0f, 0f), new Vector2(0f, 1f),
+                new Vector2(122.5f, -20f), new Vector2(245f, -40f),
+                new Color(0.11f, 0.12f, 0.14f, 0.98f));
 
-            CreateText(_hierarchyPanel.transform, "Scene Hierarchy", new Vector2(0f, 1f), new Vector2(1f, 1f), new Vector2(10f, -14f), new Vector2(-20f, 24f), 14f, FontStyles.Bold, Color.white, TextAlignmentOptions.MidlineLeft);
+            CreateText(_hierarchyPanel.transform, "Scene Hierarchy",
+                new Vector2(0f, 1f), new Vector2(1f, 1f),
+                new Vector2(12f, -14f), new Vector2(-24f, 24f),
+                13f, FontStyles.Bold, Color.white, TextAlignmentOptions.MidlineLeft);
 
-            _hierarchySearchInput = CreateInputField(_hierarchyPanel.transform, "SearchInput", new Vector2(0f, 1f), new Vector2(1f, 1f), new Vector2(10f, -40f), new Vector2(-20f, 22f), "Filter objects...", (val) => RefreshHierarchy());
+            _hierarchySearchInput = CreateInputField(_hierarchyPanel.transform, "SearchInput",
+                new Vector2(0f, 1f), new Vector2(1f, 1f),
+                new Vector2(10f, -40f), new Vector2(-20f, 24f),
+                "Filter hierarchy...", (val) => RefreshHierarchy());
 
-            GameObject scrollObj = CreateScrollView(_hierarchyPanel.transform, "Hierarchy_Scroll", new Vector2(0f, 0f), new Vector2(1f, 1f), new Vector2(6f, 36f), new Vector2(-12f, -100f), out _hierarchyContent);
+            GameObject scrollObj = CreateScrollView(_hierarchyPanel.transform, "Hierarchy_Scroll",
+                new Vector2(0f, 0f), new Vector2(1f, 1f),
+                new Vector2(6f, 24f), new Vector2(-12f, -112f),
+                out _hierarchyContent);
 
-            CreateButton(_hierarchyPanel.transform, "Btn_DeleteSelected", "Delete Selected", 195f, () =>
+            GameObject bottomBar = CreatePanel(_hierarchyPanel.transform, "Hierarchy_BottomBar",
+                new Vector2(0f, 0f), new Vector2(1f, 0f),
+                new Vector2(0f, 18f), new Vector2(0f, 36f),
+                new Color(0.08f, 0.09f, 0.11f, 0.95f));
+
+            Button delBtn = CreateButton(bottomBar.transform, "Btn_DeleteSelected", "Delete Selected [Supr]", 225f, () =>
             {
-                if (EditorSessionManager.SelectedObject != null)
-                {
-                    EditorSessionManager.DeleteSpecifiedObject(EditorSessionManager.SelectedObject);
-                }
-            }, new Color(0.7f, 0.25f, 0.25f), new Vector2(107.5f, 18f));
+                EditorSessionManager.DeleteSelectedObjects();
+            }, new Color(0.75f, 0.22f, 0.22f, 1f));
+
+            RectTransform dbrt = delBtn.GetComponent<RectTransform>();
+            dbrt.anchorMin = new Vector2(0f, 0f);
+            dbrt.anchorMax = new Vector2(1f, 1f);
+            dbrt.offsetMin = new Vector2(8f, 4f);
+            dbrt.offsetMax = new Vector2(-8f, -4f);
         }
+
+        // =========================================================================
+        // EXPANDABLE INSPECTOR PANEL (RIGHT, SECTION CARDS, ZERO OVERLAPS)
+        // =========================================================================
 
         private static void BuildInspectorPanel()
         {
-            // Slimmer width: 260px (Docked Right)
-            _inspectorPanel = CreatePanel(_canvasRoot.transform, "Inspector_Panel", new Vector2(1f, 0f), new Vector2(1f, 1f), new Vector2(-130f, -20f), new Vector2(260f, -40f), new Color(0.13f, 0.14f, 0.16f, 0.98f));
+            _isInspectorExpanded = false;
+            _inspectorPanel = CreatePanel(_canvasRoot.transform, "Inspector_Panel",
+                new Vector2(1f, 0f), new Vector2(1f, 1f),
+                new Vector2(-140f, -20f), new Vector2(280f, -40f),
+                new Color(0.12f, 0.13f, 0.15f, 0.98f));
+            _inspectorPanelRt = _inspectorPanel.GetComponent<RectTransform>();
 
-            _inspectorTitleText = CreateText(_inspectorPanel.transform, "Inspector", new Vector2(0f, 1f), new Vector2(1f, 1f), new Vector2(12f, -14f), new Vector2(-24f, 24f), 14f, FontStyles.Bold, Color.white, TextAlignmentOptions.MidlineLeft);
+            // Title bar with Expand button
+            GameObject titleBar = new GameObject("TitleBar");
+            titleBar.transform.SetParent(_inspectorPanel.transform, false);
+            RectTransform tbrt = titleBar.AddComponent<RectTransform>();
+            tbrt.anchorMin = new Vector2(0f, 1f);
+            tbrt.anchorMax = new Vector2(1f, 1f);
+            tbrt.pivot = new Vector2(0.5f, 1f);
+            tbrt.anchoredPosition = new Vector2(0f, 0f);
+            tbrt.sizeDelta = new Vector2(0f, 34f);
 
-            GameObject scrollObj = CreateScrollView(_inspectorPanel.transform, "Inspector_Scroll", new Vector2(0f, 0f), new Vector2(1f, 1f), new Vector2(6f, 6f), new Vector2(-12f, -38f), out _inspectorContent);
+            _inspectorTitleText = CreateText(titleBar.transform, "Inspector",
+                new Vector2(0f, 0f), new Vector2(1f, 1f),
+                new Vector2(12f, 0f), new Vector2(-95f, 0f),
+                13f, FontStyles.Bold, Color.white, TextAlignmentOptions.MidlineLeft);
+            _inspectorTitleText.enableWordWrapping = false;
+            _inspectorTitleText.overflowMode = TextOverflowModes.Ellipsis;
 
-            // Transform Section (No Overlaps, Clean Auto-Layout)
-            CreateHeader(_inspectorContent, "Transform");
-            CreateVector3Row(_inspectorContent, "Position", out _posXInput, out _posYInput, out _posZInput, OnTransformInputChanged);
-            CreateVector3Row(_inspectorContent, "Rotation", out _rotXInput, out _rotYInput, out _rotZInput, OnTransformInputChanged);
+            _inspectorExpandBtn = CreateButton(titleBar.transform, "Btn_ExpandInspector", "[⤢ Expand]", 80f, ToggleInspectorExpansion, new Color(0.20f, 0.23f, 0.28f, 1f));
+            RectTransform ebrt = _inspectorExpandBtn.GetComponent<RectTransform>();
+            ebrt.anchorMin = new Vector2(1f, 0.5f);
+            ebrt.anchorMax = new Vector2(1f, 0.5f);
+            ebrt.pivot = new Vector2(1f, 0.5f);
+            ebrt.anchoredPosition = new Vector2(-8f, 0f);
+            ebrt.sizeDelta = new Vector2(80f, 22f);
+            _inspectorExpandBtnText = _inspectorExpandBtn.GetComponentInChildren<TMP_Text>();
 
-            GameObject rotBtnRow = new GameObject("Row_RotButtons");
-            rotBtnRow.transform.SetParent(_inspectorContent, false);
-            RectTransform rbrt = rotBtnRow.AddComponent<RectTransform>();
-            rbrt.sizeDelta = new Vector2(240f, 26f);
+            GameObject scrollObj = CreateScrollView(_inspectorPanel.transform, "Inspector_Scroll",
+                new Vector2(0f, 0f), new Vector2(1f, 1f),
+                new Vector2(6f, 6f), new Vector2(-12f, -38f),
+                out _inspectorContent);
 
+            // 1. Transform Card
+            GameObject transCard = CreateSectionCard(_inspectorContent, "Transform", "Transform & Alignment");
+            CreateVector3Row(transCard.transform, "Position", out _posXInput, out _posYInput, out _posZInput, OnTransformInputChanged);
+            CreateVector3Row(transCard.transform, "Rotation", out _rotXInput, out _rotYInput, out _rotZInput, OnTransformInputChanged);
+
+            GameObject rotBtnRow = CreateRowContainer(transCard.transform, "Row_RotButtons", 26f);
             HorizontalLayoutGroup rhlg = rotBtnRow.AddComponent<HorizontalLayoutGroup>();
             rhlg.spacing = 6f; rhlg.childControlWidth = true; rhlg.childForceExpandWidth = true;
 
-            CreateButton(rotBtnRow.transform, "Btn_Snap90", "Snap 90°", 115f, () =>
+            CreateButton(rotBtnRow.transform, "Btn_Snap90", "Snap 90°", 120f, () =>
             {
                 if (EditorSessionManager.SelectedObject != null)
                 {
@@ -441,7 +526,7 @@ namespace DeadCoreEditor
                     EditorSessionManager.ShowNotification("Rotation snapped to 90°");
                 }
             });
-            CreateButton(rotBtnRow.transform, "Btn_ResetRot", "Reset Rot", 115f, () =>
+            CreateButton(rotBtnRow.transform, "Btn_ResetRot", "Reset Rot", 120f, () =>
             {
                 if (EditorSessionManager.SelectedObject != null)
                 {
@@ -451,38 +536,47 @@ namespace DeadCoreEditor
                 }
             });
 
-            CreateSingleFloatRow(_inspectorContent, "Scale", out _scaleInput, OnTransformInputChanged);
+            CreateSingleFloatRow(transCard.transform, "Scale", out _scaleInput, OnTransformInputChanged);
 
-            // Contextual Component Sections
-            _jumperSection = CreateInspectorSection(_inspectorContent, "Jumper Launch Pad", out _jumperSlider, out _jumperValueText, 5f, 75f, (val) =>
+            // 2. Specialized Gameplay Cards
+            _jumperSection = CreateSectionCard(_inspectorContent, "Jumper", "Jumper Launch Pad");
+            CreateInspectorSliderRow(_jumperSection.transform, "Launch Force", out _jumperSlider, out _jumperValueText, 5f, 75f, (val) =>
             {
                 if (_suppressInspectorCallbacks || EditorSessionManager.SelectedObject == null) return;
                 EditorSessionManager.ApplyJumperForce(EditorSessionManager.SelectedObject, val);
                 if (_jumperValueText != null) _jumperValueText.text = $"{val:F1}";
             });
 
-            _turbineSection = CreateInspectorSection(_inspectorContent, "Helix Turbine Fan", out _turbineSlider, out _turbineValueText, 5f, 100f, (val) =>
+            _turbineSection = CreateSectionCard(_inspectorContent, "Turbine", "Helix Turbine Fan");
+            CreateInspectorSliderRow(_turbineSection.transform, "Wind Speed", out _turbineSlider, out _turbineValueText, 5f, 100f, (val) =>
             {
                 if (_suppressInspectorCallbacks || EditorSessionManager.SelectedObject == null) return;
                 EditorSessionManager.ApplyTurbineSpeed(EditorSessionManager.SelectedObject, val);
                 if (_turbineValueText != null) _turbineValueText.text = $"{val:F1}";
             });
 
-            _turretSection = CreateInspectorSection(_inspectorContent, "Defense Turret", out _turretSlider, out _turretValueText, 0.1f, 5.0f, (val) =>
+            _turretSection = CreateSectionCard(_inspectorContent, "Turret", "Defense Turret");
+            CreateInspectorSliderRow(_turretSection.transform, "Fire Delay", out _turretSlider, out _turretValueText, 0.1f, 5.0f, (val) =>
             {
                 if (_suppressInspectorCallbacks || EditorSessionManager.SelectedObject == null) return;
                 EditorSessionManager.ApplyTurretSettings(EditorSessionManager.SelectedObject, val, 1500f);
                 if (_turretValueText != null) _turretValueText.text = $"{val:F2}s";
             });
 
-            _laserSection = CreateInspectorSection(_inspectorContent, "Laser Hazard", out _laserSlider, out _laserValueText, 0f, 180f, (val) =>
+            _laserSection = CreateSectionCard(_inspectorContent, "Laser", "Laser Barrier Hazard");
+            CreateInspectorSliderRow(_laserSection.transform, "Rotation Spd", out _laserSlider, out _laserValueText, 0f, 180f, (val) =>
             {
                 if (_suppressInspectorCallbacks || EditorSessionManager.SelectedObject == null) return;
                 EditorSessionManager.LaserRotationSpeeds[EditorSessionManager.SelectedObject] = val;
                 if (_laserValueText != null) _laserValueText.text = $"{val:F0}°/s";
             });
 
-            _lightSection = CreateHeader(_inspectorContent, "Lighting Properties");
+            // 3. Merged Clean Lighting Card
+            _lightSection = CreateSectionCard(_inspectorContent, "Lighting", "💡 Lighting Properties");
+
+            GameObject badgeRow = CreateRowContainer(_lightSection.transform, "Row_Badge", 22f);
+            _lightTypeBadgeText = CreateText(badgeRow.transform, "Type: [Tech Spotlight]", Vector2.zero, Vector2.one, Vector2.zero, Vector2.zero, 11f, FontStyles.Bold, new Color(0.25f, 0.9f, 1f), TextAlignmentOptions.MidlineLeft);
+
             CreateInspectorSliderRow(_lightSection.transform, "Intensity", out _lightIntensitySlider, out _lightIntensityValText, 0.1f, 30f, (val) =>
             {
                 if (_suppressInspectorCallbacks || EditorSessionManager.SelectedObject == null) return;
@@ -493,7 +587,8 @@ namespace DeadCoreEditor
                     if (_lightIntensityValText != null) _lightIntensityValText.text = $"{val:F1}";
                 }
             });
-            CreateInspectorSliderRow(_lightSection.transform, "Spot Angle", out _lightAngleSlider, out _lightAngleValText, 10f, 150f, (val) =>
+
+            _spotAngleRowObj = CreateInspectorSliderRow(_lightSection.transform, "Spot Angle", out _lightAngleSlider, out _lightAngleValText, 10f, 150f, (val) =>
             {
                 if (_suppressInspectorCallbacks || EditorSessionManager.SelectedObject == null) return;
                 if (EditorSessionManager.PlacedLights.TryGetValue(EditorSessionManager.SelectedObject, out var cfg))
@@ -503,6 +598,7 @@ namespace DeadCoreEditor
                     if (_lightAngleValText != null) _lightAngleValText.text = $"{val:F0}°";
                 }
             });
+
             CreateInspectorSliderRow(_lightSection.transform, "Volumetric", out _lightVolSlider, out _lightVolValText, 0f, 10f, (val) =>
             {
                 if (_suppressInspectorCallbacks || EditorSessionManager.SelectedObject == null) return;
@@ -514,31 +610,42 @@ namespace DeadCoreEditor
                 }
             });
 
-            GameObject colorPresetsRow = new GameObject("Row_ColorPresets");
-            colorPresetsRow.transform.SetParent(_lightSection.transform, false);
-            RectTransform cprt = colorPresetsRow.AddComponent<RectTransform>();
-            cprt.sizeDelta = new Vector2(240f, 24f);
+            GameObject swatchRow = CreateRowContainer(_lightSection.transform, "Row_Swatch", 24f);
+            CreateText(swatchRow.transform, "Active Color Swatch", new Vector2(0f, 0f), new Vector2(0.65f, 1f), new Vector2(4f, 0f), Vector2.zero, 10f, FontStyles.Normal, Color.white, TextAlignmentOptions.MidlineLeft);
 
+            GameObject swatchObj = new GameObject("Swatch");
+            swatchObj.transform.SetParent(swatchRow.transform, false);
+            RectTransform swrt = swatchObj.AddComponent<RectTransform>();
+            swrt.anchorMin = new Vector2(1f, 0.5f);
+            swrt.anchorMax = new Vector2(1f, 0.5f);
+            swrt.pivot = new Vector2(1f, 0.5f);
+            swrt.anchoredPosition = new Vector2(-4f, 0f);
+            swrt.sizeDelta = new Vector2(60f, 18f);
+
+            _lightColorPreviewSwatch = swatchObj.AddComponent<Image>();
+            _lightColorPreviewSwatch.color = Color.cyan;
+
+            GameObject colorPresetsRow = CreateRowContainer(_lightSection.transform, "Row_ColorPresets", 26f);
             HorizontalLayoutGroup chlg = colorPresetsRow.AddComponent<HorizontalLayoutGroup>();
             chlg.spacing = 4f; chlg.childControlWidth = true; chlg.childForceExpandWidth = true;
-            CreateButton(colorPresetsRow.transform, "Btn_Cyan", "Cyan", 42f, () => ApplyPresetColor(Color.cyan), Color.cyan);
-            CreateButton(colorPresetsRow.transform, "Btn_Sun", "Sun", 42f, () => ApplyPresetColor(new Color(1f, 0.75f, 0.3f)), new Color(1f, 0.75f, 0.3f));
-            CreateButton(colorPresetsRow.transform, "Btn_Green", "Grn", 42f, () => ApplyPresetColor(Color.green), Color.green);
-            CreateButton(colorPresetsRow.transform, "Btn_Red", "Red", 42f, () => ApplyPresetColor(Color.red), Color.red);
-            CreateButton(colorPresetsRow.transform, "Btn_White", "Wht", 42f, () => ApplyPresetColor(Color.white), Color.white);
+            CreateButton(colorPresetsRow.transform, "Btn_Cyan", "Cyan", 40f, () => ApplyPresetColor(Color.cyan), Color.cyan);
+            CreateButton(colorPresetsRow.transform, "Btn_Sun", "Gold", 40f, () => ApplyPresetColor(new Color(1f, 0.8f, 0.35f)), new Color(1f, 0.8f, 0.35f));
+            CreateButton(colorPresetsRow.transform, "Btn_Green", "Acid", 40f, () => ApplyPresetColor(new Color(0.2f, 1f, 0.4f)), new Color(0.2f, 1f, 0.4f));
+            CreateButton(colorPresetsRow.transform, "Btn_Red", "Red", 40f, () => ApplyPresetColor(new Color(1f, 0.2f, 0.2f)), new Color(1f, 0.2f, 0.2f));
+            CreateButton(colorPresetsRow.transform, "Btn_White", "White", 40f, () => ApplyPresetColor(Color.white), Color.white);
+            CreateButton(colorPresetsRow.transform, "Btn_Violet", "Violet", 40f, () => ApplyPresetColor(new Color(0.7f, 0.3f, 1f)), new Color(0.7f, 0.3f, 1f));
 
-            _motionPathSection = CreateHeader(_inspectorContent, "Kinematic Motion Path");
-            _motionPathStatusText = CreateText(_motionPathSection.transform, "No Path Bound", new Vector2(0f, 0.5f), new Vector2(1f, 0.5f), Vector2.zero, new Vector2(-10f, 20f), 11f, FontStyles.Normal, Color.gray, TextAlignmentOptions.MidlineLeft);
+            // 4. Motion Path Card
+            _motionPathSection = CreateSectionCard(_inspectorContent, "MotionPath", "Kinematic Motion Path");
+            _motionPathStatusText = CreateText(_motionPathSection.transform, "No Path Bound", new Vector2(0f, 0f), new Vector2(1f, 1f), Vector2.zero, Vector2.zero, 11f, FontStyles.Normal, Color.gray, TextAlignmentOptions.MidlineLeft);
+            LayoutElement mple = _motionPathStatusText.gameObject.AddComponent<LayoutElement>();
+            mple.preferredHeight = 20f;
 
-            GameObject motionBtnRow = new GameObject("Row_MotionButtons");
-            motionBtnRow.transform.SetParent(_motionPathSection.transform, false);
-            RectTransform mbrt = motionBtnRow.AddComponent<RectTransform>();
-            mbrt.sizeDelta = new Vector2(240f, 26f);
-
+            GameObject motionBtnRow = CreateRowContainer(_motionPathSection.transform, "Row_MotionButtons", 26f);
             HorizontalLayoutGroup mhlg = motionBtnRow.AddComponent<HorizontalLayoutGroup>();
             mhlg.spacing = 6f; mhlg.childControlWidth = true; mhlg.childForceExpandWidth = true;
 
-            CreateButton(motionBtnRow.transform, "Btn_SetA", "Lock A", 115f, () =>
+            CreateButton(motionBtnRow.transform, "Btn_SetA", "Lock Point A", 120f, () =>
             {
                 if (EditorSessionManager.SelectedObject == null) return;
                 GameObject obj = EditorSessionManager.SelectedObject;
@@ -554,7 +661,7 @@ namespace DeadCoreEditor
                 EditorSessionManager.ShowNotification("Point A locked!");
             });
 
-            CreateButton(motionBtnRow.transform, "Btn_SetB", "Lock B", 115f, () =>
+            CreateButton(motionBtnRow.transform, "Btn_SetB", "Lock Point B", 120f, () =>
             {
                 if (EditorSessionManager.SelectedObject == null) return;
                 GameObject obj = EditorSessionManager.SelectedObject;
@@ -570,16 +677,13 @@ namespace DeadCoreEditor
                 EditorSessionManager.ShowNotification("Point B locked!");
             });
 
-            GameObject parentHeader = CreateHeader(_inspectorContent, "Assembly Parenting");
-            GameObject parentBtnRow = new GameObject("Row_ParentButtons");
-            parentBtnRow.transform.SetParent(parentHeader.transform, false);
-            RectTransform pbrt = parentBtnRow.AddComponent<RectTransform>();
-            pbrt.sizeDelta = new Vector2(240f, 26f);
-
+            // 5. Parenting Card
+            _parentingSection = CreateSectionCard(_inspectorContent, "Parenting", "Assembly Parenting");
+            GameObject parentBtnRow = CreateRowContainer(_parentingSection.transform, "Row_ParentButtons", 26f);
             HorizontalLayoutGroup phlg = parentBtnRow.AddComponent<HorizontalLayoutGroup>();
             phlg.spacing = 6f; phlg.childControlWidth = true; phlg.childForceExpandWidth = true;
 
-            CreateButton(parentBtnRow.transform, "Btn_PickParent", "Pick Parent", 115f, () =>
+            CreateButton(parentBtnRow.transform, "Btn_PickParent", "Pick Parent", 120f, () =>
             {
                 if (EditorSessionManager.SelectedObject != null)
                 {
@@ -588,7 +692,7 @@ namespace DeadCoreEditor
                 }
             });
 
-            CreateButton(parentBtnRow.transform, "Btn_Unparent", "Unparent", 115f, () =>
+            CreateButton(parentBtnRow.transform, "Btn_Unparent", "Unparent", 120f, () =>
             {
                 if (EditorSessionManager.SelectedObject != null && EditorSessionManager.SelectedObject.transform.parent != null)
                 {
@@ -601,12 +705,40 @@ namespace DeadCoreEditor
             });
         }
 
+        private static void ToggleInspectorExpansion()
+        {
+            _isInspectorExpanded = !_isInspectorExpanded;
+            if (_inspectorPanelRt != null)
+            {
+                float w = _isInspectorExpanded ? 380f : 280f;
+                _inspectorPanelRt.sizeDelta = new Vector2(w, -40f);
+                _inspectorPanelRt.anchoredPosition = new Vector2(-w * 0.5f, -20f);
+            }
+            if (_inspectorExpandBtnText != null)
+            {
+                _inspectorExpandBtnText.text = _isInspectorExpanded ? "[⤡ Slim]" : "[⤢ Expand]";
+            }
+        }
+
+        // =========================================================================
+        // ASSET BROWSER (BOTTOM DOCKED BETWEEN HIERARCHY & INSPECTOR)
+        // =========================================================================
+
         private static void BuildAssetBrowserPanel()
         {
-            // Docked Bottom Panel: 210px height to comfortably show multiple vertical rows
-            _assetBrowserPanel = CreatePanel(_canvasRoot.transform, "AssetBrowser_Panel", new Vector2(0.12f, 0f), new Vector2(0.85f, 0f), new Vector2(0f, 105f), new Vector2(0f, 210f), new Color(0.10f, 0.11f, 0.13f, 0.98f));
+            _assetBrowserPanel = new GameObject("AssetBrowser_Panel");
+            _assetBrowserPanel.transform.SetParent(_canvasRoot.transform, false);
 
-            // Top Category Tabs Header
+            RectTransform abrt = _assetBrowserPanel.AddComponent<RectTransform>();
+            abrt.anchorMin = new Vector2(0f, 0f);
+            abrt.anchorMax = new Vector2(1f, 0f);
+            abrt.pivot = new Vector2(0.5f, 0f);
+            abrt.offsetMin = new Vector2(250f, 0f);
+            abrt.offsetMax = new Vector2(-290f, 210f);
+
+            Image abImg = _assetBrowserPanel.AddComponent<Image>();
+            abImg.color = new Color(0.10f, 0.11f, 0.13f, 0.98f);
+
             GameObject topTabs = new GameObject("Browser_Tabs");
             topTabs.transform.SetParent(_assetBrowserPanel.transform, false);
             RectTransform ttrt = topTabs.AddComponent<RectTransform>();
@@ -622,7 +754,7 @@ namespace DeadCoreEditor
             thlg.childControlWidth = false;
             thlg.childForceExpandWidth = false;
 
-            string[] categories = new string[] { "All", "Platforms", "Architecture", "Hazards & Enemies", "Lighting" };
+            string[] categories = new string[] { "Architecture", "Gameplay", "Hazards", "All" };
             for (int i = 0; i < categories.Length; i++)
             {
                 string cat = categories[i];
@@ -635,7 +767,6 @@ namespace DeadCoreEditor
 
             _browserSearchInput = CreateInputField(_assetBrowserPanel.transform, "BrowserSearch", new Vector2(1f, 1f), new Vector2(1f, 1f), new Vector2(-105f, -15f), new Vector2(190f, 22f), "Filter catalog...", (s) => RefreshAssetBrowser());
 
-            // Scroll View Container
             GameObject scrollObj = new GameObject("Browser_Scroll");
             scrollObj.transform.SetParent(_assetBrowserPanel.transform, false);
             RectTransform srt = scrollObj.AddComponent<RectTransform>();
@@ -645,21 +776,18 @@ namespace DeadCoreEditor
             srt.offsetMax = new Vector2(-8f, -32f);
 
             ScrollRect sr = scrollObj.AddComponent<ScrollRect>();
-            sr.horizontal = false; // Disable horizontal scrolling
-            sr.vertical = true;    // Enable vertical scrolling
+            sr.horizontal = false;
+            sr.vertical = true;
             sr.scrollSensitivity = 30f;
 
-            // Viewport Mask
             GameObject vp = new GameObject("Viewport");
             vp.transform.SetParent(scrollObj.transform, false);
             RectTransform vprt = vp.AddComponent<RectTransform>();
             vprt.anchorMin = Vector2.zero;
             vprt.anchorMax = Vector2.one;
             vprt.sizeDelta = Vector2.zero;
-            vp.AddComponent<Image>().color = new Color(0f, 0f, 0f, 0.25f);
-            vp.AddComponent<Mask>().showMaskGraphic = false;
+            vp.AddComponent<RectMask2D>();
 
-            // Vertical Grid Content
             GameObject content = new GameObject("Content");
             content.transform.SetParent(vp.transform, false);
             _browserContent = content.AddComponent<RectTransform>();
@@ -669,7 +797,6 @@ namespace DeadCoreEditor
             _browserContent.sizeDelta = new Vector2(0f, 0f);
             _browserContent.anchoredPosition = Vector2.zero;
 
-            // GridLayoutGroup dynamically wraps cards into rows based on panel width
             GridLayoutGroup glg = content.AddComponent<GridLayoutGroup>();
             glg.cellSize = new Vector2(95f, 100f);
             glg.spacing = new Vector2(6f, 6f);
@@ -679,7 +806,6 @@ namespace DeadCoreEditor
             glg.childAlignment = TextAnchor.UpperLeft;
             glg.constraint = GridLayoutGroup.Constraint.Flexible;
 
-            // ContentSizeFitter dynamically expands downward as items are added
             ContentSizeFitter csf = content.AddComponent<ContentSizeFitter>();
             csf.horizontalFit = ContentSizeFitter.FitMode.Unconstrained;
             csf.verticalFit = ContentSizeFitter.FitMode.PreferredSize;
@@ -709,12 +835,34 @@ namespace DeadCoreEditor
                 if (!string.IsNullOrEmpty(filter) && !asset.DisplayName.ToLower().Contains(filter))
                     continue;
 
-                if (_activeBrowserCategory != "All")
+                if (_activeBrowserCategory == "Architecture")
                 {
-                    if (string.Equals(_activeBrowserCategory, "Platforms", StringComparison.OrdinalIgnoreCase) && !asset.SubCategory.Equals("Platforms", StringComparison.OrdinalIgnoreCase)) continue;
-                    if (string.Equals(_activeBrowserCategory, "Architecture", StringComparison.OrdinalIgnoreCase) && !asset.SubCategory.Equals("Architecture", StringComparison.OrdinalIgnoreCase)) continue;
-                    if (string.Equals(_activeBrowserCategory, "Hazards & Enemies", StringComparison.OrdinalIgnoreCase) && !asset.SubCategory.Equals("Hazards", StringComparison.OrdinalIgnoreCase)) continue;
-                    if (string.Equals(_activeBrowserCategory, "Lighting", StringComparison.OrdinalIgnoreCase) && !asset.SubCategory.Equals("Lighting", StringComparison.OrdinalIgnoreCase)) continue;
+                    bool isArch = asset.Category == AssetCategory.Building ||
+                                  asset.SubCategory.Equals("Architecture", StringComparison.OrdinalIgnoreCase) ||
+                                  asset.SubCategory.Equals("Platforms", StringComparison.OrdinalIgnoreCase);
+
+                    if (asset.IsJumper || asset.IsCheckPoint || asset.IsSpawnGate || asset.IsGoalGate ||
+                        asset.IsLaser || asset.IsRotatingLaser || asset.IsTurret || asset.IsHelix)
+                    {
+                        isArch = false;
+                    }
+
+                    if (!isArch) continue;
+                }
+                else if (_activeBrowserCategory == "Gameplay")
+                {
+                    bool isGame = asset.IsJumper || asset.IsCheckPoint || asset.IsSpawnGate || asset.IsGoalGate ||
+                                  asset.IsSpotlight || asset.IsSunlight ||
+                                  asset.SubCategory.Equals("Gameplay", StringComparison.OrdinalIgnoreCase);
+
+                    if (!isGame) continue;
+                }
+                else if (_activeBrowserCategory == "Hazards")
+                {
+                    bool isHazard = asset.IsLaser || asset.IsRotatingLaser || asset.IsTurret || asset.IsHelix ||
+                                    asset.SubCategory.Equals("Hazards", StringComparison.OrdinalIgnoreCase);
+
+                    if (!isHazard) continue;
                 }
 
                 GameObject card = new GameObject("Card_" + asset.DisplayName);
@@ -737,7 +885,6 @@ namespace DeadCoreEditor
                 prt.sizeDelta = Vector2.zero;
                 Image pImg = preview.AddComponent<Image>();
 
-                // Dynamically render and cache the 3D preview thumbnail if not already generated
                 if (asset.ThumbnailSprite == null)
                 {
                     asset.ThumbnailSprite = AssetThumbnailRenderer.GenerateThumbnail(asset);
@@ -782,19 +929,25 @@ namespace DeadCoreEditor
             {
                 cfg.Color = c;
                 EditorSessionManager.ApplyLightConfig(EditorSessionManager.SelectedObject, cfg);
+                if (_lightColorPreviewSwatch != null) _lightColorPreviewSwatch.color = c;
                 EditorSessionManager.ShowNotification("Applied light preset.");
             }
         }
 
         private static void BuildToastOverlay()
         {
-            // Positioned at Y: 225f to clear the 210px asset browser
-            GameObject toastObj = CreatePanel(_canvasRoot.transform, "Toast_Overlay", new Vector2(0.5f, 0f), new Vector2(0.5f, 0f), new Vector2(0f, 225f), new Vector2(460f, 26f), new Color(0.08f, 0.10f, 0.12f, 0.90f));
+            GameObject toastObj = CreatePanel(_canvasRoot.transform, "Toast_Overlay", new Vector2(0.5f, 0f), new Vector2(0.5f, 0f), new Vector2(0f, 225f), new Vector2(480f, 26f), new Color(0.08f, 0.10f, 0.12f, 0.90f));
             _toastText = CreateText(toastObj.transform, "Studio Editor Ready", new Vector2(0f, 0f), new Vector2(1f, 1f), Vector2.zero, Vector2.zero, 12f, FontStyles.Bold, new Color(0.2f, 0.9f, 1.0f), TextAlignmentOptions.Center);
         }
 
+        // =========================================================================
+        // HIERARCHY REFRESH (TREE VIEW: PARENT-CHILD BRANCHES + EXPAND/COLLAPSE)
+        // =========================================================================
+
         public static void RefreshHierarchy()
         {
+            EnsureSelectableColliders();
+
             if (_hierarchyContent == null) return;
 
             for (int i = 0; i < _hierarchyRows.Count; i++)
@@ -805,48 +958,144 @@ namespace DeadCoreEditor
 
             string search = (_hierarchySearchInput != null && !string.IsNullOrEmpty(_hierarchySearchInput.text)) ? _hierarchySearchInput.text.ToLower() : "";
 
+            List<GameObject> rootNodes = new List<GameObject>();
+            Dictionary<GameObject, List<GameObject>> childrenMap = new Dictionary<GameObject, List<GameObject>>();
+
             for (int i = 0; i < EditorSessionManager.PlacedObjects.Count; i++)
             {
                 GameObject obj = EditorSessionManager.PlacedObjects[i];
                 if (obj == null || !obj.activeSelf) continue;
 
-                if (!string.IsNullOrEmpty(search) && !obj.name.ToLower().Contains(search))
-                    continue;
+                GameObject parent = (obj.transform.parent != null && EditorSessionManager.PlacedObjects.Contains(obj.transform.parent.gameObject))
+                    ? obj.transform.parent.gameObject : null;
 
-                GameObject captured = obj;
-                bool isSelected = (EditorSessionManager.SelectedObject == obj);
-
-                GameObject row = new GameObject($"Row_{captured.name}");
-                row.transform.SetParent(_hierarchyContent, false);
-                RectTransform rt = row.AddComponent<RectTransform>();
-                rt.sizeDelta = new Vector2(195f, 24f);
-
-                Image bg = row.AddComponent<Image>();
-                bg.color = isSelected ? new Color(0.18f, 0.45f, 0.75f, 0.9f) : new Color(0.11f, 0.12f, 0.14f, 0.6f);
-
-                Button b = row.AddComponent<Button>();
-                b.onClick.AddListener((Action)(() =>
+                if (parent == null)
                 {
-                    if (EditorSessionManager.ParentingChildTarget != null && EditorSessionManager.ParentingChildTarget != captured)
-                    {
-                        EditorSessionManager.ParentingChildTarget.transform.SetParent(captured.transform, true);
-                        EditorSessionManager.RecalculateParentChildCount(captured);
-                        EditorSessionManager.ShowNotification($"Linked '{EditorSessionManager.ParentingChildTarget.name}' -> '{captured.name}'");
-                        EditorSessionManager.ParentingChildTarget = null;
-                        RefreshHierarchy();
-                    }
-                    else
-                    {
-                        EditorSessionManager.SelectObject(captured);
-                    }
+                    rootNodes.Add(obj);
+                }
+                else
+                {
+                    if (!childrenMap.ContainsKey(parent)) childrenMap[parent] = new List<GameObject>();
+                    childrenMap[parent].Add(obj);
+                }
+            }
+
+            for (int i = 0; i < rootNodes.Count; i++)
+            {
+                RenderHierarchyTreeNode(rootNodes[i], 0, childrenMap, search);
+            }
+        }
+
+        private static void RenderHierarchyTreeNode(GameObject node, int depth, Dictionary<GameObject, List<GameObject>> childrenMap, string searchFilter)
+        {
+            if (node == null || !node.activeSelf) return;
+
+            bool hasChildren = childrenMap.ContainsKey(node) && childrenMap[node].Count > 0;
+            bool isCollapsed = _collapsedParents.Contains(node);
+
+            bool matchesSearch = string.IsNullOrEmpty(searchFilter) || node.name.ToLower().Contains(searchFilter);
+            bool childMatches = false;
+
+            if (hasChildren && !string.IsNullOrEmpty(searchFilter))
+            {
+                for (int c = 0; c < childrenMap[node].Count; c++)
+                {
+                    if (childrenMap[node][c].name.ToLower().Contains(searchFilter)) { childMatches = true; break; }
+                }
+            }
+
+            if (!matchesSearch && !childMatches) return;
+
+            GameObject row = new GameObject($"Row_{node.name}");
+            row.transform.SetParent(_hierarchyContent, false);
+
+            RectTransform rt = row.AddComponent<RectTransform>();
+            rt.sizeDelta = new Vector2(0f, 24f);
+
+            LayoutElement le = row.AddComponent<LayoutElement>();
+            le.preferredHeight = 24f;
+            le.minHeight = 24f;
+            le.flexibleHeight = 0f;
+            le.flexibleWidth = 1f;
+
+            bool isSelected = (EditorSessionManager.SelectedObjects != null && EditorSessionManager.SelectedObjects.Contains(node)) ||
+                              (EditorSessionManager.SelectedObject == node);
+
+            Image bg = row.AddComponent<Image>();
+            bg.color = isSelected ? new Color(0.18f, 0.52f, 0.88f, 0.95f) :
+                       (hasChildren ? new Color(0.16f, 0.18f, 0.22f, 0.80f) : new Color(0.11f, 0.12f, 0.14f, 0.60f));
+
+            float leftPadding = 8f + (depth * 18f);
+
+            if (hasChildren)
+            {
+                GameObject foldoutBtn = new GameObject("Foldout");
+                foldoutBtn.transform.SetParent(row.transform, false);
+                RectTransform fbrt = foldoutBtn.AddComponent<RectTransform>();
+                fbrt.anchorMin = new Vector2(0f, 0.5f);
+                fbrt.anchorMax = new Vector2(0f, 0.5f);
+                fbrt.pivot = new Vector2(0f, 0.5f);
+                fbrt.anchoredPosition = new Vector2(leftPadding - 2f, 0f);
+                fbrt.sizeDelta = new Vector2(16f, 20f);
+
+                TMP_Text ft = foldoutBtn.AddComponent<TextMeshProUGUI>();
+                ft.text = isCollapsed ? "►" : "▼";
+                ft.fontSize = 11f;
+                ft.alignment = TextAlignmentOptions.Center;
+                ft.color = new Color(0.3f, 0.85f, 1f);
+
+                Button fb = foldoutBtn.AddComponent<Button>();
+                GameObject capturedNode = node;
+                fb.onClick.AddListener((Action)(() =>
+                {
+                    if (_collapsedParents.Contains(capturedNode)) _collapsedParents.Remove(capturedNode);
+                    else _collapsedParents.Add(capturedNode);
+                    RefreshHierarchy();
                 }));
 
-                float indent = (captured.transform.parent != null) ? 16f : 6f;
-                string prefix = (captured.transform.parent != null) ? "└ " : "";
+                leftPadding += 16f;
+            }
 
-                CreateText(row.transform, prefix + captured.name, new Vector2(0f, 0f), new Vector2(1f, 1f), new Vector2(indent, 0f), new Vector2(-indent, 0f), 12f, FontStyles.Normal, Color.white, TextAlignmentOptions.MidlineLeft);
+            Button b = row.AddComponent<Button>();
+            GameObject captured = node;
+            b.onClick.AddListener((Action)(() =>
+            {
+                if (EditorSessionManager.ParentingChildTarget != null && EditorSessionManager.ParentingChildTarget != captured)
+                {
+                    EditorSessionManager.ParentingChildTarget.transform.SetParent(captured.transform, true);
+                    EditorSessionManager.RecalculateParentChildCount(captured);
+                    EditorSessionManager.ShowNotification($"Linked '{EditorSessionManager.ParentingChildTarget.name}' -> '{captured.name}'");
+                    EditorSessionManager.ParentingChildTarget = null;
+                    RefreshHierarchy();
+                }
+                else
+                {
+                    bool isCtrl = Input.GetKey(KeyCode.LeftControl) || Input.GetKey(KeyCode.RightControl);
+                    EditorSessionManager.SelectObject(captured, isAdditive: isCtrl);
+                }
+            }));
 
-                _hierarchyRows.Add(row);
+            string treeBranch = (depth > 0) ? "└── " : "";
+            string parentBadge = hasChildren ? $" ({childrenMap[node].Count})" : "";
+            string displayName = treeBranch + captured.name + parentBadge;
+
+            TMP_Text rowText = CreateText(row.transform, displayName,
+                new Vector2(0f, 0f), new Vector2(1f, 1f),
+                new Vector2(leftPadding, 0f), new Vector2(-4f, 0f),
+                11f, hasChildren ? FontStyles.Bold : FontStyles.Normal,
+                hasChildren ? new Color(0.9f, 0.95f, 1f) : Color.white,
+                TextAlignmentOptions.MidlineLeft);
+            rowText.enableWordWrapping = false;
+            rowText.overflowMode = TextOverflowModes.Ellipsis;
+
+            _hierarchyRows.Add(row);
+
+            if (hasChildren && !isCollapsed)
+            {
+                for (int c = 0; c < childrenMap[node].Count; c++)
+                {
+                    RenderHierarchyTreeNode(childrenMap[node][c], depth + 1, childrenMap, searchFilter);
+                }
             }
         }
 
@@ -854,12 +1103,23 @@ namespace DeadCoreEditor
         {
             if (_inspectorTitleText != null)
             {
-                _inspectorTitleText.text = (obj != null) ? obj.name : "Inspector (None Selected)";
+                if (EditorSessionManager.SelectedObjects != null && EditorSessionManager.SelectedObjects.Count > 1)
+                {
+                    _inspectorTitleText.text = $"Selection ({EditorSessionManager.SelectedObjects.Count} Objects)";
+                }
+                else
+                {
+                    _inspectorTitleText.text = (obj != null) ? obj.name : "Inspector (None Selected)";
+                }
             }
 
             RefreshHierarchy();
             RefreshInspectorValues();
         }
+
+        // =========================================================================
+        // INSPECTOR VALUES REFRESH (ZERO OVERLAPS, AUTO-EXPANDING)
+        // =========================================================================
 
         public static void RefreshInspectorValues()
         {
@@ -880,6 +1140,7 @@ namespace DeadCoreEditor
                 if (_laserSection != null) _laserSection.SetActive(false);
                 if (_lightSection != null) _lightSection.SetActive(false);
                 if (_motionPathSection != null) _motionPathSection.SetActive(false);
+                if (_parentingSection != null) _parentingSection.SetActive(false);
                 return;
             }
 
@@ -953,11 +1214,23 @@ namespace DeadCoreEditor
             {
                 bool isLight = (type == PlacedObjectType.Spotlight || type == PlacedObjectType.Sunlight) || EditorSessionManager.PlacedLights.ContainsKey(obj);
                 _lightSection.SetActive(isLight);
+
                 if (isLight && EditorSessionManager.PlacedLights.TryGetValue(obj, out var cfg))
                 {
+                    bool isSpot = !cfg.IsDirectional;
+                    if (_lightTypeBadgeText != null)
+                    {
+                        _lightTypeBadgeText.text = isSpot ? "Type: [Tech Spotlight]" : "Type: [Global Sun]";
+                    }
+                    if (_spotAngleRowObj != null)
+                    {
+                        _spotAngleRowObj.SetActive(isSpot);
+                    }
+
                     if (_lightIntensitySlider != null) { _lightIntensitySlider.value = cfg.Intensity; _lightIntensityValText.text = $"{cfg.Intensity:F1}"; }
                     if (_lightAngleSlider != null) { _lightAngleSlider.value = cfg.SpotAngle; _lightAngleValText.text = $"{cfg.SpotAngle:F0}°"; }
                     if (_lightVolSlider != null) { _lightVolSlider.value = cfg.VolumetricIntensity; _lightVolValText.text = $"{cfg.VolumetricIntensity:F1}"; }
+                    if (_lightColorPreviewSwatch != null) { _lightColorPreviewSwatch.color = cfg.Color; }
                 }
             }
 
@@ -967,12 +1240,17 @@ namespace DeadCoreEditor
                 if (EditorSessionManager.MotionPaths.ContainsKey(obj))
                 {
                     var p = EditorSessionManager.MotionPaths[obj];
-                    if (_motionPathStatusText != null) _motionPathStatusText.text = $"Path: {p.Speed:F1} m/s";
+                    if (_motionPathStatusText != null) _motionPathStatusText.text = $"Path: {p.Speed:F1} m/s (Active)";
                 }
                 else
                 {
-                    if (_motionPathStatusText != null) _motionPathStatusText.text = "No Path Assigned";
+                    if (_motionPathStatusText != null) _motionPathStatusText.text = "No Path Bound (Stationary)";
                 }
+            }
+
+            if (_parentingSection != null)
+            {
+                _parentingSection.SetActive(true);
             }
 
             _suppressInspectorCallbacks = false;
@@ -1009,7 +1287,9 @@ namespace DeadCoreEditor
             return def;
         }
 
-        // --- uGUI UI Helper Factory Methods with Strong RectTransform Typing ---
+        // =========================================================================
+        // UGUI FACTORY HELPERS (EXPLICIT HEIGHTS, ZERO OVERLAPS)
+        // =========================================================================
 
         private static GameObject CreatePanel(Transform parent, string name, Vector2 anchorMin, Vector2 anchorMax, Vector2 pos, Vector2 size, Color color)
         {
@@ -1121,38 +1401,67 @@ namespace DeadCoreEditor
             return inputField;
         }
 
-        private static GameObject CreateHeader(Transform parent, string title)
+        private static GameObject CreateSectionCard(Transform parent, string name, string title)
         {
-            GameObject headerObj = new GameObject("Header_" + title);
-            headerObj.transform.SetParent(parent, false);
+            GameObject card = new GameObject("Card_" + name);
+            card.transform.SetParent(parent, false);
 
-            RectTransform rt = headerObj.AddComponent<RectTransform>();
-            rt.sizeDelta = new Vector2(240f, 22f);
+            RectTransform crt = card.AddComponent<RectTransform>();
+            crt.sizeDelta = new Vector2(0f, 0f);
 
-            Image bg = headerObj.AddComponent<Image>();
-            bg.color = new Color(0.16f, 0.18f, 0.22f, 0.95f);
+            Image bg = card.AddComponent<Image>();
+            bg.color = new Color(0.15f, 0.16f, 0.19f, 0.95f);
 
-            CreateText(headerObj.transform, title, Vector2.zero, Vector2.one, new Vector2(6f, 0f), new Vector2(-6f, 0f), 11f, FontStyles.Bold, new Color(0.2f, 0.85f, 1.0f), TextAlignmentOptions.MidlineLeft);
-
-            VerticalLayoutGroup vlg = headerObj.AddComponent<VerticalLayoutGroup>();
+            VerticalLayoutGroup vlg = card.AddComponent<VerticalLayoutGroup>();
+            vlg.padding = new RectOffset(6, 6, 6, 6);
+            vlg.spacing = 5f;
             vlg.childControlWidth = true;
-            vlg.childControlHeight = false;
+            vlg.childControlHeight = true;
             vlg.childForceExpandWidth = true;
-            vlg.spacing = 3f;
+            vlg.childForceExpandHeight = false;
 
-            ContentSizeFitter csf = headerObj.AddComponent<ContentSizeFitter>();
+            ContentSizeFitter csf = card.AddComponent<ContentSizeFitter>();
             csf.verticalFit = ContentSizeFitter.FitMode.PreferredSize;
 
-            return headerObj;
+            LayoutElement le = card.AddComponent<LayoutElement>();
+            le.flexibleWidth = 1f;
+
+            GameObject header = new GameObject("Header");
+            header.transform.SetParent(card.transform, false);
+            LayoutElement hle = header.AddComponent<LayoutElement>();
+            hle.preferredHeight = 22f;
+            hle.minHeight = 22f;
+
+            Image hbg = header.AddComponent<Image>();
+            hbg.color = new Color(0.20f, 0.22f, 0.27f, 0.95f);
+
+            CreateText(header.transform, title, Vector2.zero, Vector2.one, new Vector2(6f, 0f), new Vector2(-6f, 0f), 11f, FontStyles.Bold, new Color(0.25f, 0.85f, 1f), TextAlignmentOptions.MidlineLeft);
+
+            return card;
+        }
+
+        private static GameObject CreateRowContainer(Transform parent, string name, float height)
+        {
+            GameObject row = new GameObject(name);
+            row.transform.SetParent(parent, false);
+
+            RectTransform rt = row.AddComponent<RectTransform>();
+            rt.anchorMin = new Vector2(0f, 0f);
+            rt.anchorMax = new Vector2(1f, 0f);
+            rt.pivot = new Vector2(0.5f, 0.5f);
+            rt.sizeDelta = new Vector2(0f, height);
+
+            LayoutElement le = row.AddComponent<LayoutElement>();
+            le.preferredHeight = height;
+            le.minHeight = height;
+            le.flexibleWidth = 1f;
+
+            return row;
         }
 
         private static void CreateVector3Row(Transform parent, string label, out TMP_InputField xIn, out TMP_InputField yIn, out TMP_InputField zIn, Action<string> onChange)
         {
-            GameObject row = new GameObject("Row_" + label);
-            row.transform.SetParent(parent, false);
-
-            RectTransform rt = row.AddComponent<RectTransform>();
-            rt.sizeDelta = new Vector2(240f, 22f);
+            GameObject row = CreateRowContainer(parent, "Row_" + label, 24f);
 
             CreateText(row.transform, label, new Vector2(0f, 0.5f), new Vector2(0.22f, 0.5f), Vector2.zero, Vector2.zero, 11f, FontStyles.Normal, Color.white, TextAlignmentOptions.MidlineLeft);
 
@@ -1163,53 +1472,103 @@ namespace DeadCoreEditor
 
         private static void CreateSingleFloatRow(Transform parent, string label, out TMP_InputField valIn, Action<string> onChange)
         {
-            GameObject row = new GameObject("Row_" + label);
-            row.transform.SetParent(parent, false);
-
-            RectTransform rt = row.AddComponent<RectTransform>();
-            rt.sizeDelta = new Vector2(240f, 22f);
+            GameObject row = CreateRowContainer(parent, "Row_" + label, 24f);
 
             CreateText(row.transform, label, new Vector2(0f, 0.5f), new Vector2(0.22f, 0.5f), Vector2.zero, Vector2.zero, 11f, FontStyles.Normal, Color.white, TextAlignmentOptions.MidlineLeft);
             valIn = CreateInputField(row.transform, "Val", new Vector2(0.24f, 0f), new Vector2(0.98f, 1f), Vector2.zero, Vector2.zero, "Value", onChange);
         }
 
-        private static GameObject CreateInspectorSection(Transform parent, string title, out Slider slider, out TMP_Text valText, float minVal, float maxVal, Action<float> onSliderChanged)
+        /// <summary>
+        /// Generates a clean, fully constrained uGUI Slider with a slim background track, cyan fill, and white handle.
+        /// Zero background overflows or oversized rect bounds.
+        /// </summary>
+        private static GameObject CreateInspectorSliderRow(Transform parent, string label, out Slider slider, out TMP_Text valText, float minVal, float maxVal, Action<float> onSliderChanged)
         {
-            GameObject sec = CreateHeader(parent, title);
-            CreateInspectorSliderRow(sec.transform, "Power", out slider, out valText, minVal, maxVal, onSliderChanged);
-            return sec;
-        }
+            GameObject row = CreateRowContainer(parent, "Row_Slider_" + label, 24f);
 
-        private static void CreateInspectorSliderRow(Transform parent, string label, out Slider slider, out TMP_Text valText, float minVal, float maxVal, Action<float> onSliderChanged)
-        {
-            GameObject row = new GameObject("Row_Slider_" + label);
-            row.transform.SetParent(parent, false);
+            // Label text on the left
+            CreateText(row.transform, label, new Vector2(0f, 0f), new Vector2(0.32f, 1f), new Vector2(4f, 0f), Vector2.zero, 10f, FontStyles.Normal, Color.white, TextAlignmentOptions.MidlineLeft);
 
-            RectTransform rt = row.AddComponent<RectTransform>();
-            rt.sizeDelta = new Vector2(240f, 24f);
+            // Value text on the right
+            valText = CreateText(row.transform, "0", new Vector2(0.80f, 0f), new Vector2(1f, 1f), Vector2.zero, new Vector2(-4f, 0f), 10f, FontStyles.Bold, new Color(0.2f, 0.85f, 1f), TextAlignmentOptions.MidlineRight);
 
-            CreateText(row.transform, label, new Vector2(0f, 0.5f), new Vector2(0.28f, 0.5f), Vector2.zero, Vector2.zero, 10f, FontStyles.Normal, Color.white, TextAlignmentOptions.MidlineLeft);
-            valText = CreateText(row.transform, "0", new Vector2(0.80f, 0f), new Vector2(1f, 1f), Vector2.zero, Vector2.zero, 10f, FontStyles.Bold, Color.cyan, TextAlignmentOptions.MidlineRight);
-
+            // Slider container (33% to 78% width)
             GameObject sliderObj = new GameObject("Slider");
             sliderObj.transform.SetParent(row.transform, false);
+
             RectTransform srt = sliderObj.AddComponent<RectTransform>();
-            srt.anchorMin = new Vector2(0.30f, 0.2f);
-            srt.anchorMax = new Vector2(0.78f, 0.8f);
+            srt.anchorMin = new Vector2(0.33f, 0f);
+            srt.anchorMax = new Vector2(0.78f, 1f);
+            srt.offsetMin = new Vector2(0f, 4f);
+            srt.offsetMax = new Vector2(0f, -4f);
             srt.sizeDelta = Vector2.zero;
 
             slider = sliderObj.AddComponent<Slider>();
             slider.minValue = minVal;
             slider.maxValue = maxVal;
+            slider.direction = Slider.Direction.LeftToRight;
 
-            GameObject bg = new GameObject("Background");
-            bg.transform.SetParent(sliderObj.transform, false);
-            RectTransform bgrt = bg.AddComponent<RectTransform>();
-            bgrt.anchorMin = Vector2.zero;
-            bgrt.anchorMax = Vector2.one;
-            bg.AddComponent<Image>().color = new Color(0.08f, 0.1f, 0.14f);
+            // 1. Slim Background Track
+            GameObject trackObj = new GameObject("Track");
+            trackObj.transform.SetParent(sliderObj.transform, false);
+            RectTransform trt = trackObj.AddComponent<RectTransform>();
+            trt.anchorMin = new Vector2(0f, 0.35f);
+            trt.anchorMax = new Vector2(1f, 0.65f);
+            trt.offsetMin = Vector2.zero;
+            trt.offsetMax = Vector2.zero;
+            trt.sizeDelta = Vector2.zero;
+            Image trackImg = trackObj.AddComponent<Image>();
+            trackImg.color = new Color(0.08f, 0.09f, 0.12f, 1f);
+            trackImg.raycastTarget = false;
+
+            // 2. Fill Area
+            GameObject fillArea = new GameObject("FillArea");
+            fillArea.transform.SetParent(sliderObj.transform, false);
+            RectTransform fart = fillArea.AddComponent<RectTransform>();
+            fart.anchorMin = new Vector2(0f, 0.35f);
+            fart.anchorMax = new Vector2(1f, 0.65f);
+            fart.offsetMin = new Vector2(2f, 0f);
+            fart.offsetMax = new Vector2(-2f, 0f);
+            fart.sizeDelta = Vector2.zero;
+
+            GameObject fillObj = new GameObject("Fill");
+            fillObj.transform.SetParent(fillArea.transform, false);
+            RectTransform frt = fillObj.AddComponent<RectTransform>();
+            frt.anchorMin = Vector2.zero;
+            frt.anchorMax = Vector2.one;
+            frt.offsetMin = Vector2.zero;
+            frt.offsetMax = Vector2.zero;
+            frt.sizeDelta = Vector2.zero;
+            Image fillImg = fillObj.AddComponent<Image>();
+            fillImg.color = new Color(0.18f, 0.65f, 0.95f, 0.9f);
+            fillImg.raycastTarget = false;
+
+            // 3. Handle Knob
+            GameObject handleArea = new GameObject("HandleArea");
+            handleArea.transform.SetParent(sliderObj.transform, false);
+            RectTransform hart = handleArea.AddComponent<RectTransform>();
+            hart.anchorMin = Vector2.zero;
+            hart.anchorMax = Vector2.one;
+            hart.offsetMin = new Vector2(6f, 0f);
+            hart.offsetMax = new Vector2(-6f, 0f);
+            hart.sizeDelta = Vector2.zero;
+
+            GameObject handleObj = new GameObject("Handle");
+            handleObj.transform.SetParent(handleArea.transform, false);
+            RectTransform hrt = handleObj.AddComponent<RectTransform>();
+            hrt.anchorMin = new Vector2(0.5f, 0.5f);
+            hrt.anchorMax = new Vector2(0.5f, 0.5f);
+            hrt.sizeDelta = new Vector2(10f, 16f);
+            Image handleImg = handleObj.AddComponent<Image>();
+            handleImg.color = Color.white;
+            handleImg.raycastTarget = true;
+
+            slider.fillRect = frt;
+            slider.handleRect = hrt;
+            slider.targetGraphic = handleImg;
 
             slider.onValueChanged.AddListener((Action<float>)((v) => onSliderChanged?.Invoke(v)));
+            return row;
         }
 
         private static GameObject CreateScrollView(Transform parent, string name, Vector2 anchorMin, Vector2 anchorMax, Vector2 pos, Vector2 size, out RectTransform content)
@@ -1226,6 +1585,7 @@ namespace DeadCoreEditor
             ScrollRect sr = scrollObj.AddComponent<ScrollRect>();
             sr.horizontal = false;
             sr.vertical = true;
+            sr.scrollSensitivity = 25f;
 
             GameObject viewport = new GameObject("Viewport");
             viewport.transform.SetParent(scrollObj.transform, false);
@@ -1233,8 +1593,7 @@ namespace DeadCoreEditor
             vrt.anchorMin = Vector2.zero;
             vrt.anchorMax = Vector2.one;
             vrt.sizeDelta = Vector2.zero;
-            viewport.AddComponent<Image>().color = new Color(0.08f, 0.09f, 0.11f, 0.4f);
-            viewport.AddComponent<Mask>().showMaskGraphic = false;
+            viewport.AddComponent<RectMask2D>();
 
             GameObject cObj = new GameObject("Content");
             cObj.transform.SetParent(viewport.transform, false);
@@ -1242,12 +1601,12 @@ namespace DeadCoreEditor
             content.anchorMin = new Vector2(0f, 1f);
             content.anchorMax = new Vector2(1f, 1f);
             content.pivot = new Vector2(0.5f, 1f);
-            content.sizeDelta = new Vector2(0f, 600f);
+            content.sizeDelta = Vector2.zero;
 
             VerticalLayoutGroup vlg = cObj.AddComponent<VerticalLayoutGroup>();
-            vlg.padding = new RectOffset(3, 3, 3, 3);
+            vlg.padding = new RectOffset(4, 4, 4, 4);
             vlg.childControlWidth = true;
-            vlg.childControlHeight = false;
+            vlg.childControlHeight = true;
             vlg.childForceExpandWidth = true;
             vlg.childForceExpandHeight = false;
             vlg.spacing = 4f;
@@ -1458,7 +1817,7 @@ namespace DeadCoreEditor
             GameObject nextBtn = new GameObject("Btn_NextScene");
             nextBtn.transform.SetParent(row.transform, false);
             RectTransform nextRt = nextBtn.AddComponent<RectTransform>();
-            nextRt.anchorMin = new Vector2(0.92f, 0f);
+            nextRt.anchorMin = new Vector2(0.92f, 0.0f);
             nextRt.anchorMax = new Vector2(1.0f, 1f);
             nextRt.sizeDelta = Vector2.zero;
             nextBtn.AddComponent<Image>().color = new Color(0.1f, 0.15f, 0.25f, 0.9f);
@@ -1471,7 +1830,7 @@ namespace DeadCoreEditor
             ntrt.anchorMin = Vector2.zero; ntrt.anchorMax = Vector2.one;
             TMP_Text nt = nextTxt.AddComponent<TextMeshProUGUI>();
             if (sampleTmp != null) { nt.font = sampleTmp.font; nt.fontSharedMaterial = sampleTmp.fontSharedMaterial; }
-            nt.text = ">"; nt.fontSize = 22f; nt.alignment = TextAlignmentOptions.Center; pt.color = Color.white;
+            nt.text = ">"; nt.fontSize = 22f; nt.alignment = TextAlignmentOptions.Center; nt.color = Color.white;
         }
 
         private static void CycleStagingScene(int dir)
@@ -1778,7 +2137,6 @@ namespace DeadCoreEditor
                     img.color = (row == selectedRowObj) ? new Color(0.2f, 0.7f, 0.95f, 0.85f) : new Color(0.12f, 0.15f, 0.2f, 0.5f);
             }
 
-            // CRITICAL FIX: DeadCore's _logBigPicture is a RawImage. Assign to .texture instead of .sprite!
             if (menu._logBigPicture != null)
             {
                 Texture2D thumbTex = ThumbnailCaptureService.LoadLevelTexture(fullPath);
@@ -2503,6 +2861,7 @@ namespace DeadCoreEditor
                 return;
             }
 
+            StudioUIManager.EnsureSelectableColliders();
             EditorSessionManager.UpdateSession();
         }
 

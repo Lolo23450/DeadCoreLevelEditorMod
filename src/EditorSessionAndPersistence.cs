@@ -23,6 +23,17 @@ namespace DeadCoreEditor
     // SECTION 1: EDITOR SESSION & LIFECYCLE MANAGER
     // =========================================================================
 
+    public class ClipboardItem
+    {
+        public string AssetName;
+        public Vector3 RelativeOffset;
+        public Quaternion Rotation;
+        public float Scale;
+        public float CustomParameter;
+        public LightConfig LightCfg;
+        public ObjectMotionPath MotionPath;
+    }
+
     public static class EditorSessionManager
     {
         // Session and State Tracking
@@ -47,9 +58,13 @@ namespace DeadCoreEditor
         public static GameObject PrefabHelix = null;
         public static GameObject PrefabTurret = null;
 
-        // Active Selection & Transform Targets
+        // Active Selection & Transform Targets (Multi-Selection)
         public static GameObject SelectedObject = null;
+        public static List<GameObject> SelectedObjects = new List<GameObject>();
         public static GameObject LastPlacedObject = null;
+
+        // Clipboard System (Ctrl+C / Ctrl+V)
+        public static List<ClipboardItem> Clipboard = new List<ClipboardItem>();
 
         // Placement & Snapping Settings
         public static float ActivePlacementScale = 1.0f;
@@ -116,12 +131,12 @@ namespace DeadCoreEditor
         public static Quaternion FrozenPlayerRotation = Quaternion.identity;
         public static Vector3 LevelSpawnPosition = new Vector3(-241f, -95f, -6f);
 
-        // Visual Selection Gizmos
-        private static GameObject _selectionHighlightBox = null;
-        private static GameObject _selectionBeacon = null;
+        // Visual Selection Highlight Pool
+        private static readonly List<GameObject> _highlightBoxes = new List<GameObject>();
+        private static readonly List<GameObject> _selectionBeacons = new List<GameObject>();
 
         // =========================================================================
-        // MODE TOGGLING & SELECTION WORKFLOW
+        // MODE TOGGLING & MULTI-SELECTION WORKFLOW
         // =========================================================================
 
         public static void SetInteractionMode(EditorInteractionMode mode)
@@ -132,7 +147,7 @@ namespace DeadCoreEditor
             {
                 IsBlockSelected = false;
                 PlacementHologramController.DestroyPreview();
-                ShowNotification("Mode: [SELECT] - Click objects or use 3D Gizmo to transform");
+                ShowNotification("Mode: [SELECT] - Click objects (Ctrl to multi-select, W/E/R to transform)");
             }
             else
             {
@@ -141,7 +156,7 @@ namespace DeadCoreEditor
                 {
                     IsBlockSelected = true;
                     PlacementHologramController.SpawnHologram(CurrentAsset);
-                    ShowNotification($"Mode: [PLACEMENT] - Placing '{CurrentAsset.DisplayName}' adjacent to surfaces");
+                    ShowNotification($"Mode: [PLACEMENT] - Placing '{CurrentAsset.DisplayName}'");
                 }
                 else
                 {
@@ -152,23 +167,44 @@ namespace DeadCoreEditor
             StudioUIManager.RefreshModeDisplay();
         }
 
-        public static void SelectObject(GameObject obj)
+        public static void SelectObject(GameObject obj, bool isAdditive = false)
         {
-            SelectedObject = obj;
-
-            if (obj != null)
+            if (isAdditive)
             {
-                if (InteractionMode == EditorInteractionMode.PlacementMode)
+                if (obj != null)
                 {
-                    InteractionMode = EditorInteractionMode.SelectMode;
-                    IsBlockSelected = false;
-                    PlacementHologramController.DestroyPreview();
-                    StudioUIManager.RefreshModeDisplay();
+                    if (SelectedObjects.Contains(obj))
+                    {
+                        SelectedObjects.Remove(obj);
+                    }
+                    else
+                    {
+                        SelectedObjects.Add(obj);
+                    }
+                }
+            }
+            else
+            {
+                SelectedObjects.Clear();
+                if (obj != null)
+                {
+                    SelectedObjects.Add(obj);
                 }
             }
 
+            SelectedObject = SelectedObjects.Count > 0 ? SelectedObjects[SelectedObjects.Count - 1] : null;
+
+            if (SelectedObject != null && InteractionMode == EditorInteractionMode.PlacementMode)
+            {
+                InteractionMode = EditorInteractionMode.SelectMode;
+                IsBlockSelected = false;
+                PlacementHologramController.DestroyPreview();
+                StudioUIManager.RefreshModeDisplay();
+            }
+
             UpdateSelectionHighlight();
-            StudioUIManager.NotifyObjectSelected(obj);
+            StudioUIManager.NotifyObjectSelected(SelectedObject);
+            StudioUIManager.RefreshHierarchy();
         }
 
         public static void EquipAsset(CatalogAsset asset)
@@ -178,64 +214,234 @@ namespace DeadCoreEditor
             ActivePlacementScale = asset.DefaultScale;
             SetInteractionMode(EditorInteractionMode.PlacementMode);
             PlacementHologramController.SpawnHologram(asset);
-            ShowNotification($"Equipped: {asset.DisplayName}");
+            ShowNotification($"Equipped: {asset.DisplayName} (Scale: {ActivePlacementScale:F2}x)");
         }
 
         public static void UpdateSelectionHighlight()
         {
-            if (SelectedObject == null || !IsEditModeActive || !SelectedObject.activeSelf || InteractionMode != EditorInteractionMode.SelectMode)
+            CleanHighlightPool();
+
+            if (SelectedObjects.Count == 0 || !IsEditModeActive || InteractionMode != EditorInteractionMode.SelectMode)
             {
-                if (_selectionHighlightBox != null) _selectionHighlightBox.SetActive(false);
-                if (_selectionBeacon != null) _selectionBeacon.SetActive(false);
                 return;
             }
 
-            if (_selectionHighlightBox == null)
+            Material highlightMat = GetHighlightMaterial();
+
+            for (int i = 0; i < SelectedObjects.Count; i++)
             {
-                _selectionHighlightBox = GameObject.CreatePrimitive(PrimitiveType.Cube);
-                _selectionHighlightBox.name = "Studio_Selection_Highlight_Wire";
-                _selectionHighlightBox.layer = 2;
-                Collider c = _selectionHighlightBox.GetComponent<Collider>();
+                GameObject obj = SelectedObjects[i];
+                if (obj == null || !obj.activeSelf) continue;
+
+                GameObject box = GameObject.CreatePrimitive(PrimitiveType.Cube);
+                box.name = "Studio_Selection_Highlight_Wire";
+                box.layer = 2;
+                Collider c = box.GetComponent<Collider>();
                 if (c != null) GameObject.DestroyImmediate(c);
+                if (highlightMat != null) box.GetComponent<Renderer>().material = highlightMat;
 
-                Shader s = Shader.Find("Unlit/Color") ?? Shader.Find("Particles/Standard Unlit");
-                if (s != null)
-                {
-                    Material mat = new Material(s);
-                    mat.color = new Color(0.1f, 0.8f, 1f, 0.35f);
-                    _selectionHighlightBox.GetComponent<Renderer>().material = mat;
-                }
-
-                _selectionBeacon = GameObject.CreatePrimitive(PrimitiveType.Sphere);
-                _selectionBeacon.name = "Studio_Selection_Apex_Beacon";
-                _selectionBeacon.layer = 2;
-                Collider bc = _selectionBeacon.GetComponent<Collider>();
+                GameObject beacon = GameObject.CreatePrimitive(PrimitiveType.Sphere);
+                beacon.name = "Studio_Selection_Apex_Beacon";
+                beacon.layer = 2;
+                Collider bc = beacon.GetComponent<Collider>();
                 if (bc != null) GameObject.DestroyImmediate(bc);
-                if (s != null)
-                {
-                    Material bMat = new Material(s);
-                    bMat.color = new Color(1f, 0.85f, 0.1f, 0.95f);
-                    _selectionBeacon.GetComponent<Renderer>().material = bMat;
-                }
+                if (highlightMat != null) beacon.GetComponent<Renderer>().material = highlightMat;
+
+                Bounds b = PlacementHologramController.CalculateOptimizedProxyBounds(obj);
+                Vector3 worldCenter = obj.transform.TransformPoint(b.center);
+
+                box.transform.position = worldCenter;
+                box.transform.rotation = obj.transform.rotation;
+                box.transform.localScale = Vector3.Scale(b.size * 1.04f, obj.transform.lossyScale);
+
+                beacon.transform.position = worldCenter + Vector3.up * (b.extents.y * obj.transform.lossyScale.y + 0.6f);
+                beacon.transform.localScale = Vector3.one * 0.35f;
+
+                _highlightBoxes.Add(box);
+                _selectionBeacons.Add(beacon);
             }
+        }
 
-            _selectionHighlightBox.SetActive(true);
-            _selectionBeacon.SetActive(true);
+        private static Material _cachedHighlightMat = null;
+        private static Material GetHighlightMaterial()
+        {
+            if (_cachedHighlightMat == null)
+            {
+                Shader s = Shader.Find("Unlit/Color") ?? Shader.Find("Particles/Standard Unlit") ?? Shader.Find("Sprites/Default");
+                _cachedHighlightMat = new Material(s);
+                _cachedHighlightMat.color = new Color(0.1f, 0.85f, 1f, 0.45f);
+            }
+            return _cachedHighlightMat;
+        }
 
-            Bounds b = PlacementHologramController.CalculateOptimizedProxyBounds(SelectedObject);
-            Vector3 worldCenter = SelectedObject.transform.TransformPoint(b.center);
+        private static void CleanHighlightPool()
+        {
+            for (int i = 0; i < _highlightBoxes.Count; i++)
+            {
+                if (_highlightBoxes[i] != null) GameObject.Destroy(_highlightBoxes[i]);
+            }
+            _highlightBoxes.Clear();
 
-            _selectionHighlightBox.transform.position = worldCenter;
-            _selectionHighlightBox.transform.rotation = SelectedObject.transform.rotation;
-            _selectionHighlightBox.transform.localScale = Vector3.Scale(b.size * 1.05f, SelectedObject.transform.lossyScale);
-
-            _selectionBeacon.transform.position = worldCenter + Vector3.up * (b.extents.y * SelectedObject.transform.lossyScale.y + 0.85f);
-            _selectionBeacon.transform.localScale = Vector3.one * 0.45f;
+            for (int i = 0; i < _selectionBeacons.Count; i++)
+            {
+                if (_selectionBeacons[i] != null) GameObject.Destroy(_selectionBeacons[i]);
+            }
+            _selectionBeacons.Clear();
         }
 
         public static void ShowNotification(string msg)
         {
             StudioUIManager.SetNotificationText(msg);
+        }
+
+        // =========================================================================
+        // COPY, PASTE & DELETE WORKFLOW
+        // =========================================================================
+
+        public static void CopySelectedObjects()
+        {
+            if (SelectedObjects.Count == 0)
+            {
+                ShowNotification("Nothing selected to copy.");
+                return;
+            }
+
+            Clipboard.Clear();
+            Vector3 groupCenter = StudioGizmoController.GetObjectCenter(SelectedObject);
+
+            for (int i = 0; i < SelectedObjects.Count; i++)
+            {
+                GameObject obj = SelectedObjects[i];
+                if (obj == null) continue;
+
+                float param = 0f;
+                if (JumperForces.ContainsKey(obj)) param = JumperForces[obj];
+                else if (TurbineSpeeds.ContainsKey(obj)) param = TurbineSpeeds[obj];
+                else if (TurretFireDelays.ContainsKey(obj)) param = TurretFireDelays[obj];
+                else if (LaserRotationSpeeds.ContainsKey(obj)) param = LaserRotationSpeeds[obj];
+
+                LightConfig lCfg = PlacedLights.ContainsKey(obj) ? PlacedLights[obj].Clone() : null;
+                ObjectMotionPath mPath = MotionPaths.ContainsKey(obj) ? MotionPaths[obj].Clone() : null;
+
+                string rawName = obj.name.StartsWith("Custom_") ? obj.name.Substring(7) : obj.name;
+
+                Clipboard.Add(new ClipboardItem
+                {
+                    AssetName = rawName,
+                    RelativeOffset = obj.transform.position - groupCenter,
+                    Rotation = obj.transform.rotation,
+                    Scale = obj.transform.localScale.x,
+                    CustomParameter = param,
+                    LightCfg = lCfg,
+                    MotionPath = mPath
+                });
+            }
+
+            ShowNotification($"Copied {Clipboard.Count} object(s) [Ctrl+C]");
+        }
+
+        public static void PasteClipboardObjects()
+        {
+            if (Clipboard.Count == 0)
+            {
+                ShowNotification("Clipboard is empty. Press Ctrl+C to copy objects.");
+                return;
+            }
+
+            Vector3 pasteOrigin;
+            if (InteractionMode == EditorInteractionMode.PlacementMode)
+            {
+                pasteOrigin = PlacementHologramController.TargetPosition;
+            }
+            else
+            {
+                // Paste slightly offset from camera or current selection
+                Vector3 basePos = (SelectedObject != null) ? SelectedObject.transform.position : LevelSpawnPosition;
+                pasteOrigin = basePos + new Vector3(2.5f, 0f, 2.5f);
+            }
+
+            SelectedObjects.Clear();
+
+            for (int i = 0; i < Clipboard.Count; i++)
+            {
+                ClipboardItem item = Clipboard[i];
+                Vector3 spawnPos = pasteOrigin + item.RelativeOffset;
+
+                GameObject pasted = SpawnAssetByName(item.AssetName, spawnPos, item.Scale, item.Rotation);
+                if (pasted != null)
+                {
+                    string low = item.AssetName.ToLower();
+                    if (item.CustomParameter > 0f)
+                    {
+                        if (low.Contains("jumper")) ApplyJumperForce(pasted, item.CustomParameter);
+                        else if (low.Contains("helix")) ApplyTurbineSpeed(pasted, item.CustomParameter);
+                        else if (low.Contains("turret")) ApplyTurretSettings(pasted, item.CustomParameter);
+                    }
+                    if (low.Contains("rotating") && item.CustomParameter != 0f)
+                    {
+                        LaserRotationSpeeds[pasted] = item.CustomParameter;
+                    }
+                    if (item.LightCfg != null)
+                    {
+                        ApplyLightConfig(pasted, item.LightCfg);
+                    }
+                    if (item.MotionPath != null)
+                    {
+                        Vector3 delta = spawnPos - item.MotionPath.PointA;
+                        MotionPaths[pasted] = new ObjectMotionPath
+                        {
+                            PointA = spawnPos,
+                            PointB = item.MotionPath.PointB + delta,
+                            Speed = item.MotionPath.Speed
+                        };
+                    }
+
+                    RegisterPlacedObject(pasted);
+                    SelectedObjects.Add(pasted);
+
+                    UndoHistory.Push(new HistoryRecord
+                    {
+                        ActionType = HistoryActionType.Placement,
+                        TargetObject = pasted,
+                        AssetName = item.AssetName,
+                        Position = spawnPos,
+                        Rotation = item.Rotation,
+                        Scale = item.Scale,
+                        CustomParameter = item.CustomParameter
+                    });
+                }
+            }
+
+            RedoHistory.Clear();
+            SelectedObject = SelectedObjects.Count > 0 ? SelectedObjects[SelectedObjects.Count - 1] : null;
+
+            UpdateSelectionHighlight();
+            StudioUIManager.NotifyObjectSelected(SelectedObject);
+            StudioUIManager.RefreshHierarchy();
+
+            ShowNotification($"Pasted {SelectedObjects.Count} object(s) [Ctrl+V]");
+        }
+
+        public static void DeleteSelectedObjects()
+        {
+            if (SelectedObjects.Count == 0) return;
+
+            var toDelete = new List<GameObject>(SelectedObjects);
+            for (int i = 0; i < toDelete.Count; i++)
+            {
+                if (toDelete[i] != null)
+                {
+                    DeleteSpecifiedObject(toDelete[i]);
+                }
+            }
+
+            SelectedObjects.Clear();
+            SelectedObject = null;
+            UpdateSelectionHighlight();
+            StudioUIManager.NotifyObjectSelected(null);
+            StudioUIManager.RefreshHierarchy();
+
+            ShowNotification($"Deleted {toDelete.Count} object(s) [Supr]");
         }
 
         // =========================================================================
@@ -276,8 +482,7 @@ namespace DeadCoreEditor
                 PlacementHologramController.DestroyPreview();
                 StudioGizmoController.DestroyGizmo();
 
-                if (_selectionHighlightBox != null) _selectionHighlightBox.SetActive(false);
-                if (_selectionBeacon != null) _selectionBeacon.SetActive(false);
+                CleanHighlightPool();
 
                 StudioUIManager.SetUIVisible(false);
 
@@ -294,9 +499,6 @@ namespace DeadCoreEditor
             }
         }
 
-        /// <summary>
-        /// Fully cleans up and resets the session when returning to menus or unloading scenes.
-        /// </summary>
         public static void ResetSession()
         {
             IsCustomSessionActive = false;
@@ -322,6 +524,8 @@ namespace DeadCoreEditor
             CurrentAsset = null;
             IsBlockSelected = false;
             SelectedObject = null;
+            SelectedObjects.Clear();
+            Clipboard.Clear();
 
             PrefabJumper = null;
             PrefabCheckPoint = null;
@@ -329,17 +533,7 @@ namespace DeadCoreEditor
             PrefabTurret = null;
 
             ClearAllPlacedObjects();
-
-            if (_selectionHighlightBox != null)
-            {
-                GameObject.Destroy(_selectionHighlightBox);
-                _selectionHighlightBox = null;
-            }
-            if (_selectionBeacon != null)
-            {
-                GameObject.Destroy(_selectionBeacon);
-                _selectionBeacon = null;
-            }
+            CleanHighlightPool();
 
             _lightRefreshTimer = 0f;
             TargetPitch = 0f;
@@ -420,45 +614,49 @@ namespace DeadCoreEditor
             else
             {
                 FreezePlayerEntity(player, cc);
-
                 EditorViewportCamera.UpdateCamera();
+
+                bool isCtrl = Input.GetKey(KeyCode.LeftControl) || Input.GetKey(KeyCode.RightControl);
 
                 if (InteractionMode == EditorInteractionMode.PlacementMode)
                 {
                     PlacementHologramController.UpdatePlacement();
+                    StudioGizmoController.UpdateGizmo();
                 }
                 else
                 {
                     StudioGizmoController.UpdateGizmo();
 
-                    // Viewport click selection in Select Mode
+                    // Viewport Click Selection (Ctrl toggles multi-selection)
                     if (Input.GetMouseButtonDown(0) && !Input.GetMouseButton(1) && !StudioUIManager.IsPointerOverUI())
                     {
                         if (!StudioGizmoController.IsHoveringHandle)
                         {
                             GameObject aimed = GetAimedPlacedObject();
-                            SelectObject(aimed);
+                            SelectObject(aimed, isAdditive: isCtrl);
                         }
                     }
                 }
 
-                UpdateSelectionHighlight();
-
-                // Delete key removes current selection
-                if (Input.GetKeyDown(KeyCode.Delete))
+                // Delete selected objects using "Spr" (Supr / Delete / Backspace)
+                bool isDeleteKey = Input.GetKeyDown(KeyCode.Delete) || Input.GetKeyDown(KeyCode.Backspace);
+                if (isDeleteKey && GUIUtility.keyboardControl == 0 && !StudioUIManager.IsPointerOverUI())
                 {
-                    if (SelectedObject != null)
-                    {
-                        DeleteSpecifiedObject(SelectedObject);
-                        SelectObject(null);
-                    }
+                    DeleteSelectedObjects();
                 }
 
-                // Undo / Redo key combinations
-                bool isCtrl = Input.GetKey(KeyCode.LeftControl) || Input.GetKey(KeyCode.RightControl);
-                if (isCtrl)
+                // Copy (Ctrl + C) and Paste (Ctrl + V)
+                if (isCtrl && GUIUtility.keyboardControl == 0)
                 {
-                    if (Input.GetKeyDown(KeyCode.Z))
+                    if (Input.GetKeyDown(KeyCode.C))
+                    {
+                        CopySelectedObjects();
+                    }
+                    else if (Input.GetKeyDown(KeyCode.V))
+                    {
+                        PasteClipboardObjects();
+                    }
+                    else if (Input.GetKeyDown(KeyCode.Z))
                     {
                         if (Input.GetKey(KeyCode.LeftShift)) PerformRedo();
                         else PerformUndo();
@@ -470,7 +668,7 @@ namespace DeadCoreEditor
                 }
             }
 
-            // Function Key Shortcuts
+            // Shortcuts
             if (Input.GetKeyDown(KeyCode.F1)) ToggleEditMode();
             if (Input.GetKeyDown(KeyCode.F4)) SceneHarvestingService.DebugDumpSceneLighting();
             if (Input.GetKeyDown(KeyCode.F5)) LevelPersistenceService.SaveLevel(MapBrowserService.SelectedMapName);
@@ -537,7 +735,7 @@ namespace DeadCoreEditor
             bool isLight = asset.IsSpotlight || asset.IsSunlight;
             bool isHelix = asset.IsHelix;
 
-            // Configure colliders: solid geometry for platforms vs triggers for hazards/wind
+            // Configure colliders: solid geometry for platforms vs triggers for hazards/wind/gates
             Collider[] existingCols = obj.GetComponentsInChildren<Collider>(true);
             bool hasSolidCollider = false;
 
@@ -548,30 +746,40 @@ namespace DeadCoreEditor
 
                 c.enabled = true;
 
-                if (isHazard || isGate)
+                if (isHazard || isLight)
                 {
-                    // Lasers and Checkpoint Gates must ALWAYS be triggers so players pass into them!
+                    c.isTrigger = true;
+                }
+                else if (isGate)
+                {
+                    // CHECKPOINTS & GATES: NEVER HAVE BLOCKING COLLISION
+                    // Turn all gate/arch/pillar colliders into triggers so the player walks straight through
                     c.isTrigger = true;
                 }
                 else if (isHelix)
                 {
-                    // Wind pushing zones and turbine interiors must be triggers so the player can fly through the wind stream
-                    c.isTrigger = true;
-                }
-                else if (isLight)
-                {
-                    // Lights are non-blocking visual fixtures
-                    c.isTrigger = true;
+                    // HELIX FIX: Only the wind pushing zone is a trigger!
+                    // The switch target and housing remain solid non-triggers so player gun shots hit and deactivate the turbine
+                    HelixPushingZone zone = c.GetComponent<HelixPushingZone>() ?? c.GetComponentInParent<HelixPushingZone>();
+                    string cName = c.gameObject.name.ToLower();
+                    if (zone != null || cName.Contains("zone") || cName.Contains("push") || cName.Contains("vent") || cName.Contains("wind"))
+                    {
+                        c.isTrigger = true;
+                    }
+                    else
+                    {
+                        c.isTrigger = false;
+                        hasSolidCollider = true;
+                    }
                 }
                 else
                 {
-                    // Standard building blocks (platforms, walls, pillars, crates) must be solid!
+                    // Standard building blocks (platforms, walls, pillars) must be solid
                     c.isTrigger = false;
                     hasSolidCollider = true;
                 }
             }
 
-            // Fallback generation: ONLY generate solid Mesh/Box colliders for standard building blocks
             if (!hasSolidCollider && !isHazard && !isGate && !isLight && !isHelix && !asset.IsTurret)
             {
                 MeshFilter[] mfs = obj.GetComponentsInChildren<MeshFilter>(true);
@@ -599,7 +807,6 @@ namespace DeadCoreEditor
                 }
             }
 
-            // Gates & Spawnpoints setup
             if (asset.IsSpawnGate)
             {
                 obj.name = "Custom_Spawn_Gate";
@@ -632,7 +839,6 @@ namespace DeadCoreEditor
                 }
             }
 
-            // Lighting setup
             if (asset.IsSunlight)
             {
                 obj.name = "Custom_Global_Sunlight";
@@ -660,17 +866,6 @@ namespace DeadCoreEditor
                     ApplyLightConfig(obj, PlacedLights[obj]);
                 }
             }
-            else if (asset.IsRotatingLaser)
-            {
-                obj.name = "Custom_Rotating_Laser_Barrier";
-            }
-            else if (asset.IsLaser)
-            {
-                if (asset.DisplayName.ToLower().Contains("long"))
-                    obj.name = "Custom_Long_Laser_Barrier";
-                else
-                    obj.name = "Custom_Laser_Barrier";
-            }
 
             if (asset.IsHelix) ApplyTurbineSpeed(obj, ActiveTurbineSpeed);
             if (asset.IsTurret) ApplyTurretSettings(obj, ActiveTurretFireDelay, 1500f);
@@ -692,7 +887,7 @@ namespace DeadCoreEditor
             proxyObj.transform.localPosition = Vector3.zero;
             proxyObj.transform.localRotation = Quaternion.identity;
             proxyObj.transform.localScale = Vector3.one;
-            proxyObj.layer = 2; // Layer 2 = Ignore Raycast during hover calculations
+            proxyObj.layer = 2;
 
             Bounds proxyB = PlacementHologramController.CalculateOptimizedProxyBounds(obj);
             BoxCollider bc = proxyObj.AddComponent<BoxCollider>();
@@ -809,6 +1004,7 @@ namespace DeadCoreEditor
             PlacedObjects.Remove(target);
             PlacedObjectTypes.Remove(target);
             PlacedParentChildCounts.Remove(target);
+            SelectedObjects.Remove(target);
 
             if (target.transform.parent != null)
                 RecalculateParentChildCount(target.transform.parent.gameObject);
@@ -818,7 +1014,7 @@ namespace DeadCoreEditor
             if (PathEditTarget == target) PathEditTarget = null;
             if (ParentingChildTarget == target) ParentingChildTarget = null;
             if (RepositionTarget == target) RepositionTarget = null;
-            if (SelectedObject == target) SelectObject(null);
+            if (SelectedObject == target) SelectedObject = SelectedObjects.Count > 0 ? SelectedObjects[SelectedObjects.Count - 1] : null;
 
             PlacedJumpers.Remove(target);
             PlacedTurbines.Remove(target);
@@ -867,10 +1063,6 @@ namespace DeadCoreEditor
                 RedoHistory.Clear();
 
                 if (LastPlacedObject == target) LastPlacedObject = null;
-                if (SelectedObject == target) SelectObject(null);
-
-                ShowNotification($"Deleted '{target.name}'");
-                StudioUIManager.RefreshHierarchy();
             }
         }
 
@@ -886,7 +1078,8 @@ namespace DeadCoreEditor
             PlacedLights.Clear();
             RepositionTarget = null;
             LastPlacedObject = null;
-            SelectObject(null);
+            SelectedObjects.Clear();
+            SelectedObject = null;
 
             PlacedJumpers.Clear();
             PlacedTurbines.Clear();
@@ -938,7 +1131,7 @@ namespace DeadCoreEditor
         }
 
         // =========================================================================
-        // MULTI-LEVEL UNDO & REDO ENGINE
+        // UNDO / REDO ENGINE
         // =========================================================================
 
         public static void PerformUndo()
@@ -1032,7 +1225,7 @@ namespace DeadCoreEditor
         }
 
         // =========================================================================
-        // PHYSICS, PARTICLES, LIGHTS & HAZARDS APPLIERS
+        // COMPONENT SETTINGS APPLIERS
         // =========================================================================
 
         public static void ApplyJumperForce(GameObject jumperObj, float force)
@@ -1859,11 +2052,9 @@ namespace DeadCoreEditor
             }
 
             File.WriteAllLines(path, lines.ToArray());
-
-            // Automated 3/4 semi-overhead diagonal thumbnail capture on save
             ThumbnailCaptureService.CaptureLevelThumbnail(path, EditorSessionManager.PlacedObjects, EditorSessionManager.LevelSpawnPosition);
 
-            EditorSessionManager.ShowNotification($"Saved {lines.Count - 5} objects & 3D thumbnail to {cleanName}.txt!");
+            EditorSessionManager.ShowNotification($"Saved {lines.Count - 5} objects to {cleanName}.txt!");
             MelonLogger.Msg($">> Saved {lines.Count - 5} objects to {path}!");
 
             MapBrowserService.SelectedMapPath = path;
@@ -2034,10 +2225,6 @@ namespace DeadCoreEditor
         {
             AvailableStagingScenes.Clear();
             AvailableStagingScenes.Add("level01_Spark01");
-
-            MelonLogger.Msg("==================================================");
-            MelonLogger.Msg($"[Scene Scanner] Active staging environment: '{AvailableStagingScenes[0]}'");
-            MelonLogger.Msg("==================================================");
         }
 
         public static void EnsureDirectories()
@@ -2081,10 +2268,6 @@ namespace DeadCoreEditor
             if (!string.IsNullOrEmpty(requested) && AvailableStagingScenes.Contains(requested))
             {
                 targetScene = requested;
-            }
-            else if (!string.IsNullOrEmpty(requested) && requested != "level01_Spark01")
-            {
-                MelonLogger.Warning($">> [Map Browser] Scene '{requested}' is not a verified level bundle. Safely falling back to 'level01_Spark01'.");
             }
 
             MelonLogger.Msg($">> [Map Browser] Launching: '{SelectedMapName}' via Scene: ['{targetScene}']");
