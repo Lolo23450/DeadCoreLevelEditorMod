@@ -3,6 +3,8 @@ using System.Collections.Generic;
 using MelonLoader;
 using UnityEngine;
 using UnityEngine.EventSystems;
+using Il2Cpp;
+using Il2CppDeadCore;
 
 namespace DeadCoreEditor
 {
@@ -70,6 +72,12 @@ namespace DeadCoreEditor
             {
                 ViewportCamera.cullingMask = ~0; // Render ALL layers
                 ViewportCamera.enabled = true;
+
+                // Clear any target texture copied from native post-process cameras
+                if (ViewportCamera.targetTexture != null)
+                {
+                    ViewportCamera.targetTexture = null;
+                }
 
                 // Disable any other cameras in scene that might draw over the viewport
                 Camera[] cams = Camera.allCameras;
@@ -231,36 +239,23 @@ namespace DeadCoreEditor
 
         public static Bounds CalculateOptimizedProxyBounds(GameObject go)
         {
-            Bounds raw = new Bounds(Vector3.zero, Vector3.zero);
-            bool hasBounds = false;
-
-            MeshFilter[] mfs = go.GetComponentsInChildren<MeshFilter>(true);
-            foreach (var mf in mfs)
+            Renderer[] rends = go.GetComponentsInChildren<Renderer>(true);
+            if (rends.Length > 0)
             {
-                if (mf.sharedMesh != null)
+                Bounds worldB = rends[0].bounds;
+                for (int i = 1; i < rends.Length; i++)
                 {
-                    Bounds meshB = mf.sharedMesh.bounds;
-                    Vector3 localPos = go.transform.InverseTransformPoint(mf.transform.position);
-                    Bounds transformedB = new Bounds(localPos + meshB.center, meshB.size);
-
-                    if (!hasBounds)
+                    if (rends[i] != null && !rends[i].gameObject.name.Contains("Proxy"))
                     {
-                        raw = transformedB;
-                        hasBounds = true;
-                    }
-                    else
-                    {
-                        raw.Encapsulate(transformedB);
+                        worldB.Encapsulate(rends[i].bounds);
                     }
                 }
+                Vector3 localCenter = go.transform.InverseTransformPoint(worldB.center);
+                Vector3 localSize = go.transform.InverseTransformVector(worldB.size);
+                return new Bounds(localCenter, new Vector3(Mathf.Abs(localSize.x), Mathf.Abs(localSize.y), Mathf.Abs(localSize.z)));
             }
 
-            if (!hasBounds)
-            {
-                raw = new Bounds(Vector3.zero, new Vector3(2f, 2f, 2f));
-            }
-
-            return raw;
+            return new Bounds(Vector3.zero, new Vector3(2f, 2f, 2f));
         }
 
         public static Vector3 SnapNormalToDiscreteAngles(Vector3 rawNormal)
@@ -541,7 +536,7 @@ namespace DeadCoreEditor
 
     /// <summary>
     /// Renders and manages interactive 3D handles for Move, Rotate, and Scale in Select Mode.
-    /// Handles are centered on object bounds and scaled proportionally by distance, model extents, and scale multiplier.
+    /// Uses native scene shaders to guarantee rendering and automatically surfaces above platforms.
     /// </summary>
     public static class StudioGizmoController
     {
@@ -584,92 +579,136 @@ namespace DeadCoreEditor
         private static Vector3 _dragStartObjScale = Vector3.one;
         private static Vector3 _dragStartMousePos = Vector3.zero;
 
-        private static readonly Color ColorX = new Color(0.96f, 0.20f, 0.20f, 1f);
-        private static readonly Color ColorY = new Color(0.20f, 0.96f, 0.35f, 1f);
-        private static readonly Color ColorZ = new Color(0.20f, 0.55f, 1.0f, 1f);
-        private static readonly Color ColorHover = new Color(1.0f, 0.95f, 0.20f, 1f);
-
-        private static Shader _cachedGizmoShader = null;
+        private static readonly Color ColorX = new Color(1.0f, 0.15f, 0.15f, 1f);
+        private static readonly Color ColorY = new Color(0.15f, 1.0f, 0.25f, 1f);
+        private static readonly Color ColorZ = new Color(0.15f, 0.55f, 1.0f, 1f);
+        private static readonly Color ColorHover = new Color(1.0f, 0.95f, 0.1f, 1f);
 
         /// <summary>
-        /// Calculates the accurate geometric center of the target GameObject using its mesh hierarchy.
+        /// Retrieves the exact world-space bounding box of the target hierarchy using active renderers.
+        /// </summary>
+        public static Bounds GetObjectWorldBounds(GameObject obj)
+        {
+            if (obj == null) return new Bounds(Vector3.zero, Vector3.one);
+
+            Renderer[] rends = obj.GetComponentsInChildren<Renderer>(true);
+            Bounds b = new Bounds(Vector3.zero, Vector3.zero);
+            bool hasBounds = false;
+
+            for (int i = 0; i < rends.Length; i++)
+            {
+                Renderer r = rends[i];
+                if (r == null || !r.enabled) continue;
+                string n = r.gameObject.name;
+                if (n.Contains("Proxy") || n.Contains("Highlight") || n.Contains("Beacon") || n.Contains("Gizmo")) continue;
+
+                if (!hasBounds)
+                {
+                    b = r.bounds;
+                    hasBounds = true;
+                }
+                else
+                {
+                    b.Encapsulate(r.bounds);
+                }
+            }
+
+            if (!hasBounds)
+            {
+                b = new Bounds(obj.transform.position, Vector3.one * 2f);
+            }
+
+            return b;
+        }
+
+        /// <summary>
+        /// Calculates the accurate geometric center of the target GameObject in world space,
+        /// surfacing slightly above flat platforms so X and Z handles are never buried in slabs.
         /// </summary>
         public static Vector3 GetObjectCenter(GameObject obj)
         {
             if (obj == null) return Vector3.zero;
-            Bounds b = PlacementHologramController.CalculateOptimizedProxyBounds(obj);
-            return obj.transform.TransformPoint(b.center);
+
+            Bounds b = GetObjectWorldBounds(obj);
+            Vector3 center = b.center;
+
+            // If object is flat (like a floor slab), surface handles slightly above top face
+            if (b.size.y < 3.0f && (b.size.x > 4.0f || b.size.z > 4.0f))
+            {
+                center.y = b.max.y + 0.2f;
+            }
+
+            return center;
         }
 
         /// <summary>
-        /// Finds a reliable unlit shader present in the DeadCore engine build.
-        /// </summary>
-        private static Shader FindReliableShader()
-        {
-            if (_cachedGizmoShader != null) return _cachedGizmoShader;
-
-            string[] candidates = new string[]
-            {
-                "Hidden/Internal-Colored",
-                "GUI/Text Shader",
-                "Unlit/Color",
-                "Sprites/Default",
-                "UI/Default",
-                "Legacy Shaders/Diffuse",
-                "Standard",
-                "Diffuse"
-            };
-
-            for (int i = 0; i < candidates.Length; i++)
-            {
-                Shader s = Shader.Find(candidates[i]);
-                if (s != null)
-                {
-                    _cachedGizmoShader = s;
-                    return s;
-                }
-            }
-
-            // Fallback: borrow from any loaded material in memory
-            Material[] mats = Resources.FindObjectsOfTypeAll<Material>();
-            for (int i = 0; i < mats.Length; i++)
-            {
-                if (mats[i] != null && mats[i].shader != null && !mats[i].shader.name.ToLower().Contains("error"))
-                {
-                    _cachedGizmoShader = mats[i].shader;
-                    return _cachedGizmoShader;
-                }
-            }
-
-            return null;
-        }
-
-        /// <summary>
-        /// Generates a solid, opaque material that renders on top of scene geometry with no alpha drops.
+        /// Clones an active material from the scene (e.g. laser hazard or scene geometry)
+        /// to guarantee the shader is compiled, unlit, and rendering in DeadCore's pipeline.
         /// </summary>
         private static Material CreateGizmoMaterial(Color col)
         {
-            Shader s = FindReliableShader();
-            Material m = (s != null) ? new Material(s) : new Material(Shader.Find("Sprites/Default"));
+            Material template = null;
+
+            try
+            {
+                // 1. Try LaserManager material (unlit, glowing, emissive, highly visible)
+                LaserManager lm = GameObject.FindObjectOfType<LaserManager>();
+                if (lm != null && lm._sharedMaterial != null)
+                {
+                    template = lm._sharedMaterial;
+                }
+            }
+            catch { }
+
+            // 2. Try harvested scene geometry material
+            if (template == null && EditorSessionManager.CachedSceneMaterial != null)
+            {
+                template = EditorSessionManager.CachedSceneMaterial;
+            }
+
+            // 3. Fallback: borrow from any active MeshRenderer in the scene
+            if (template == null)
+            {
+                MeshRenderer[] rends = GameObject.FindObjectsOfType<MeshRenderer>();
+                for (int i = 0; i < rends.Length; i++)
+                {
+                    if (rends[i] != null && rends[i].sharedMaterial != null)
+                    {
+                        template = rends[i].sharedMaterial;
+                        break;
+                    }
+                }
+            }
+
+            Material m;
+            if (template != null)
+            {
+                m = new Material(template);
+            }
+            else
+            {
+                Shader s = Shader.Find("Diffuse") ?? Shader.Find("Standard") ?? Shader.Find("Sprites/Default");
+                m = new Material(s);
+            }
+
             m.name = $"Gizmo_Mat_{col.r:F2}_{col.g:F2}_{col.b:F2}";
 
-            // CRITICAL FIX: Ensure _MainTex has a solid white texture so sprite/UI shaders don't sample 0-alpha
+            // Ensure solid white texture so shaders that multiply by _MainTex don't sample 0-alpha
             m.mainTexture = Texture2D.whiteTexture;
             if (m.HasProperty("_MainTex")) m.SetTexture("_MainTex", Texture2D.whiteTexture);
 
             m.color = col;
             if (m.HasProperty("_Color")) m.SetColor("_Color", col);
             if (m.HasProperty("_TintColor")) m.SetColor("_TintColor", col);
-            if (m.HasProperty("_EmissionColor")) m.SetColor("_EmissionColor", col);
 
-            // Overlay rendering queue & ZTest Always ensures handles are never hidden inside blocks
-            m.renderQueue = 5000;
-            try
+            // Enable emission so handles glow vibrantly even in unlit/dark environments
+            if (m.HasProperty("_EmissionColor"))
             {
-                m.SetInt("_ZTest", (int)UnityEngine.Rendering.CompareFunction.Always);
+                m.SetColor("_EmissionColor", col * 2.2f);
+                m.EnableKeyword("_EMISSION");
             }
-            catch { }
 
+            m.renderQueue = 5000; // Overlay Queue
             return m;
         }
 
@@ -678,6 +717,26 @@ namespace DeadCoreEditor
         /// </summary>
         public static void UpdateGizmo()
         {
+            // Auto-select starting/placed platform if entering edit mode with nothing selected
+            if (EditorSessionManager.SelectedObject == null && EditorSessionManager.PlacedObjects.Count > 0)
+            {
+                if (EditorSessionManager.LastPlacedObject != null && EditorSessionManager.LastPlacedObject.activeSelf)
+                {
+                    EditorSessionManager.SelectObject(EditorSessionManager.LastPlacedObject);
+                }
+                else
+                {
+                    for (int i = 0; i < EditorSessionManager.PlacedObjects.Count; i++)
+                    {
+                        if (EditorSessionManager.PlacedObjects[i] != null && EditorSessionManager.PlacedObjects[i].activeSelf)
+                        {
+                            EditorSessionManager.SelectObject(EditorSessionManager.PlacedObjects[i]);
+                            break;
+                        }
+                    }
+                }
+            }
+
             if (EditorSessionManager.SelectedObject == null ||
                 !EditorSessionManager.IsEditModeActive ||
                 !EditorSessionManager.SelectedObject.activeSelf ||
@@ -698,7 +757,7 @@ namespace DeadCoreEditor
 
             GameObject target = EditorSessionManager.SelectedObject;
 
-            // CENTER GIZMO ON OBJECT'S GEOMETRIC BOUNDS
+            // CENTER GIZMO ON OBJECT'S VISUAL BOUNDS
             Vector3 centerPos = GetObjectCenter(target);
             _gizmoRoot.transform.position = centerPos;
 
@@ -711,24 +770,28 @@ namespace DeadCoreEditor
                 _gizmoRoot.transform.rotation = Quaternion.identity;
             }
 
-            // SCALE GIZMO BASED ON DISTANCE, OBJECT MODEL BOUNDS, AND SCALE MULTIPLIER
+            // SCALE GIZMO BASED ON CAMERA DISTANCE, OBJECT BOUNDS, AND PLACEMENT SCALE MULTIPLIER
             if (EditorViewportCamera.ViewportCamera != null)
             {
-                float dist = Vector3.Distance(EditorViewportCamera.ViewportCamera.transform.position, centerPos);
-                float screenScale = Mathf.Max(0.5f, dist * 0.085f);
+                Camera cam = EditorViewportCamera.ViewportCamera;
+                float dist = Vector3.Distance(cam.transform.position, centerPos);
+                float screenScale = Mathf.Clamp(dist * 0.11f, 0.9f, 25.0f);
 
-                Bounds b = PlacementHologramController.CalculateOptimizedProxyBounds(target);
-                Vector3 lossy = target.transform.lossyScale;
-                float maxModelDim = Mathf.Max(b.size.x * Mathf.Abs(lossy.x), b.size.y * Mathf.Abs(lossy.y), b.size.z * Mathf.Abs(lossy.z));
-                float modelFactor = Mathf.Clamp(maxModelDim * 0.20f, 0.85f, 4.0f);
+                Bounds b = GetObjectWorldBounds(target);
+                float maxModelDim = Mathf.Max(b.size.x, b.size.y, b.size.z);
+                float boundFactor = 1.0f;
+                if (maxModelDim > 2.0f)
+                {
+                    boundFactor = Mathf.Clamp(maxModelDim * 0.20f, 1.0f, 4.0f);
+                }
 
-                float scaleMult = Mathf.Clamp(EditorSessionManager.ActivePlacementScale, 0.4f, 3.0f);
+                float scaleMult = Mathf.Clamp(EditorSessionManager.ActivePlacementScale, 0.5f, 3.0f);
 
-                float finalScale = screenScale * modelFactor * scaleMult;
+                float finalScale = screenScale * boundFactor * scaleMult;
                 _gizmoRoot.transform.localScale = Vector3.one * finalScale;
             }
 
-            // TOGGLE TIPS: SPHERE TIPS FOR TRANSLATE/ROTATE VS CUBE TIPS FOR SCALE
+            // TOGGLE TIPS: SPHERES FOR TRANSLATE/ROTATE VS CUBES FOR SCALE
             bool isScale = (EditorSessionManager.CurrentGizmoMode == EditorGizmoMode.Scale);
             if (_tipSphereObjX != null) _tipSphereObjX.SetActive(!isScale);
             if (_tipCubeObjX != null) _tipCubeObjX.SetActive(isScale);
@@ -754,7 +817,7 @@ namespace DeadCoreEditor
             _matHover = CreateGizmoMaterial(ColorHover);
 
             _gizmoRoot = new GameObject("Studio_Transform_Gizmo_Root");
-            _gizmoRoot.layer = 2; // Layer 2 = Ignore Raycast
+            _gizmoRoot.layer = 0; // Layer 0 = Default (Never culled by game camera)
 
             _axisX = CreateAxisHandle(_gizmoRoot.transform, "Gizmo_Handle_X", Vector3.right, _matBaseX,
                 out _cylRendX, out _tipSphereRendX, out _tipCubeRendX, out _tipSphereObjX, out _tipCubeObjX);
@@ -779,66 +842,57 @@ namespace DeadCoreEditor
         {
             GameObject handle = new GameObject(name);
             handle.transform.SetParent(parent, false);
-            handle.layer = 2;
+            handle.layer = 0;
 
-            // Shaft
+            // Thick Shaft Cylinder
             GameObject cylinder = GameObject.CreatePrimitive(PrimitiveType.Cylinder);
             cylinder.name = "Shaft";
-            cylinder.layer = 2;
+            cylinder.layer = 0;
             cylinder.transform.SetParent(handle.transform, false);
-            cylinder.transform.localScale = new Vector3(0.09f, 0.80f, 0.09f);
-            cylinder.transform.localPosition = dir * 0.80f;
+            cylinder.transform.localScale = new Vector3(0.18f, 1.20f, 0.18f);
+            cylinder.transform.localPosition = dir * 1.20f;
             cylinder.transform.localRotation = Quaternion.FromToRotation(Vector3.up, dir);
 
             Collider col = cylinder.GetComponent<Collider>();
             if (col != null) col.isTrigger = false;
 
             cylRend = cylinder.GetComponent<Renderer>();
-            if (cylRend != null)
-            {
-                cylRend.material = baseMat;
-                cylRend.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
-                cylRend.receiveShadows = false;
-            }
+            cylRend.material = baseMat;
+            cylRend.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
+            cylRend.receiveShadows = false;
 
-            // Translate Tip (Sphere)
+            // Bold Translate Tip (Sphere)
             tipSphereObj = GameObject.CreatePrimitive(PrimitiveType.Sphere);
             tipSphereObj.name = "Tip_Sphere";
-            tipSphereObj.layer = 2;
+            tipSphereObj.layer = 0;
             tipSphereObj.transform.SetParent(handle.transform, false);
-            tipSphereObj.transform.localScale = new Vector3(0.36f, 0.36f, 0.36f);
-            tipSphereObj.transform.localPosition = dir * 1.65f;
+            tipSphereObj.transform.localScale = new Vector3(0.65f, 0.65f, 0.65f);
+            tipSphereObj.transform.localPosition = dir * 2.65f;
 
             Collider tCol = tipSphereObj.GetComponent<Collider>();
             if (tCol != null) tCol.isTrigger = false;
 
             tipSphereRend = tipSphereObj.GetComponent<Renderer>();
-            if (tipSphereRend != null)
-            {
-                tipSphereRend.material = baseMat;
-                tipSphereRend.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
-                tipSphereRend.receiveShadows = false;
-            }
+            tipSphereRend.material = baseMat;
+            tipSphereRend.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
+            tipSphereRend.receiveShadows = false;
 
-            // Scale Tip (Cube)
+            // Bold Scale Tip (Cube)
             tipCubeObj = GameObject.CreatePrimitive(PrimitiveType.Cube);
             tipCubeObj.name = "Tip_Cube";
-            tipCubeObj.layer = 2;
+            tipCubeObj.layer = 0;
             tipCubeObj.transform.SetParent(handle.transform, false);
-            tipCubeObj.transform.localScale = new Vector3(0.32f, 0.32f, 0.32f);
-            tipCubeObj.transform.localPosition = dir * 1.65f;
+            tipCubeObj.transform.localScale = new Vector3(0.55f, 0.55f, 0.55f);
+            tipCubeObj.transform.localPosition = dir * 2.65f;
             tipCubeObj.transform.localRotation = Quaternion.identity;
 
             Collider cCol = tipCubeObj.GetComponent<Collider>();
             if (cCol != null) cCol.isTrigger = false;
 
             tipCubeRend = tipCubeObj.GetComponent<Renderer>();
-            if (tipCubeRend != null)
-            {
-                tipCubeRend.material = baseMat;
-                tipCubeRend.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
-                tipCubeRend.receiveShadows = false;
-            }
+            tipCubeRend.material = baseMat;
+            tipCubeRend.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
+            tipCubeRend.receiveShadows = false;
 
             tipCubeObj.SetActive(false);
 
@@ -846,7 +900,7 @@ namespace DeadCoreEditor
         }
 
         /// <summary>
-        /// Uses RaycastAll to find the closest handle under the mouse even through proxy triggers.
+        /// Raycasts across all layers to cleanly detect hovering over gizmo handles.
         /// </summary>
         private static int CheckHandleHover()
         {
@@ -857,7 +911,7 @@ namespace DeadCoreEditor
             }
 
             Ray ray = EditorViewportCamera.ViewportCamera.ScreenPointToRay(Input.mousePosition);
-            RaycastHit[] hits = Physics.RaycastAll(ray, 2000f, 1 << 2, QueryTriggerInteraction.Collide);
+            RaycastHit[] hits = Physics.RaycastAll(ray, 5000f, ~0, QueryTriggerInteraction.Collide);
 
             int closestAxis = -1;
             float closestDist = float.MaxValue;
@@ -907,7 +961,7 @@ namespace DeadCoreEditor
             if (EditorViewportCamera.ViewportCamera == null) return;
             Camera cam = EditorViewportCamera.ViewportCamera;
 
-            // Mouse button down: Engage axis drag
+            // Mouse down: Start drag
             if (Input.GetMouseButtonDown(0) && !Input.GetMouseButton(1) && !StudioUIManager.IsPointerOverUI())
             {
                 if (hoveredAxis != -1)
