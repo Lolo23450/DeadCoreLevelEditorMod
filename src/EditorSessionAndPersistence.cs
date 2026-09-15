@@ -63,7 +63,7 @@ namespace DeadCoreEditor
         public static List<GameObject> SelectedObjects = new List<GameObject>();
         public static GameObject LastPlacedObject = null;
 
-        // Clipboard System (Ctrl+C / Ctrl+V)
+        // Clipboard System (Ctrl+C / Ctrl+V / Ctrl+D)
         public static List<ClipboardItem> Clipboard = new List<ClipboardItem>();
 
         // Placement & Snapping Settings
@@ -126,7 +126,7 @@ namespace DeadCoreEditor
         public static float CachedVoidDeathY = -140f;
         private static float _lightRefreshTimer = 0f;
 
-        // Player Entity Caches
+        // Player Entity Caches (Fixed)
         private static GameObject _cachedPlayer = null;
         private static CharacterController _cachedCharacterController = null;
         public static Camera PlayerCameraInstance = null;
@@ -134,6 +134,9 @@ namespace DeadCoreEditor
         public static Vector3 FrozenPlayerPosition = Vector3.zero;
         public static Quaternion FrozenPlayerRotation = Quaternion.identity;
         public static Vector3 LevelSpawnPosition = new Vector3(-241f, -95f, -6f);
+
+        // Preallocated Buffer for Non-Alloc Raycasts
+        private static readonly RaycastHit[] _aimHitBuffer = new RaycastHit[128];
 
         // Visual Selection Highlight Pool
         private static readonly List<GameObject> _highlightBoxes = new List<GameObject>();
@@ -148,14 +151,12 @@ namespace DeadCoreEditor
 
                 if (PlacedObjectTypes.TryGetValue(obj, out var type) && type == PlacedObjectType.Turret)
                 {
-                    // Disable native AI script so aiming code doesn't override rotation
                     TurretScript[] ts = obj.GetComponentsInChildren<TurretScript>(true);
                     for (int s = 0; s < ts.Length; s++)
                     {
                         if (ts[s] != null) ts[s].enabled = active;
                     }
 
-                    // Disable Animator/Animation so root-motion doesn't lock position
                     Animator[] animators = obj.GetComponentsInChildren<Animator>(true);
                     for (int a = 0; a < animators.Length; a++)
                     {
@@ -168,7 +169,6 @@ namespace DeadCoreEditor
                         if (animations[a] != null) animations[a].enabled = active;
                     }
 
-                    // Freeze physics in edit mode
                     Rigidbody[] rbs = obj.GetComponentsInChildren<Rigidbody>(true);
                     for (int r = 0; r < rbs.Length; r++)
                     {
@@ -198,7 +198,7 @@ namespace DeadCoreEditor
             {
                 IsBlockSelected = false;
                 PlacementHologramController.DestroyPreview();
-                ShowNotification("Mode: [SELECT] - Click objects or waypoints (Ctrl to multi-select, W/E/R to transform)");
+                ShowNotification("Mode: [SELECT]");
             }
             else
             {
@@ -211,7 +211,7 @@ namespace DeadCoreEditor
                 }
                 else
                 {
-                    ShowNotification("Mode: [PLACEMENT] - Choose an asset from the browser below");
+                    ShowNotification("Mode: [PLACEMENT] - Choose an asset from catalog");
                 }
             }
 
@@ -284,7 +284,6 @@ namespace DeadCoreEditor
                 GameObject obj = SelectedObjects[i];
                 if (obj == null || !obj.activeSelf) continue;
 
-                // Waypoints have their own distinct visual emissive color
                 if (IsWaypointMarker(obj, out _, out _)) continue;
 
                 GameObject box = GameObject.CreatePrimitive(PrimitiveType.Cube);
@@ -292,14 +291,14 @@ namespace DeadCoreEditor
                 box.layer = 2;
                 Collider c = box.GetComponent<Collider>();
                 if (c != null) GameObject.DestroyImmediate(c);
-                if (highlightMat != null) box.GetComponent<Renderer>().material = highlightMat;
+                if (highlightMat != null) box.GetComponent<Renderer>().sharedMaterial = highlightMat;
 
                 GameObject beacon = GameObject.CreatePrimitive(PrimitiveType.Sphere);
                 beacon.name = "Studio_Selection_Apex_Beacon";
                 beacon.layer = 2;
                 Collider bc = beacon.GetComponent<Collider>();
                 if (bc != null) GameObject.DestroyImmediate(bc);
-                if (highlightMat != null) beacon.GetComponent<Renderer>().material = highlightMat;
+                if (highlightMat != null) beacon.GetComponent<Renderer>().sharedMaterial = highlightMat;
 
                 Bounds b = PlacementHologramController.CalculateOptimizedProxyBounds(obj);
                 Vector3 worldCenter = obj.transform.TransformPoint(b.center);
@@ -349,7 +348,7 @@ namespace DeadCoreEditor
         }
 
         // =========================================================================
-        // COPY, PASTE & DELETE WORKFLOW
+        // COPY, PASTE, DUPLICATE & DELETE WORKFLOW
         // =========================================================================
 
         public static void CopySelectedObjects()
@@ -399,7 +398,7 @@ namespace DeadCoreEditor
         {
             if (Clipboard.Count == 0)
             {
-                ShowNotification("Clipboard is empty. Press Ctrl+C to copy objects.");
+                ShowNotification("Clipboard empty. Press Ctrl+C to copy objects.");
                 return;
             }
 
@@ -477,6 +476,85 @@ namespace DeadCoreEditor
             ShowNotification($"Pasted {SelectedObjects.Count} object(s) [Ctrl+V]");
         }
 
+        public static void DuplicateSelectedObjects()
+        {
+            if (SelectedObjects.Count == 0)
+            {
+                ShowNotification("Nothing selected to duplicate.");
+                return;
+            }
+
+            CopySelectedObjects();
+            float step = CurrentGridSnap > 0.01f ? CurrentGridSnap : 1.5f;
+            Vector3 offset = new Vector3(step, 0f, step);
+
+            List<ClipboardItem> dupList = new List<ClipboardItem>(Clipboard);
+            Vector3 basePos = (SelectedObject != null) ? SelectedObject.transform.position : LevelSpawnPosition;
+            Vector3 pasteOrigin = basePos + offset;
+
+            SelectedObjects.Clear();
+
+            for (int i = 0; i < dupList.Count; i++)
+            {
+                ClipboardItem item = dupList[i];
+                Vector3 spawnPos = pasteOrigin + item.RelativeOffset;
+
+                GameObject pasted = SpawnAssetByName(item.AssetName, spawnPos, item.Scale, item.Rotation);
+                if (pasted != null)
+                {
+                    string low = item.AssetName.ToLower();
+                    if (item.CustomParameter > 0f)
+                    {
+                        if (low.Contains("jumper")) ApplyJumperForce(pasted, item.CustomParameter);
+                        else if (low.Contains("helix")) ApplyTurbineSpeed(pasted, item.CustomParameter);
+                        else if (low.Contains("turret")) ApplyTurretSettings(pasted, item.CustomParameter);
+                    }
+                    if (low.Contains("rotating") && item.CustomParameter != 0f)
+                    {
+                        LaserRotationSpeeds[pasted] = item.CustomParameter;
+                    }
+                    if (item.LightCfg != null)
+                    {
+                        ApplyLightConfig(pasted, item.LightCfg);
+                    }
+                    if (item.MotionPath != null)
+                    {
+                        Vector3 delta = spawnPos - item.MotionPath.PointA;
+                        MotionPaths[pasted] = new ObjectMotionPath
+                        {
+                            PointA = spawnPos,
+                            PointB = item.MotionPath.PointB + delta,
+                            Speed = item.MotionPath.Speed,
+                            IsActive = true
+                        };
+                    }
+
+                    RegisterPlacedObject(pasted);
+                    SelectedObjects.Add(pasted);
+
+                    UndoHistory.Push(new HistoryRecord
+                    {
+                        ActionType = HistoryActionType.Placement,
+                        TargetObject = pasted,
+                        AssetName = item.AssetName,
+                        Position = spawnPos,
+                        Rotation = item.Rotation,
+                        Scale = item.Scale,
+                        CustomParameter = item.CustomParameter
+                    });
+                }
+            }
+
+            RedoHistory.Clear();
+            SelectedObject = SelectedObjects.Count > 0 ? SelectedObjects[SelectedObjects.Count - 1] : null;
+
+            UpdateSelectionHighlight();
+            StudioUIManager.NotifyObjectSelected(SelectedObject);
+            StudioUIManager.RefreshHierarchy();
+
+            ShowNotification($"Duplicated {SelectedObjects.Count} object(s) [Ctrl+D]");
+        }
+
         public static void DeleteSelectedObjects()
         {
             if (SelectedObjects.Count == 0) return;
@@ -487,7 +565,6 @@ namespace DeadCoreEditor
                 GameObject target = toDelete[i];
                 if (target == null) continue;
 
-                // If deleting a waypoint marker directly, delete the owner's motion path
                 if (IsWaypointMarker(target, out GameObject owner, out _))
                 {
                     if (owner != null)
@@ -583,6 +660,7 @@ namespace DeadCoreEditor
             EditorViewportCamera.DestroyCamera();
             PlacementHologramController.DestroyPreview();
             StudioGizmoController.DestroyGizmo();
+            StudioGizmoController.ClearAllCachedCentroids();
 
             SceneHarvestingService.CleanupProceduralResources();
             DestroyAllWaypointVisuals();
@@ -706,7 +784,6 @@ namespace DeadCoreEditor
                 {
                     StudioGizmoController.UpdateGizmo();
 
-                    // Viewport Click Selection (supports objects and in-scene waypoints)
                     if (Input.GetMouseButtonDown(0) && !Input.GetMouseButton(1) && !StudioUIManager.IsPointerOverUI())
                     {
                         if (!StudioGizmoController.IsHoveringHandle)
@@ -717,17 +794,19 @@ namespace DeadCoreEditor
                     }
                 }
 
-                // Delete selected objects using "Spr" (Supr / Delete / Backspace)
                 bool isDeleteKey = Input.GetKeyDown(KeyCode.Delete) || Input.GetKeyDown(KeyCode.Backspace);
                 if (isDeleteKey && GUIUtility.keyboardControl == 0 && !StudioUIManager.IsPointerOverUI())
                 {
                     DeleteSelectedObjects();
                 }
 
-                // Copy (Ctrl + C) and Paste (Ctrl + V)
                 if (isCtrl && GUIUtility.keyboardControl == 0)
                 {
-                    if (Input.GetKeyDown(KeyCode.C))
+                    if (Input.GetKeyDown(KeyCode.D))
+                    {
+                        DuplicateSelectedObjects();
+                    }
+                    else if (Input.GetKeyDown(KeyCode.C))
                     {
                         CopySelectedObjects();
                     }
@@ -747,7 +826,6 @@ namespace DeadCoreEditor
                 }
             }
 
-            // Shortcuts
             if (Input.GetKeyDown(KeyCode.F1)) ToggleEditMode();
             if (Input.GetKeyDown(KeyCode.F4)) SceneHarvestingService.DebugDumpSceneLighting();
             if (Input.GetKeyDown(KeyCode.F5)) LevelPersistenceService.SaveLevel(MapBrowserService.SelectedMapName);
@@ -830,13 +908,10 @@ namespace DeadCoreEditor
                 }
                 else if (isGate)
                 {
-                    // CHECKPOINTS & GATES: ZERO BLOCKING COLLISION
                     c.isTrigger = true;
                 }
                 else if (isHelix)
                 {
-                    // HELIX FIX: Only the wind pushing zone is a trigger!
-                    // Switch buttons/targets remain solid non-triggers so player gun raycasts hit and deactivate the turbine
                     HelixPushingZone zone = c.GetComponent<HelixPushingZone>() ?? c.GetComponentInParent<HelixPushingZone>();
                     string cName = c.gameObject.name.ToLower();
                     if (zone != null || cName.Contains("zone") || cName.Contains("push") || cName.Contains("vent") || cName.Contains("wind"))
@@ -931,7 +1006,7 @@ namespace DeadCoreEditor
                     };
                     ApplyLightConfig(obj, PlacedLights[obj]);
                 }
-                AttachSunVisualWidget(obj);
+                StudioGizmoController.AttachSunVisualWidget(obj);
             }
             else if (asset.IsSpotlight)
             {
@@ -1078,6 +1153,8 @@ namespace DeadCoreEditor
         {
             if (target == null) return;
 
+            StudioGizmoController.InvalidateCachedCenter(target);
+
             PlacedObjects.Remove(target);
             PlacedObjectTypes.Remove(target);
             PlacedParentChildCounts.Remove(target);
@@ -1088,7 +1165,6 @@ namespace DeadCoreEditor
 
             if (PlacedLights.ContainsKey(target)) PlacedLights.Remove(target);
 
-            // Clean up Motion Paths and their associated Waypoint Markers
             if (MotionPaths.ContainsKey(target)) MotionPaths.Remove(target);
             DestroyWaypointVisuals(target);
 
@@ -1175,9 +1251,9 @@ namespace DeadCoreEditor
             TurbineSpeeds.Clear();
             TurretFireDelays.Clear();
 
-            // Destroy all waypoints and motion paths
             MotionPaths.Clear();
             DestroyAllWaypointVisuals();
+            StudioGizmoController.ClearAllCachedCentroids();
 
             PathEditTarget = null;
             ParentingChildTarget = null;
@@ -1256,6 +1332,7 @@ namespace DeadCoreEditor
                     record.TargetObject.transform.position = record.PreviousPosition;
                     record.TargetObject.transform.rotation = record.PreviousRotation;
                     record.TargetObject.transform.localScale = record.PreviousScale;
+                    StudioGizmoController.InvalidateCachedCenter(record.TargetObject);
                 }
                 RedoHistory.Push(record);
                 ShowNotification("Undid Transform change");
@@ -1301,6 +1378,7 @@ namespace DeadCoreEditor
                     record.TargetObject.transform.position = record.NewPosition;
                     record.TargetObject.transform.rotation = record.NewRotation;
                     record.TargetObject.transform.localScale = record.NewScale;
+                    StudioGizmoController.InvalidateCachedCenter(record.TargetObject);
                 }
                 UndoHistory.Push(record);
                 ShowNotification("Redid Transform change");
@@ -1393,7 +1471,6 @@ namespace DeadCoreEditor
 
             if (cfg.IsDirectional)
             {
-                // Select active sun: prefer the native HDRP sun if present, otherwise use the spawned light
                 Light targetSun = (SceneHarvestingService.NativeSceneSun != null && SceneHarvestingService.NativeSceneSun.gameObject.activeInHierarchy)
                     ? SceneHarvestingService.NativeSceneSun
                     : l;
@@ -1406,22 +1483,19 @@ namespace DeadCoreEditor
                     targetSun.transform.rotation = lightObj.transform.rotation;
                     targetSun.color = cfg.Color;
 
-                    // Physical HDRP Sunlight Intensity (Lux)
                     float sunLux = Mathf.Max(0.1f, cfg.Intensity) * 8000f;
                     targetSun.intensity = sunLux;
                     RenderSettings.sun = targetSun;
 
-                    // Apply HDRP properties: disables color temperature override and applies volumetric god-rays
                     ApplyHDRPVolumetricSettings(targetSun.gameObject, cfg.VolumetricIntensity, sunLux, cfg.Color);
                 }
 
-                // If native sun is handling the lighting, disable the duplicate light on the widget to prevent conflicts
                 if (l != null && targetSun != l)
                 {
                     l.enabled = false;
                 }
 
-                AttachSunVisualWidget(lightObj);
+                StudioGizmoController.AttachSunVisualWidget(lightObj);
             }
             else
             {
@@ -1441,7 +1515,6 @@ namespace DeadCoreEditor
                 }
             }
 
-            // Forward color & intensity to fixture lens materials/shaders
             Renderer[] rends = lightObj.GetComponentsInChildren<Renderer>(true);
             for (int i = 0; i < rends.Length; i++)
             {
@@ -1462,10 +1535,6 @@ namespace DeadCoreEditor
             }
         }
 
-        /// <summary>
-        /// Directly configures HDRP's HDAdditionalLightData for directional suns and spotlights.
-        /// Turns off useColorTemperature so custom colors take immediate effect.
-        /// </summary>
         private static void ApplyHDRPVolumetricSettings(GameObject lightGo, float volumetricIntensity, float physicalIntensity, Color lightColor)
         {
             if (lightGo == null) return;
@@ -1492,16 +1561,13 @@ namespace DeadCoreEditor
                     float dimmer = Mathf.Clamp(volumetricIntensity, 0f, 16f);
                     bool enableVol = volumetricIntensity > 0.01f;
 
-                    // 1. CRITICAL: Turn OFF color temperature override so custom RGB colors work in HDRP
                     SetFieldOrProp(type, hdLight, "useColorTemperature", false);
                     SetFieldOrProp(type, hdLight, "m_UseColorTemperature", false);
                     SetFieldOrProp(type, hdLight, "color", lightColor);
                     SetFieldOrProp(type, hdLight, "colorFilter", lightColor);
 
-                    // 2. Physical Intensity (Lux for Sun, Lumens for Spot)
                     SetFieldOrProp(type, hdLight, "intensity", physicalIntensity);
 
-                    // 3. Volumetric Atmospheric Scattering / God Rays
                     SetFieldOrProp(type, hdLight, "volumetricDimmer", dimmer);
                     SetFieldOrProp(type, hdLight, "m_VolumetricDimmer", dimmer);
                     SetFieldOrProp(type, hdLight, "affectsVolumetric", enableVol);
@@ -1514,44 +1580,6 @@ namespace DeadCoreEditor
                 {
                     MelonLogger.Warning($"[HDRP Sun] Setting error: {ex.Message}");
                 }
-            }
-        }
-        private static void ApplyHDRPVolumetricSettings(GameObject lightGo, float volumetricIntensity, float physicalIntensity)
-        {
-            if (lightGo == null) return;
-
-            Component hdLight = null;
-            Component[] comps = lightGo.GetComponentsInChildren<Component>(true);
-
-            for (int i = 0; i < comps.Length; i++)
-            {
-                if (comps[i] == null) continue;
-                string fullName = comps[i].GetIl2CppType().FullName;
-                if (fullName.Contains("HDAdditionalLightData") || fullName.Contains("AdditionalLightData"))
-                {
-                    hdLight = comps[i];
-                    break;
-                }
-            }
-
-            if (hdLight != null)
-            {
-                try
-                {
-                    Type type = hdLight.GetType();
-                    float dimmer = Mathf.Clamp(volumetricIntensity, 0f, 16f);
-                    bool enableVol = volumetricIntensity > 0.01f;
-
-                    SetFieldOrProp(type, hdLight, "volumetricDimmer", dimmer);
-                    SetFieldOrProp(type, hdLight, "m_VolumetricDimmer", dimmer);
-                    SetFieldOrProp(type, hdLight, "affectsVolumetric", enableVol);
-                    SetFieldOrProp(type, hdLight, "m_AffectsVolumetric", enableVol);
-                    SetFieldOrProp(type, hdLight, "useVolumetric", enableVol);
-                    SetFieldOrProp(type, hdLight, "m_UseVolumetric", enableVol);
-                    SetFieldOrProp(type, hdLight, "volumetricShadowDimmer", enableVol ? 1f : 0f);
-                    SetFieldOrProp(type, hdLight, "intensity", physicalIntensity);
-                }
-                catch { }
             }
         }
 
@@ -1590,87 +1618,6 @@ namespace DeadCoreEditor
                 }
                 ApplyLightConfig(obj, cfg);
             }
-        }
-
-        public static void AttachSunVisualWidget(GameObject sunObj)
-        {
-            if (sunObj == null) return;
-
-            Transform old = sunObj.transform.Find("Sun_Editor_Widget");
-            if (old != null) GameObject.DestroyImmediate(old.gameObject);
-
-            GameObject widget = new GameObject("Sun_Editor_Widget");
-            widget.transform.SetParent(sunObj.transform, false);
-            widget.layer = 0;
-
-            Color sunColor = Color.yellow;
-            if (PlacedLights.TryGetValue(sunObj, out var cfg))
-            {
-                sunColor = cfg.Color;
-            }
-
-            Material sunMat = new Material(Shader.Find("Unlit/Color") ?? Shader.Find("Sprites/Default"));
-            sunMat.color = sunColor;
-            if (sunMat.HasProperty("_Color")) sunMat.SetColor("_Color", sunColor);
-            if (sunMat.HasProperty("_EmissionColor"))
-            {
-                sunMat.SetColor("_EmissionColor", sunColor * 2.5f);
-                sunMat.EnableKeyword("_EMISSION");
-            }
-
-            // 1. Center Glowing Sun Sphere
-            GameObject orb = GameObject.CreatePrimitive(PrimitiveType.Sphere);
-            orb.name = "Sun_Orb";
-            orb.transform.SetParent(widget.transform, false);
-            orb.transform.localScale = Vector3.one * 2.2f;
-            Renderer rOrb = orb.GetComponent<Renderer>();
-            rOrb.material = sunMat;
-            rOrb.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
-
-            // 2. Direction Pointer Arrow (shows sunlight travel direction along forward Z)
-            GameObject ray = GameObject.CreatePrimitive(PrimitiveType.Cylinder);
-            ray.name = "Sun_Ray_Shaft";
-            ray.transform.SetParent(widget.transform, false);
-            ray.transform.localRotation = Quaternion.Euler(90f, 0f, 0f);
-            ray.transform.localPosition = new Vector3(0f, 0f, 3.0f);
-            ray.transform.localScale = new Vector3(0.28f, 2.0f, 0.28f);
-            Renderer rRay = ray.GetComponent<Renderer>();
-            rRay.material = sunMat;
-            rRay.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
-
-            GameObject tip = GameObject.CreatePrimitive(PrimitiveType.Sphere);
-            tip.name = "Sun_Ray_Tip";
-            tip.transform.SetParent(widget.transform, false);
-            tip.transform.localPosition = new Vector3(0f, 0f, 5.2f);
-            tip.transform.localScale = Vector3.one * 0.7f;
-            Renderer rTip = tip.GetComponent<Renderer>();
-            rTip.material = sunMat;
-            rTip.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
-
-            // 3. Corona Rays
-            CreateCoronaRay(widget.transform, new Vector3(1.6f, 1.6f, 0f), Quaternion.Euler(0f, 0f, 45f), sunMat);
-            CreateCoronaRay(widget.transform, new Vector3(-1.6f, 1.6f, 0f), Quaternion.Euler(0f, 0f, -45f), sunMat);
-            CreateCoronaRay(widget.transform, new Vector3(1.6f, -1.6f, 0f), Quaternion.Euler(0f, 0f, -45f), sunMat);
-            CreateCoronaRay(widget.transform, new Vector3(-1.6f, -1.6f, 0f), Quaternion.Euler(0f, 0f, 45f), sunMat);
-
-            // 4. Picking Collider
-            SphereCollider sc = widget.AddComponent<SphereCollider>();
-            sc.radius = 2.8f;
-            sc.isTrigger = false;
-
-            widget.SetActive(IsEditModeActive);
-        }
-
-        private static void CreateCoronaRay(Transform parent, Vector3 localPos, Quaternion localRot, Material mat)
-        {
-            GameObject ray = GameObject.CreatePrimitive(PrimitiveType.Cylinder);
-            ray.name = "Corona_Ray";
-            ray.transform.SetParent(parent, false);
-            ray.transform.localPosition = localPos;
-            ray.transform.localRotation = localRot;
-            ray.transform.localScale = new Vector3(0.12f, 0.8f, 0.12f);
-            ray.GetComponent<Renderer>().material = mat;
-            ray.GetComponent<Renderer>().shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
         }
 
         public static void ApplyGateVisualTint(GameObject gateObj, Color tintColor)
@@ -1877,10 +1824,8 @@ namespace DeadCoreEditor
                 ObjectMotionPath path = kvp.Value;
                 if (obj == null || !obj.activeSelf || !path.IsActive) continue;
 
-                // IN EDIT MODE: Keep object positioned at Point A and manage live Waypoint syncing
                 if (IsEditModeActive)
                 {
-                    // If Waypoint B is selected and moved with the gizmo, update PointB
                     if (SelectedObject != null && IsWaypointMarker(SelectedObject, out GameObject ownerB, out bool isB) && ownerB == obj)
                     {
                         if (isB)
@@ -1893,7 +1838,6 @@ namespace DeadCoreEditor
                             obj.transform.position = path.PointA;
                         }
                     }
-                    // If the moving object itself was moved with the gizmo, shift both Point A and Point B together
                     else if (SelectedObject == obj)
                     {
                         if (obj.transform.position != path.PointA)
@@ -1912,7 +1856,6 @@ namespace DeadCoreEditor
                     continue;
                 }
 
-                // IN PLAYTEST MODE: Hide markers and calculate smooth kinematic ping-pong motion
                 HideWaypointVisual(obj);
 
                 float dist = path.TotalDistance;
@@ -1948,12 +1891,11 @@ namespace DeadCoreEditor
         {
             if (obj == null || path == null) return;
 
-            // Point A Marker (Green)
             if (!WaypointMarkersA.TryGetValue(obj, out GameObject markerA) || markerA == null)
             {
                 markerA = GameObject.CreatePrimitive(PrimitiveType.Sphere);
                 markerA.name = "Waypoint_A_" + obj.name;
-                markerA.layer = 0; // Selectable
+                markerA.layer = 0;
 
                 SphereCollider sc = markerA.GetComponent<SphereCollider>();
                 if (sc != null) { sc.isTrigger = false; sc.radius = 0.55f; }
@@ -1962,18 +1904,17 @@ namespace DeadCoreEditor
                 Material ma = new Material(Shader.Find("Unlit/Color") ?? Shader.Find("Sprites/Default"));
                 ma.color = new Color(0.2f, 1f, 0.4f, 1f);
                 if (ma.HasProperty("_EmissionColor")) { ma.SetColor("_EmissionColor", new Color(0.2f, 1f, 0.4f) * 2f); ma.EnableKeyword("_EMISSION"); }
-                markerA.GetComponent<Renderer>().material = ma;
+                markerA.GetComponent<Renderer>().sharedMaterial = ma;
                 markerA.GetComponent<Renderer>().shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
 
                 WaypointMarkersA[obj] = markerA;
             }
 
-            // Point B Marker (Amber / Orange)
             if (!WaypointMarkersB.TryGetValue(obj, out GameObject markerB) || markerB == null)
             {
                 markerB = GameObject.CreatePrimitive(PrimitiveType.Sphere);
                 markerB.name = "Waypoint_B_" + obj.name;
-                markerB.layer = 0; // Selectable
+                markerB.layer = 0;
 
                 SphereCollider sc = markerB.GetComponent<SphereCollider>();
                 if (sc != null) { sc.isTrigger = false; sc.radius = 0.55f; }
@@ -1982,24 +1923,23 @@ namespace DeadCoreEditor
                 Material mb = new Material(Shader.Find("Unlit/Color") ?? Shader.Find("Sprites/Default"));
                 mb.color = new Color(1f, 0.65f, 0.1f, 1f);
                 if (mb.HasProperty("_EmissionColor")) { mb.SetColor("_EmissionColor", new Color(1f, 0.65f, 0.1f) * 2f); mb.EnableKeyword("_EMISSION"); }
-                markerB.GetComponent<Renderer>().material = mb;
+                markerB.GetComponent<Renderer>().sharedMaterial = mb;
                 markerB.GetComponent<Renderer>().shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
 
                 WaypointMarkersB[obj] = markerB;
             }
 
-            // 3D Connecting Trajectory Line
             if (!WaypointLines.TryGetValue(obj, out LineRenderer lr) || lr == null)
             {
                 GameObject lineObj = new GameObject("Waypoint_Line_" + obj.name);
-                lineObj.layer = 2; // Ignore Raycast
+                lineObj.layer = 2;
                 lr = lineObj.AddComponent<LineRenderer>();
                 lr.positionCount = 2;
                 lr.startWidth = 0.15f;
                 lr.endWidth = 0.15f;
                 Material ml = new Material(Shader.Find("Unlit/Color") ?? Shader.Find("Sprites/Default"));
                 ml.color = new Color(0.3f, 0.85f, 1f, 0.8f);
-                lr.material = ml;
+                lr.sharedMaterial = ml;
                 lr.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
 
                 WaypointLines[obj] = lr;
@@ -2365,6 +2305,10 @@ namespace DeadCoreEditor
             MelonLogger.Msg(">> Custom Level Initialized & Ready!");
         }
 
+        // =========================================================================
+        // ROBUST RAYCAST OBJECT PICKING WITH HIERARCHY WALKING
+        // =========================================================================
+
         public static GameObject GetAimedPlacedObject()
         {
             if (EditorViewportCamera.ViewportCamera == null) return null;
@@ -2373,21 +2317,25 @@ namespace DeadCoreEditor
                 ? EditorViewportCamera.ViewportCamera.ViewportPointToRay(new Vector3(0.5f, 0.5f, 0f))
                 : EditorViewportCamera.ViewportCamera.ScreenPointToRay(Input.mousePosition);
 
-            int mask = ~LayerMask.GetMask("Ignore Raycast");
-            RaycastHit[] hits = Physics.RaycastAll(ray, 2000f, mask, QueryTriggerInteraction.Collide);
+            // Cast against all layers so submeshes, triggers, and proxies are never missed
+            int hitCount = Physics.RaycastNonAlloc(ray, _aimHitBuffer, 2000f, ~0, QueryTriggerInteraction.Collide);
+            if (hitCount <= 0) return null;
 
-            // 1. Prioritize clicking in-scene Waypoint Markers directly
+            // 1. Waypoint Markers Priority
             float closestWpDist = float.MaxValue;
             GameObject closestWp = null;
 
-            for (int h = 0; h < hits.Length; h++)
+            for (int h = 0; h < hitCount; h++)
             {
-                GameObject hitGo = hits[h].collider.gameObject;
+                Collider col = _aimHitBuffer[h].collider;
+                if (col == null) continue;
+                GameObject hitGo = col.gameObject;
+
                 if (IsWaypointMarker(hitGo, out _, out _) || IsChildOfAnyWaypoint(hitGo, out hitGo))
                 {
-                    if (hits[h].distance < closestWpDist)
+                    if (_aimHitBuffer[h].distance < closestWpDist)
                     {
-                        closestWpDist = hits[h].distance;
+                        closestWpDist = _aimHitBuffer[h].distance;
                         closestWp = hitGo;
                     }
                 }
@@ -2395,25 +2343,41 @@ namespace DeadCoreEditor
 
             if (closestWp != null) return closestWp;
 
-            // 2. Otherwise detect placed scene geometry
+            // 2. Placed Scene Objects: Walk up parents to identify exact target
             float closestDist = float.MaxValue;
             GameObject bestObj = null;
 
-            for (int h = 0; h < hits.Length; h++)
+            for (int h = 0; h < hitCount; h++)
             {
-                GameObject hitObj = hits[h].collider.gameObject;
-                for (int i = 0; i < PlacedObjects.Count; i++)
+                Collider col = _aimHitBuffer[h].collider;
+                if (col == null) continue;
+                GameObject hitGo = col.gameObject;
+
+                // Skip editor highlights, beacons, and camera gizmos
+                if (hitGo.name.Contains("Highlight") || hitGo.name.Contains("Beacon") || hitGo.name.Contains("Ghost")) continue;
+                if (hitGo.name.StartsWith("Studio_3D_Gizmo") || (hitGo.transform.root != null && hitGo.transform.root.name == "Studio_3D_Gizmo_Root")) continue;
+                if (_cachedPlayer != null && (hitGo == _cachedPlayer || hitGo.transform.root.gameObject == _cachedPlayer)) continue;
+
+                // Walk up transform tree to find first matching registered placed object
+                Transform curr = hitGo.transform;
+                GameObject matchedPlacedObj = null;
+
+                while (curr != null)
                 {
-                    GameObject obj = PlacedObjects[i];
-                    if (obj == null) continue;
-                    if (hitObj == obj || hitObj.transform.IsChildOf(obj.transform))
+                    if (PlacedObjects.Contains(curr.gameObject))
                     {
-                        if (hits[h].distance < closestDist)
-                        {
-                            closestDist = hits[h].distance;
-                            bestObj = obj;
-                        }
+                        matchedPlacedObj = curr.gameObject;
                         break;
+                    }
+                    curr = curr.parent;
+                }
+
+                if (matchedPlacedObj != null)
+                {
+                    if (_aimHitBuffer[h].distance < closestDist)
+                    {
+                        closestDist = _aimHitBuffer[h].distance;
+                        bestObj = matchedPlacedObj;
                     }
                 }
             }
@@ -2434,11 +2398,26 @@ namespace DeadCoreEditor
             if (curScene.Contains("menu") || curScene.Contains("load") || curScene.Contains("boot") || curScene.Contains("title"))
                 return null;
 
+            if (_cachedPlayer != null && _cachedPlayer.activeInHierarchy)
+                return _cachedPlayer;
+
             GameObject tagged = GameObject.FindWithTag("Player");
-            if (tagged != null) return tagged;
+            if (tagged != null)
+            {
+                _cachedPlayer = tagged;
+                _cachedCharacterController = tagged.GetComponentInChildren<CharacterController>();
+                PlayerControllerInstance = _cachedCharacterController;
+                return _cachedPlayer;
+            }
 
             CharacterController cc = GameObject.FindObjectOfType<CharacterController>();
-            if (cc != null) return cc.transform.root.gameObject;
+            if (cc != null)
+            {
+                _cachedCharacterController = cc;
+                PlayerControllerInstance = cc;
+                _cachedPlayer = cc.transform.root.gameObject;
+                return _cachedPlayer;
+            }
 
             return null;
         }
@@ -2448,7 +2427,13 @@ namespace DeadCoreEditor
             if (_cachedCharacterController != null && _cachedCharacterController.gameObject.activeInHierarchy)
                 return _cachedCharacterController;
 
-            FindPlayerEntity();
+            GameObject p = FindPlayerEntity();
+            if (p != null && _cachedCharacterController == null)
+            {
+                _cachedCharacterController = p.GetComponentInChildren<CharacterController>();
+                PlayerControllerInstance = _cachedCharacterController;
+            }
+
             return _cachedCharacterController;
         }
 
@@ -2717,7 +2702,7 @@ namespace DeadCoreEditor
 
                         if (cfg.IsDirectional)
                         {
-                            EditorSessionManager.AttachSunVisualWidget(obj);
+                            StudioGizmoController.AttachSunVisualWidget(obj);
                         }
                     }
 

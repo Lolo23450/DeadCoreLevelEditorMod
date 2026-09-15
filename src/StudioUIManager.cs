@@ -22,7 +22,7 @@ using Path = System.IO.Path;
 namespace DeadCoreEditor
 {
     // =========================================================================
-    // SECTION 1: STUDIO UGUI SYSTEM (DOCKED, TREE-HIERARCHY, ZERO OVERLAPS)
+    // SECTION 1: STUDIO UGUI SYSTEM (DOCKED, INTERACTIVE TREE HIERARCHY)
     // =========================================================================
 
     public static class StudioUIManager
@@ -37,7 +37,7 @@ namespace DeadCoreEditor
         private static TMP_Text _surfaceAlignBtnText = null;
         private static TMP_Text _gridSnapBtnText = null;
 
-        // Scene Hierarchy (Left Panel: 245px Tree View)
+        // Scene Hierarchy (Left Panel: 260px Interactive Tree View)
         private static GameObject _hierarchyPanel = null;
         private static RectTransform _hierarchyContent = null;
         private static TMP_InputField _hierarchySearchInput = null;
@@ -91,14 +91,13 @@ namespace DeadCoreEditor
         private static TMP_Text _lightVolValText = null;
         private static Image _lightColorPreviewSwatch = null;
 
-        // Overhauled Motion Path Section
+        // Motion Path Section
         private static GameObject _motionPathSection = null;
         private static TMP_Text _motionPathStatusText = null;
         private static Slider _motionPathSpeedSlider = null;
         private static TMP_Text _motionPathSpeedValText = null;
         private static GameObject _motionPathCreateBtnObj = null;
         private static GameObject _motionPathActiveControlsObj = null;
-        private static GameObject _parentingSection = null;
 
         // Docked Bottom Asset Browser
         private static GameObject _assetBrowserPanel = null;
@@ -227,14 +226,15 @@ namespace DeadCoreEditor
         }
 
         // =========================================================================
-        // THUMBNAIL RENDERER
+        // ISOMETRIC THUMBNAIL RENDERER (DIMMED STUDIO LIGHTING & PRECISE ANGLE)
         // =========================================================================
 
         public static class AssetThumbnailRenderer
         {
             private static Camera _previewCam = null;
             private static GameObject _studioStage = null;
-            private static Light _studioLight = null;
+            private static Light _studioKeyLight = null;
+            private static Light _studioFillLight = null;
             private static RenderTexture _previewRt = null;
 
             private static readonly Vector3 StagePosition = new Vector3(9000f, 9000f, 9000f);
@@ -251,23 +251,32 @@ namespace DeadCoreEditor
                 camObj.transform.SetParent(_studioStage.transform, false);
                 _previewCam = camObj.AddComponent<Camera>();
                 _previewCam.clearFlags = CameraClearFlags.Color;
-                _previewCam.backgroundColor = new Color(0.14f, 0.16f, 0.20f, 1f);
+                _previewCam.backgroundColor = new Color(0.06f, 0.07f, 0.09f, 1f);
                 _previewCam.cullingMask = 1 << 2;
-                _previewCam.fieldOfView = 28f;
+                _previewCam.fieldOfView = 18f;
                 _previewCam.nearClipPlane = 0.1f;
                 _previewCam.farClipPlane = 500f;
 
                 _previewRt = new RenderTexture(128, 128, 24, RenderTextureFormat.ARGB32);
                 _previewCam.targetTexture = _previewRt;
 
-                GameObject lightObj = new GameObject("Studio_KeyLight");
-                lightObj.transform.SetParent(_studioStage.transform, false);
-                _studioLight = lightObj.AddComponent<Light>();
-                _studioLight.type = LightType.Directional;
-                _studioLight.color = new Color(1f, 0.96f, 0.90f);
-                _studioLight.intensity = 2.2f;
-                _studioLight.cullingMask = 1 << 2;
-                lightObj.transform.rotation = Quaternion.Euler(40f, -40f, 0f);
+                GameObject keyObj = new GameObject("Studio_KeyLight");
+                keyObj.transform.SetParent(_studioStage.transform, false);
+                _studioKeyLight = keyObj.AddComponent<Light>();
+                _studioKeyLight.type = LightType.Directional;
+                _studioKeyLight.color = new Color(1f, 0.95f, 0.88f);
+                _studioKeyLight.intensity = 0.35f;
+                _studioKeyLight.cullingMask = 1 << 2;
+                keyObj.transform.rotation = Quaternion.Euler(38f, -42f, 0f);
+
+                GameObject fillObj = new GameObject("Studio_FillLight");
+                fillObj.transform.SetParent(_studioStage.transform, false);
+                _studioFillLight = fillObj.AddComponent<Light>();
+                _studioFillLight.type = LightType.Directional;
+                _studioFillLight.color = new Color(0.45f, 0.75f, 1f);
+                _studioFillLight.intensity = 0.15f;
+                _studioFillLight.cullingMask = 1 << 2;
+                fillObj.transform.rotation = Quaternion.Euler(60f, 135f, 0f);
             }
 
             public static Sprite GenerateThumbnail(CatalogAsset asset)
@@ -279,7 +288,8 @@ namespace DeadCoreEditor
                 GameObject tempModel = GameObject.Instantiate(asset.SourceTemplate);
                 tempModel.SetActive(true);
                 tempModel.transform.position = StagePosition;
-                tempModel.transform.rotation = Quaternion.Euler(18f, -38f, 0f) * asset.BaseRotation;
+
+                tempModel.transform.rotation = Quaternion.Euler(30f, -45f, 0f) * asset.BaseRotation;
                 tempModel.transform.localScale = Vector3.one * asset.DefaultScale;
 
                 foreach (var tr in tempModel.GetComponentsInChildren<Transform>(true))
@@ -309,9 +319,9 @@ namespace DeadCoreEditor
                 if (radius < 0.2f) radius = 1.0f;
 
                 float fovRad = _previewCam.fieldOfView * 0.5f * Mathf.Deg2Rad;
-                float camDist = (radius / Mathf.Sin(fovRad)) * 1.3f;
+                float camDist = (radius / Mathf.Sin(fovRad)) * 1.35f;
 
-                Vector3 camPos = modelCenter + new Vector3(camDist * 0.7f, camDist * 0.55f, -camDist * 0.85f);
+                Vector3 camPos = modelCenter + new Vector3(camDist * 0.707f, camDist * 0.577f, -camDist * 0.707f);
                 _previewCam.transform.position = camPos;
                 _previewCam.transform.LookAt(modelCenter);
 
@@ -407,13 +417,13 @@ namespace DeadCoreEditor
             });
             _gridSnapBtnText = snapBtn.GetComponentInChildren<TMP_Text>();
 
-            CreateButton(_toolbarPanel.transform, "Btn_Snapshot", "📷 3D Snapshot", 115f, () =>
+            CreateButton(_toolbarPanel.transform, "Btn_Snapshot", "[SNAP] 3D", 100f, () =>
             {
                 ThumbnailCaptureService.CaptureLevelThumbnail(MapBrowserService.SelectedMapPath, EditorSessionManager.PlacedObjects, EditorSessionManager.LevelSpawnPosition);
-                EditorSessionManager.ShowNotification("Captured 3D diagonal overhead thumbnail!");
+                EditorSessionManager.ShowNotification("Captured 3D isometric thumbnail!");
             }, new Color(0.2f, 0.5f, 0.8f));
 
-            CreateButton(_toolbarPanel.transform, "Btn_Playtest", "▶ PLAYTEST (F1)", 140f, () => EditorSessionManager.ToggleEditMode(), new Color(0.18f, 0.65f, 0.32f));
+            CreateButton(_toolbarPanel.transform, "Btn_Playtest", "PLAYTEST (F1)", 130f, () => EditorSessionManager.ToggleEditMode(), new Color(0.18f, 0.65f, 0.32f));
             CreateButton(_toolbarPanel.transform, "Btn_Save", "Save (F5)", 80f, () => LevelPersistenceService.SaveLevel(MapBrowserService.SelectedMapName));
             CreateButton(_toolbarPanel.transform, "Btn_Load", "Load (F6)", 80f, () => LevelPersistenceService.LoadLevel(MapBrowserService.SelectedMapName));
         }
@@ -426,14 +436,14 @@ namespace DeadCoreEditor
         }
 
         // =========================================================================
-        // HIERARCHY PANEL (LEFT)
+        // HIERARCHY PANEL (INTERACTIVE TREE & INLINE TOOLS)
         // =========================================================================
 
         private static void BuildHierarchyPanel()
         {
             _hierarchyPanel = CreatePanel(_canvasRoot.transform, "Hierarchy_Panel",
                 new Vector2(0f, 0f), new Vector2(0f, 1f),
-                new Vector2(122.5f, -20f), new Vector2(245f, -40f),
+                new Vector2(130f, -20f), new Vector2(260f, -40f),
                 new Color(0.11f, 0.12f, 0.14f, 0.98f));
 
             CreateText(_hierarchyPanel.transform, "Scene Hierarchy",
@@ -456,7 +466,7 @@ namespace DeadCoreEditor
                 new Vector2(0f, 18f), new Vector2(0f, 36f),
                 new Color(0.08f, 0.09f, 0.11f, 0.95f));
 
-            Button delBtn = CreateButton(bottomBar.transform, "Btn_DeleteSelected", "Delete Selected [Supr]", 225f, () =>
+            Button delBtn = CreateButton(bottomBar.transform, "Btn_DeleteSelected", "Delete Selected [Supr]", 240f, () =>
             {
                 EditorSessionManager.DeleteSelectedObjects();
             }, new Color(0.75f, 0.22f, 0.22f, 1f));
@@ -497,7 +507,7 @@ namespace DeadCoreEditor
             _inspectorTitleText.enableWordWrapping = false;
             _inspectorTitleText.overflowMode = TextOverflowModes.Ellipsis;
 
-            _inspectorExpandBtn = CreateButton(titleBar.transform, "Btn_ExpandInspector", "[⤢ Expand]", 80f, ToggleInspectorExpansion, new Color(0.20f, 0.23f, 0.28f, 1f));
+            _inspectorExpandBtn = CreateButton(titleBar.transform, "Btn_ExpandInspector", "[+ Expand]", 80f, ToggleInspectorExpansion, new Color(0.20f, 0.23f, 0.28f, 1f));
             RectTransform ebrt = _inspectorExpandBtn.GetComponent<RectTransform>();
             ebrt.anchorMin = new Vector2(1f, 0.5f);
             ebrt.anchorMax = new Vector2(1f, 0.5f);
@@ -519,7 +529,7 @@ namespace DeadCoreEditor
             GameObject rotBtnRow = CreateRowContainer(transCard.transform, "Row_RotButtons", 26f);
             SetupRowHorizontalLayout(rotBtnRow, 6f);
 
-            CreateButton(rotBtnRow.transform, "Btn_Snap90", "Snap 90°", 120f, () =>
+            CreateButton(rotBtnRow.transform, "Btn_Snap90", "Snap 90", 120f, () =>
             {
                 if (EditorSessionManager.SelectedObject != null)
                 {
@@ -528,8 +538,9 @@ namespace DeadCoreEditor
                     e.y = Mathf.Round(e.y / 90f) * 90f;
                     e.z = Mathf.Round(e.z / 90f) * 90f;
                     EditorSessionManager.SelectedObject.transform.rotation = Quaternion.Euler(e);
+                    StudioGizmoController.InvalidateCachedCenter(EditorSessionManager.SelectedObject);
                     RefreshInspectorValues();
-                    EditorSessionManager.ShowNotification("Rotation snapped to 90°");
+                    EditorSessionManager.ShowNotification("Rotation snapped to 90 deg");
                 }
             });
             CreateButton(rotBtnRow.transform, "Btn_ResetRot", "Reset Rot", 120f, () =>
@@ -537,6 +548,7 @@ namespace DeadCoreEditor
                 if (EditorSessionManager.SelectedObject != null)
                 {
                     EditorSessionManager.SelectedObject.transform.rotation = Quaternion.identity;
+                    StudioGizmoController.InvalidateCachedCenter(EditorSessionManager.SelectedObject);
                     RefreshInspectorValues();
                     EditorSessionManager.ShowNotification("Rotation reset to (0,0,0)");
                 }
@@ -544,7 +556,7 @@ namespace DeadCoreEditor
 
             CreateSingleFloatRow(transCard.transform, "Scale", out _scaleInput, OnTransformInputChanged);
 
-            // 2. Specialized Gameplay Cards
+            // 2. Gameplay Cards
             _jumperSection = CreateSectionCard(_inspectorContent, "Jumper", "Jumper Launch Pad");
             CreateInspectorSliderRow(_jumperSection.transform, "Launch Force", out _jumperSlider, out _jumperValueText, 5f, 75f, (val) =>
             {
@@ -574,11 +586,11 @@ namespace DeadCoreEditor
             {
                 if (_suppressInspectorCallbacks || EditorSessionManager.SelectedObject == null) return;
                 EditorSessionManager.LaserRotationSpeeds[EditorSessionManager.SelectedObject] = val;
-                if (_laserValueText != null) _laserValueText.text = $"{val:F0}°/s";
+                if (_laserValueText != null) _laserValueText.text = $"{val:F0} d/s";
             });
 
-            // 3. Merged Clean Lighting Card
-            _lightSection = CreateSectionCard(_inspectorContent, "Lighting", "💡 Lighting Properties");
+            // 3. Merged Lighting Card
+            _lightSection = CreateSectionCard(_inspectorContent, "Lighting", "Lighting Properties");
 
             GameObject badgeRow = CreateRowContainer(_lightSection.transform, "Row_Badge", 22f);
             _lightTypeBadgeText = CreateText(badgeRow.transform, "Type: [Tech Spotlight]", Vector2.zero, Vector2.one, Vector2.zero, Vector2.zero, 11f, FontStyles.Bold, new Color(0.25f, 0.9f, 1f), TextAlignmentOptions.MidlineLeft);
@@ -601,7 +613,7 @@ namespace DeadCoreEditor
                 {
                     cfg.SpotAngle = val;
                     EditorSessionManager.ApplyLightConfig(EditorSessionManager.SelectedObject, cfg);
-                    if (_lightAngleValText != null) _lightAngleValText.text = $"{val:F0}°";
+                    if (_lightAngleValText != null) _lightAngleValText.text = $"{val:F0} deg";
                 }
             });
 
@@ -641,7 +653,7 @@ namespace DeadCoreEditor
             CreateButton(colorPresetsRow.transform, "Btn_White", "White", 40f, () => ApplyPresetColor(Color.white), Color.white);
             CreateButton(colorPresetsRow.transform, "Btn_Violet", "Violet", 40f, () => ApplyPresetColor(new Color(0.7f, 0.3f, 1f)), new Color(0.7f, 0.3f, 1f));
 
-            // 4. Overhauled Motion Path Card with Live Speed Control
+            // 4. Motion Path Card
             _motionPathSection = CreateSectionCard(_inspectorContent, "MotionPath", "Kinematic Motion Path");
 
             _motionPathCreateBtnObj = CreateRowContainer(_motionPathSection.transform, "Row_CreatePath", 28f);
@@ -735,32 +747,6 @@ namespace DeadCoreEditor
                 RefreshInspectorValues();
                 EditorSessionManager.ShowNotification("Motion path removed.");
             }, new Color(0.7f, 0.25f, 0.25f, 1f));
-
-            // 5. Parenting Card
-            _parentingSection = CreateSectionCard(_inspectorContent, "Parenting", "Assembly Parenting");
-            GameObject parentBtnRow = CreateRowContainer(_parentingSection.transform, "Row_ParentButtons", 26f);
-            SetupRowHorizontalLayout(parentBtnRow, 6f);
-
-            CreateButton(parentBtnRow.transform, "Btn_PickParent", "Pick Parent", 120f, () =>
-            {
-                if (EditorSessionManager.SelectedObject != null)
-                {
-                    EditorSessionManager.ParentingChildTarget = EditorSessionManager.SelectedObject;
-                    EditorSessionManager.ShowNotification($"Selected '{EditorSessionManager.SelectedObject.name}'. Click target parent in Hierarchy.");
-                }
-            });
-
-            CreateButton(parentBtnRow.transform, "Btn_Unparent", "Unparent", 120f, () =>
-            {
-                if (EditorSessionManager.SelectedObject != null && EditorSessionManager.SelectedObject.transform.parent != null)
-                {
-                    GameObject oldP = EditorSessionManager.SelectedObject.transform.parent.gameObject;
-                    EditorSessionManager.SelectedObject.transform.SetParent(null, true);
-                    EditorSessionManager.RecalculateParentChildCount(oldP);
-                    RefreshHierarchy();
-                    EditorSessionManager.ShowNotification("Object unparented to root.");
-                }
-            });
         }
 
         private static void ToggleInspectorExpansion()
@@ -774,7 +760,7 @@ namespace DeadCoreEditor
             }
             if (_inspectorExpandBtnText != null)
             {
-                _inspectorExpandBtnText.text = _isInspectorExpanded ? "[⤡ Slim]" : "[⤢ Expand]";
+                _inspectorExpandBtnText.text = _isInspectorExpanded ? "[- Slim]" : "[+ Expand]";
             }
         }
 
@@ -791,7 +777,7 @@ namespace DeadCoreEditor
             abrt.anchorMin = new Vector2(0f, 0f);
             abrt.anchorMax = new Vector2(1f, 0f);
             abrt.pivot = new Vector2(0.5f, 0f);
-            abrt.offsetMin = new Vector2(250f, 0f);
+            abrt.offsetMin = new Vector2(265f, 0f);
             abrt.offsetMax = new Vector2(-290f, 210f);
 
             Image abImg = _assetBrowserPanel.AddComponent<Image>();
@@ -1001,7 +987,7 @@ namespace DeadCoreEditor
         }
 
         // =========================================================================
-        // HIERARCHY REFRESH (TREE VIEW)
+        // OVERHAULED INTERACTIVE HIERARCHY REFRESH (CLEAN ASCII LABELS)
         // =========================================================================
 
         public static void RefreshHierarchy()
@@ -1070,23 +1056,27 @@ namespace DeadCoreEditor
             row.transform.SetParent(_hierarchyContent, false);
 
             RectTransform rt = row.AddComponent<RectTransform>();
-            rt.sizeDelta = new Vector2(0f, 24f);
+            rt.sizeDelta = new Vector2(0f, 26f);
 
             LayoutElement le = row.AddComponent<LayoutElement>();
-            le.preferredHeight = 24f;
-            le.minHeight = 24f;
+            le.preferredHeight = 26f;
+            le.minHeight = 26f;
             le.flexibleHeight = 0f;
             le.flexibleWidth = 1f;
 
             bool isSelected = (EditorSessionManager.SelectedObjects != null && EditorSessionManager.SelectedObjects.Contains(node)) ||
                               (EditorSessionManager.SelectedObject == node);
 
+            bool isPendingChild = (EditorSessionManager.ParentingChildTarget == node);
+
             Image bg = row.AddComponent<Image>();
-            bg.color = isSelected ? new Color(0.18f, 0.52f, 0.88f, 0.95f) :
-                       (hasChildren ? new Color(0.16f, 0.18f, 0.22f, 0.80f) : new Color(0.11f, 0.12f, 0.14f, 0.60f));
+            bg.color = isPendingChild ? new Color(0.95f, 0.65f, 0.15f, 0.95f) :
+                       (isSelected ? new Color(0.18f, 0.52f, 0.88f, 0.95f) :
+                       (hasChildren ? new Color(0.16f, 0.18f, 0.22f, 0.80f) : new Color(0.11f, 0.12f, 0.14f, 0.60f)));
 
-            float leftPadding = 8f + (depth * 18f);
+            float leftPadding = 6f + (depth * 14f);
 
+            // Foldout Arrow (Clean ASCII '>' / 'v')
             if (hasChildren)
             {
                 GameObject foldoutBtn = new GameObject("Foldout");
@@ -1099,7 +1089,7 @@ namespace DeadCoreEditor
                 fbrt.sizeDelta = new Vector2(16f, 20f);
 
                 TMP_Text ft = foldoutBtn.AddComponent<TextMeshProUGUI>();
-                ft.text = isCollapsed ? "►" : "▼";
+                ft.text = isCollapsed ? ">" : "v";
                 ft.fontSize = 11f;
                 ft.alignment = TextAlignmentOptions.Center;
                 ft.color = new Color(0.3f, 0.85f, 1f);
@@ -1116,15 +1106,17 @@ namespace DeadCoreEditor
                 leftPadding += 16f;
             }
 
+            // Selection Button
             Button b = row.AddComponent<Button>();
             GameObject captured = node;
             b.onClick.AddListener((Action)(() =>
             {
                 if (EditorSessionManager.ParentingChildTarget != null && EditorSessionManager.ParentingChildTarget != captured)
                 {
-                    EditorSessionManager.ParentingChildTarget.transform.SetParent(captured.transform, true);
+                    GameObject child = EditorSessionManager.ParentingChildTarget;
+                    child.transform.SetParent(captured.transform, true);
                     EditorSessionManager.RecalculateParentChildCount(captured);
-                    EditorSessionManager.ShowNotification($"Linked '{EditorSessionManager.ParentingChildTarget.name}' -> '{captured.name}'");
+                    EditorSessionManager.ShowNotification($"Parented '{child.name}' under '{captured.name}'");
                     EditorSessionManager.ParentingChildTarget = null;
                     RefreshHierarchy();
                 }
@@ -1135,18 +1127,91 @@ namespace DeadCoreEditor
                 }
             }));
 
-            string treeBranch = (depth > 0) ? "└── " : "";
+            // Hierarchy Row Label (Clean ASCII tree branches)
+            string treeBranch = (depth > 0) ? "|-- " : "";
             string parentBadge = hasChildren ? $" ({childrenMap[node].Count})" : "";
             string displayName = treeBranch + captured.name + parentBadge;
 
             TMP_Text rowText = CreateText(row.transform, displayName,
                 new Vector2(0f, 0f), new Vector2(1f, 1f),
-                new Vector2(leftPadding, 0f), new Vector2(-4f, 0f),
+                new Vector2(leftPadding, 0f), new Vector2(-65f, 0f),
                 11f, hasChildren ? FontStyles.Bold : FontStyles.Normal,
                 hasChildren ? new Color(0.9f, 0.95f, 1f) : Color.white,
                 TextAlignmentOptions.MidlineLeft);
             rowText.enableWordWrapping = false;
             rowText.overflowMode = TextOverflowModes.Ellipsis;
+
+            // Inline Focus Button [F]
+            GameObject focusBtnObj = new GameObject("Btn_Focus");
+            focusBtnObj.transform.SetParent(row.transform, false);
+            RectTransform fcrt = focusBtnObj.AddComponent<RectTransform>();
+            fcrt.anchorMin = new Vector2(1f, 0.5f);
+            fcrt.anchorMax = new Vector2(1f, 0.5f);
+            fcrt.pivot = new Vector2(1f, 0.5f);
+            fcrt.anchoredPosition = new Vector2(-42f, 0f);
+            fcrt.sizeDelta = new Vector2(18f, 18f);
+
+            focusBtnObj.AddComponent<Image>().color = new Color(0.15f, 0.18f, 0.24f, 0.9f);
+            Button fcBtn = focusBtnObj.AddComponent<Button>();
+            TMP_Text fcTxt = CreateText(focusBtnObj.transform, "F", Vector2.zero, Vector2.one, Vector2.zero, Vector2.zero, 10f, FontStyles.Bold, Color.white, TextAlignmentOptions.Center);
+            fcBtn.onClick.AddListener((Action)(() =>
+            {
+                EditorSessionManager.SelectObject(captured);
+                EditorViewportCamera.FocusOnObject(captured);
+            }));
+
+            // Inline Parent/Link Button [P]
+            GameObject linkBtnObj = new GameObject("Btn_Link");
+            linkBtnObj.transform.SetParent(row.transform, false);
+            RectTransform lkrt = linkBtnObj.AddComponent<RectTransform>();
+            lkrt.anchorMin = new Vector2(1f, 0.5f);
+            lkrt.anchorMax = new Vector2(1f, 0.5f);
+            lkrt.pivot = new Vector2(1f, 0.5f);
+            lkrt.anchoredPosition = new Vector2(-22f, 0f);
+            lkrt.sizeDelta = new Vector2(18f, 18f);
+
+            linkBtnObj.AddComponent<Image>().color = isPendingChild ? new Color(0.95f, 0.65f, 0.15f, 0.95f) : new Color(0.15f, 0.18f, 0.24f, 0.9f);
+            Button lkBtn = linkBtnObj.AddComponent<Button>();
+            TMP_Text lkTxt = CreateText(linkBtnObj.transform, "P", Vector2.zero, Vector2.one, Vector2.zero, Vector2.zero, 10f, FontStyles.Bold, isPendingChild ? Color.black : Color.cyan, TextAlignmentOptions.Center);
+            lkBtn.onClick.AddListener((Action)(() =>
+            {
+                if (EditorSessionManager.ParentingChildTarget == captured)
+                {
+                    EditorSessionManager.ParentingChildTarget = null;
+                    EditorSessionManager.ShowNotification("Cancelled reparenting.");
+                }
+                else
+                {
+                    EditorSessionManager.ParentingChildTarget = captured;
+                    EditorSessionManager.ShowNotification($"Selected '{captured.name}' to reparent. Click new parent in hierarchy.");
+                }
+                RefreshHierarchy();
+            }));
+
+            // Inline Unparent Button [X]
+            if (node.transform.parent != null && EditorSessionManager.PlacedObjects.Contains(node.transform.parent.gameObject))
+            {
+                GameObject unpBtnObj = new GameObject("Btn_Unparent");
+                unpBtnObj.transform.SetParent(row.transform, false);
+                RectTransform unprt = unpBtnObj.AddComponent<RectTransform>();
+                unprt.anchorMin = new Vector2(1f, 0.5f);
+                unprt.anchorMax = new Vector2(1f, 0.5f);
+                unprt.pivot = new Vector2(1f, 0.5f);
+                unprt.anchoredPosition = new Vector2(-2f, 0f);
+                unprt.sizeDelta = new Vector2(18f, 18f);
+
+                unpBtnObj.AddComponent<Image>().color = new Color(0.24f, 0.12f, 0.12f, 0.9f);
+                Button unpBtn = unpBtnObj.AddComponent<Button>();
+                TMP_Text unpTxt = CreateText(unpBtnObj.transform, "X", Vector2.zero, Vector2.one, Vector2.zero, Vector2.zero, 10f, FontStyles.Bold, new Color(1f, 0.4f, 0.4f), TextAlignmentOptions.Center);
+                unpBtn.onClick.AddListener((Action)(() =>
+                {
+                    GameObject oldP = captured.transform.parent.gameObject;
+                    captured.transform.SetParent(null, true);
+                    EditorSessionManager.RecalculateParentChildCount(oldP);
+                    EditorSessionManager.ShowNotification($"Unparented '{captured.name}' to root.");
+                    RefreshHierarchy();
+                }));
+            }
 
             _hierarchyRows.Add(row);
 
@@ -1200,7 +1265,6 @@ namespace DeadCoreEditor
                 if (_laserSection != null) _laserSection.SetActive(false);
                 if (_lightSection != null) _lightSection.SetActive(false);
                 if (_motionPathSection != null) _motionPathSection.SetActive(false);
-                if (_parentingSection != null) _parentingSection.SetActive(false);
                 return;
             }
 
@@ -1266,7 +1330,7 @@ namespace DeadCoreEditor
                 {
                     float speed = EditorSessionManager.LaserRotationSpeeds.ContainsKey(obj) ? EditorSessionManager.LaserRotationSpeeds[obj] : EditorSessionManager.ActiveLaserRotationSpeed;
                     _laserSlider.value = speed;
-                    if (_laserValueText != null) _laserValueText.text = $"{speed:F0}°/s";
+                    if (_laserValueText != null) _laserValueText.text = $"{speed:F0} d/s";
                 }
             }
 
@@ -1288,7 +1352,7 @@ namespace DeadCoreEditor
                     }
 
                     if (_lightIntensitySlider != null) { _lightIntensitySlider.value = cfg.Intensity; _lightIntensityValText.text = $"{cfg.Intensity:F1}"; }
-                    if (_lightAngleSlider != null) { _lightAngleSlider.value = cfg.SpotAngle; _lightAngleValText.text = $"{cfg.SpotAngle:F0}°"; }
+                    if (_lightAngleSlider != null) { _lightAngleSlider.value = cfg.SpotAngle; _lightAngleValText.text = $"{cfg.SpotAngle:F0} deg"; }
                     if (_lightVolSlider != null) { _lightVolSlider.value = cfg.VolumetricIntensity; _lightVolValText.text = $"{cfg.VolumetricIntensity:F1}"; }
                     if (_lightColorPreviewSwatch != null) { _lightColorPreviewSwatch.color = cfg.Color; }
                 }
@@ -1313,11 +1377,6 @@ namespace DeadCoreEditor
                 }
             }
 
-            if (_parentingSection != null)
-            {
-                _parentingSection.SetActive(true);
-            }
-
             _suppressInspectorCallbacks = false;
         }
 
@@ -1340,6 +1399,7 @@ namespace DeadCoreEditor
             obj.transform.rotation = Quaternion.Euler(rx, ry, rz);
             obj.transform.localScale = Vector3.one * Mathf.Max(0.01f, sc);
 
+            StudioGizmoController.InvalidateCachedCenter(obj);
             EditorSessionManager.UpdateSelectionHighlight();
         }
 
@@ -1585,7 +1645,6 @@ namespace DeadCoreEditor
             slider.maxValue = maxVal;
             slider.direction = Slider.Direction.LeftToRight;
 
-            // 1. Slim Background Track
             GameObject trackObj = new GameObject("Track");
             trackObj.transform.SetParent(sliderObj.transform, false);
             RectTransform trt = trackObj.AddComponent<RectTransform>();
@@ -1598,7 +1657,6 @@ namespace DeadCoreEditor
             trackImg.color = new Color(0.08f, 0.09f, 0.12f, 1f);
             trackImg.raycastTarget = false;
 
-            // 2. Fill Area
             GameObject fillArea = new GameObject("FillArea");
             fillArea.transform.SetParent(sliderObj.transform, false);
             RectTransform fart = fillArea.AddComponent<RectTransform>();
@@ -1620,7 +1678,6 @@ namespace DeadCoreEditor
             fillImg.color = new Color(0.18f, 0.65f, 0.95f, 0.9f);
             fillImg.raycastTarget = false;
 
-            // 3. Handle Knob
             GameObject handleArea = new GameObject("HandleArea");
             handleArea.transform.SetParent(sliderObj.transform, false);
             RectTransform hart = handleArea.AddComponent<RectTransform>();
@@ -1813,7 +1870,7 @@ namespace DeadCoreEditor
 
                 if (_saveBtnText != null)
                 {
-                    _saveBtnText.text = "✓ SAVED!";
+                    _saveBtnText.text = "SAVED!";
                     _saveBtnText.color = new Color(0.3f, 1f, 0.5f);
                     _saveFeedbackTimer = 1.5f;
                 }
@@ -2527,8 +2584,8 @@ namespace DeadCoreEditor
             catch { }
 
             DateTime mod = File.GetLastWriteTime(fullPath);
-            _statsLabelLeft.text = $"• TOTAL OBJECTS: <b><color=#00E5FF>{objectCount}</color></b>\n• HAZARDS & LASERS: <b><color=#FF5252>{lasers}</color></b>\n• JUMP PADS: <b><color=#FFEB3B>{jumpers}</color></b>";
-            _statsLabelRight.text = $"• MOVING PATHS: <b><color=#E040FB>{paths}</color></b>\n• TURRET ENEMIES: <b><color=#FF4081>{turrets}</color></b>\n• LAST SAVED: <color=#B0BEC5>{mod:dd/MM/yyyy HH:mm}</color>";
+            _statsLabelLeft.text = $"- TOTAL OBJECTS: <b><color=#00E5FF>{objectCount}</color></b>\n- HAZARDS & LASERS: <b><color=#FF5252>{lasers}</color></b>\n- JUMP PADS: <b><color=#FFEB3B>{jumpers}</color></b>";
+            _statsLabelRight.text = $"- MOVING PATHS: <b><color=#E040FB>{paths}</color></b>\n- TURRET ENEMIES: <b><color=#FF4081>{turrets}</color></b>\n- LAST SAVED: <color=#B0BEC5>{mod:dd/MM/yyyy HH:mm}</color>";
         }
 
         private static void CreateNativeSaveButton(Transform parent, TMP_Text sampleTmp, float posY)
