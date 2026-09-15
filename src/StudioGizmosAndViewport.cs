@@ -149,6 +149,17 @@ namespace DeadCoreEditor
             if (Input.GetKey(KeyCode.Space) || (Input.GetKey(KeyCode.E) && isFlying)) moveDir += Vector3.up;
             if (Input.GetKey(KeyCode.Q) && isFlying) moveDir -= Vector3.up;
 
+            // Smooth Camera Dolly Zoom on Mouse ScrollWheel (in Select Mode)
+            if (EditorSessionManager.InteractionMode == EditorInteractionMode.SelectMode && !StudioUIManager.IsPointerOverUI())
+            {
+                float scroll = Input.GetAxis("Mouse ScrollWheel");
+                if (Mathf.Abs(scroll) > 0.01f)
+                {
+                    float zoomSpeed = (Input.GetKey(KeyCode.LeftShift) || Input.GetKey(KeyCode.RightShift)) ? 28f : 12f;
+                    _camInstance.transform.position += _camInstance.transform.forward * (scroll * zoomSpeed);
+                }
+            }
+
             if (moveDir.sqrMagnitude > 0.001f)
             {
                 _camInstance.transform.position += moveDir.normalized * (speed * Time.deltaTime);
@@ -425,7 +436,6 @@ namespace DeadCoreEditor
             }
         }
 
-
         public static Vector3 CalculateRowSnappedPosition(
             Vector3 rawPos,
             Quaternion rot,
@@ -616,9 +626,12 @@ namespace DeadCoreEditor
         private static readonly Dictionary<GameObject, Quaternion> _dragStartRotations = new Dictionary<GameObject, Quaternion>();
         private static readonly Dictionary<GameObject, Vector3> _dragStartScales = new Dictionary<GameObject, Vector3>();
 
-        public static Vector3 GetObjectCenter(GameObject obj)
+        /// <summary>
+        /// Retrieves the exact mathematical world-space bounding box of an object across all active renderers.
+        /// </summary>
+        public static Bounds GetObjectWorldBounds(GameObject obj)
         {
-            if (obj == null) return Vector3.zero;
+            if (obj == null) return new Bounds(Vector3.zero, Vector3.one);
 
             Renderer[] rends = obj.GetComponentsInChildren<Renderer>(true);
             Bounds b = new Bounds(Vector3.zero, Vector3.zero);
@@ -627,20 +640,43 @@ namespace DeadCoreEditor
             for (int i = 0; i < rends.Length; i++)
             {
                 Renderer r = rends[i];
-                if (r == null || !r.enabled || r.gameObject.name.Contains("Proxy") || r.gameObject.name.Contains("Gizmo")) continue;
+                if (r == null || !r.enabled) continue;
+                string n = r.gameObject.name;
+                if (n.Contains("Proxy") || n.Contains("Gizmo") || n.Contains("Highlight") || n.Contains("Beacon")) continue;
 
-                if (!hasBounds) { b = r.bounds; hasBounds = true; }
-                else { b.Encapsulate(r.bounds); }
+                if (!hasBounds)
+                {
+                    b = r.bounds;
+                    hasBounds = true;
+                }
+                else
+                {
+                    b.Encapsulate(r.bounds);
+                }
             }
 
-            if (!hasBounds) return obj.transform.position;
-
-            Vector3 c = b.center;
-            if (b.size.y < 3.0f && (b.size.x > 4.0f || b.size.z > 4.0f))
+            if (!hasBounds)
             {
-                c.y = b.max.y + 0.2f;
+                return new Bounds(obj.transform.position, Vector3.one);
             }
-            return c;
+
+            return b;
+        }
+
+        /// <summary>
+        /// Retrieves the exact geometric center of an object so rotations pivot precisely around its true volume.
+        /// </summary>
+        public static Vector3 GetObjectCenter(GameObject obj)
+        {
+            if (obj == null) return Vector3.zero;
+
+            Bounds b = GetObjectWorldBounds(obj);
+            if (b.size.sqrMagnitude < 0.0001f)
+            {
+                return obj.transform.position;
+            }
+
+            return b.center;
         }
 
         /// <summary>
@@ -881,16 +917,33 @@ namespace DeadCoreEditor
             Camera cam = EditorViewportCamera.ViewportCamera;
             if (cam == null) return;
 
+            // Compute exact geometric center across all selected objects
             Vector3 center3D = Vector3.zero;
             for (int i = 0; i < activeList.Count; i++) center3D += GetObjectCenter(activeList[i]);
             center3D /= activeList.Count;
 
             _gizmoRoot.transform.position = center3D;
 
-            // Maintain constant apparent size on screen
+            // =========================================================================
+            // ADAPTIVE ZOOM SCALING: Becomes noticeably larger when zoomed in close
+            // =========================================================================
             float dist = Vector3.Distance(cam.transform.position, center3D);
-            float s = Mathf.Max(0.5f, dist * 0.08f) * Mathf.Clamp(EditorSessionManager.ActivePlacementScale, 0.5f, 3.0f);
-            _gizmoRoot.transform.localScale = Vector3.one * s;
+
+            // When zoomed in close (2m - 10m), zoomFactor expands up to 2.2x larger on screen.
+            // When far away (30m - 50m+), it smoothly tapers down to a clean, compact profile.
+            float zoomFactor = Mathf.Lerp(2.2f, 0.85f, Mathf.InverseLerp(2f, 45f, dist));
+            float baseScale = dist * 0.075f * zoomFactor;
+
+            // Scale with object bounds so large platforms don't dwarf the handles
+            GameObject primaryObj = activeList[0];
+            Bounds b = GetObjectWorldBounds(primaryObj);
+            float maxDim = Mathf.Max(b.size.x, b.size.y, b.size.z);
+            float modelFactor = (maxDim > 2.0f) ? Mathf.Clamp(maxDim * 0.15f, 1.0f, 3.0f) : 1.0f;
+
+            float placementScaleMult = Mathf.Clamp(EditorSessionManager.ActivePlacementScale, 0.5f, 3.0f);
+
+            float finalScale = Mathf.Max(0.6f, baseScale * modelFactor * placementScaleMult);
+            _gizmoRoot.transform.localScale = Vector3.one * finalScale;
 
             EditorGizmoMode mode = isPlacing ? EditorGizmoMode.Translate : EditorSessionManager.CurrentGizmoMode;
             if (mode == EditorGizmoMode.Select) mode = EditorGizmoMode.Translate;
