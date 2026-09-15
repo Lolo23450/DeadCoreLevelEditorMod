@@ -217,6 +217,12 @@ namespace DeadCoreEditor
             ShowNotification($"Equipped: {asset.DisplayName} (Scale: {ActivePlacementScale:F2}x)");
         }
 
+
+
+        // =========================================================================
+        // ACCURATE SELECTION BOX (NO DOUBLE-SCALING)
+        // =========================================================================
+
         public static void UpdateSelectionHighlight()
         {
             CleanHighlightPool();
@@ -252,9 +258,10 @@ namespace DeadCoreEditor
 
                 box.transform.position = worldCenter;
                 box.transform.rotation = obj.transform.rotation;
-                box.transform.localScale = Vector3.Scale(b.size * 1.04f, obj.transform.lossyScale);
+                // Tight fit hugging the object bounds accurately
+                box.transform.localScale = Vector3.Scale(b.size * 1.02f, obj.transform.lossyScale);
 
-                beacon.transform.position = worldCenter + Vector3.up * (b.extents.y * obj.transform.lossyScale.y + 0.6f);
+                beacon.transform.position = worldCenter + Vector3.up * (b.extents.y * obj.transform.lossyScale.y + 0.5f);
                 beacon.transform.localScale = Vector3.one * 0.35f;
 
                 _highlightBoxes.Add(box);
@@ -1295,6 +1302,10 @@ namespace DeadCoreEditor
             }
         }
 
+        // =========================================================================
+        // PROCEDURAL VOLUMETRIC LIGHT CONE & CONFIGURATION
+        // =========================================================================
+
         public static void ApplyLightConfig(GameObject lightObj, LightConfig cfg)
         {
             if (lightObj == null || cfg == null) return;
@@ -1314,8 +1325,7 @@ namespace DeadCoreEditor
                         targetSun.type = LightType.Directional;
                         targetSun.color = cfg.Color;
                         targetSun.transform.rotation = lightObj.transform.rotation;
-                        float hdrpSunIntensity = Mathf.Max(0.1f, cfg.Intensity) * 4000f;
-                        targetSun.intensity = hdrpSunIntensity;
+                        targetSun.intensity = Mathf.Max(0.1f, cfg.Intensity) * 4000f;
                         RenderSettings.sun = targetSun;
                     }
                 }
@@ -1327,6 +1337,48 @@ namespace DeadCoreEditor
                     l.spotAngle = Mathf.Clamp(cfg.SpotAngle, 5f, 150f);
                     l.color = cfg.Color;
                     l.intensity = Mathf.Pow(Mathf.Max(0.1f, cfg.Intensity), 2.2f) * 8000f;
+
+                    // VOLUMETRIC LIGHT BEAM CONE
+                    Transform oldBeam = lightObj.transform.Find("Volumetric_Beam");
+                    if (cfg.VolumetricIntensity > 0.05f)
+                    {
+                        GameObject beamObj = (oldBeam != null) ? oldBeam.gameObject : null;
+                        if (beamObj == null)
+                        {
+                            beamObj = GameObject.CreatePrimitive(PrimitiveType.Cylinder);
+                            beamObj.name = "Volumetric_Beam";
+                            beamObj.transform.SetParent(lightObj.transform, false);
+                            beamObj.layer = 2; // Ignore Raycast
+
+                            Collider c = beamObj.GetComponent<Collider>();
+                            if (c != null) GameObject.DestroyImmediate(c);
+
+                            Shader beamShader = Shader.Find("Particles/Additive") ?? Shader.Find("Particles/Standard Unlit") ?? Shader.Find("Sprites/Default");
+                            Material beamMat = new Material(beamShader);
+                            beamObj.GetComponent<Renderer>().material = beamMat;
+                            beamObj.GetComponent<Renderer>().shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
+                            beamObj.GetComponent<Renderer>().receiveShadows = false;
+                        }
+
+                        beamObj.SetActive(true);
+
+                        float beamLength = 40f;
+                        float rad = Mathf.Tan(cfg.SpotAngle * 0.5f * Mathf.Deg2Rad) * beamLength;
+
+                        beamObj.transform.localPosition = new Vector3(0f, 0f, beamLength * 0.5f);
+                        beamObj.transform.localRotation = Quaternion.Euler(90f, 0f, 0f);
+                        beamObj.transform.localScale = new Vector3(rad * 1.5f, beamLength * 0.5f, rad * 1.5f);
+
+                        Renderer r = beamObj.GetComponent<Renderer>();
+                        Color beamColor = cfg.Color;
+                        beamColor.a = Mathf.Clamp01(cfg.VolumetricIntensity * 0.08f);
+                        r.material.color = beamColor;
+                        if (r.material.HasProperty("_TintColor")) r.material.SetColor("_TintColor", beamColor);
+                    }
+                    else if (oldBeam != null)
+                    {
+                        oldBeam.gameObject.SetActive(false);
+                    }
                 }
                 l.enabled = true;
             }
@@ -1440,9 +1492,21 @@ namespace DeadCoreEditor
         // RUNTIME SIMULATION & PLAYER CONTROL CHECKS
         // =========================================================================
 
+        // =========================================================================
+        // MOTION PATHS & IN-SCENE EDIT MODE WAYPOINT MARKERS
+        // =========================================================================
+
+        private static readonly Dictionary<GameObject, GameObject> _waypointMarkersA = new Dictionary<GameObject, GameObject>();
+        private static readonly Dictionary<GameObject, GameObject> _waypointMarkersB = new Dictionary<GameObject, GameObject>();
+        private static readonly Dictionary<GameObject, LineRenderer> _waypointLines = new Dictionary<GameObject, LineRenderer>();
+
         private static void UpdateObjectMotionPaths(GameObject player, CharacterController cc)
         {
-            if (MotionPaths.Count == 0) return;
+            if (MotionPaths.Count == 0)
+            {
+                HideAllWaypointMarkers();
+                return;
+            }
 
             bool canPushPlayer = (player != null && !IsEditModeActive && cc != null && cc.isGrounded);
             Vector3 playerFeetPos = canPushPlayer ? player.transform.position : Vector3.zero;
@@ -1453,16 +1517,21 @@ namespace DeadCoreEditor
                 ObjectMotionPath path = kvp.Value;
                 if (obj == null || !obj.activeSelf || !path.IsActive) continue;
 
-                if (IsEditModeActive && (PathEditTarget == obj || RepositionTarget == obj))
+                // IN EDIT MODE: Keep object anchored at Point A and show visual 3D Waypoints
+                if (IsEditModeActive)
                 {
                     obj.transform.position = path.PointA;
+                    UpdateWaypointVisuals(obj, path);
                     continue;
                 }
+
+                // IN PLAYTEST MODE: Hide markers and animate smoothly
+                HideWaypointVisual(obj);
 
                 float dist = path.TotalDistance;
                 if (dist < 0.05f) continue;
 
-                float speed = Mathf.Max(0.2f, path.Speed);
+                float speed = Mathf.Max(0.1f, path.Speed);
                 float duration = dist / speed;
                 float t = Mathf.PingPong(Time.time / duration, 1.0f);
                 Vector3 targetPos = path.EvaluatePosition(t);
@@ -1486,6 +1555,72 @@ namespace DeadCoreEditor
                     }
                 }
             }
+        }
+
+        private static void UpdateWaypointVisuals(GameObject obj, ObjectMotionPath path)
+        {
+            if (!_waypointMarkersA.TryGetValue(obj, out GameObject markerA) || markerA == null)
+            {
+                markerA = GameObject.CreatePrimitive(PrimitiveType.Sphere);
+                markerA.name = "Waypoint_A_" + obj.name;
+                Collider ca = markerA.GetComponent<Collider>();
+                if (ca != null) ca.isTrigger = true;
+                markerA.transform.localScale = Vector3.one * 0.75f;
+                Material ma = new Material(Shader.Find("Unlit/Color") ?? Shader.Find("Sprites/Default"));
+                ma.color = new Color(0.2f, 1f, 0.4f, 0.9f);
+                markerA.GetComponent<Renderer>().material = ma;
+                _waypointMarkersA[obj] = markerA;
+            }
+
+            if (!_waypointMarkersB.TryGetValue(obj, out GameObject markerB) || markerB == null)
+            {
+                markerB = GameObject.CreatePrimitive(PrimitiveType.Sphere);
+                markerB.name = "Waypoint_B_" + obj.name;
+                Collider cb = markerB.GetComponent<Collider>();
+                if (cb != null) cb.isTrigger = true;
+                markerB.transform.localScale = Vector3.one * 0.75f;
+                Material mb = new Material(Shader.Find("Unlit/Color") ?? Shader.Find("Sprites/Default"));
+                mb.color = new Color(1f, 0.6f, 0.1f, 0.9f);
+                markerB.GetComponent<Renderer>().material = mb;
+                _waypointMarkersB[obj] = markerB;
+            }
+
+            if (!_waypointLines.TryGetValue(obj, out LineRenderer lr) || lr == null)
+            {
+                GameObject lineObj = new GameObject("Waypoint_Line_" + obj.name);
+                lr = lineObj.AddComponent<LineRenderer>();
+                lr.positionCount = 2;
+                lr.startWidth = 0.12f;
+                lr.endWidth = 0.12f;
+                Material ml = new Material(Shader.Find("Unlit/Color") ?? Shader.Find("Sprites/Default"));
+                ml.color = new Color(0.3f, 0.8f, 1f, 0.7f);
+                lr.material = ml;
+                _waypointLines[obj] = lr;
+            }
+
+            markerA.SetActive(true);
+            markerB.SetActive(true);
+            lr.gameObject.SetActive(true);
+
+            markerA.transform.position = path.PointA;
+            markerB.transform.position = path.PointB;
+
+            lr.SetPosition(0, path.PointA);
+            lr.SetPosition(1, path.PointB);
+        }
+
+        private static void HideWaypointVisual(GameObject obj)
+        {
+            if (_waypointMarkersA.TryGetValue(obj, out GameObject a) && a != null) a.SetActive(false);
+            if (_waypointMarkersB.TryGetValue(obj, out GameObject b) && b != null) b.SetActive(false);
+            if (_waypointLines.TryGetValue(obj, out LineRenderer l) && l != null) l.gameObject.SetActive(false);
+        }
+
+        private static void HideAllWaypointMarkers()
+        {
+            foreach (var kvp in _waypointMarkersA) if (kvp.Value != null) kvp.Value.SetActive(false);
+            foreach (var kvp in _waypointMarkersB) if (kvp.Value != null) kvp.Value.SetActive(false);
+            foreach (var kvp in _waypointLines) if (kvp.Value != null) kvp.Value.gameObject.SetActive(false);
         }
 
         private static void CheckGoalTriggerArrival(GameObject player)

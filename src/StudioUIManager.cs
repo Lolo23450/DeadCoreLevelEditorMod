@@ -91,8 +91,13 @@ namespace DeadCoreEditor
         private static TMP_Text _lightVolValText = null;
         private static Image _lightColorPreviewSwatch = null;
 
+        // Overhauled Motion Path Section
         private static GameObject _motionPathSection = null;
         private static TMP_Text _motionPathStatusText = null;
+        private static Slider _motionPathSpeedSlider = null;
+        private static TMP_Text _motionPathSpeedValText = null;
+        private static GameObject _motionPathCreateBtnObj = null;
+        private static GameObject _motionPathActiveControlsObj = null;
         private static GameObject _parentingSection = null;
 
         // Docked Bottom Asset Browser
@@ -418,7 +423,7 @@ namespace DeadCoreEditor
         }
 
         // =========================================================================
-        // HIERARCHY PANEL (LEFT: 245px TREE VIEW DOCKED, ZERO BUTTON OVERLAPS)
+        // HIERARCHY PANEL (LEFT)
         // =========================================================================
 
         private static void BuildHierarchyPanel()
@@ -461,7 +466,7 @@ namespace DeadCoreEditor
         }
 
         // =========================================================================
-        // EXPANDABLE INSPECTOR PANEL (RIGHT, SECTION CARDS, ZERO OVERLAPS)
+        // EXPANDABLE INSPECTOR PANEL
         // =========================================================================
 
         private static void BuildInspectorPanel()
@@ -473,7 +478,6 @@ namespace DeadCoreEditor
                 new Color(0.12f, 0.13f, 0.15f, 0.98f));
             _inspectorPanelRt = _inspectorPanel.GetComponent<RectTransform>();
 
-            // Title bar with Expand button
             GameObject titleBar = new GameObject("TitleBar");
             titleBar.transform.SetParent(_inspectorPanel.transform, false);
             RectTransform tbrt = titleBar.AddComponent<RectTransform>();
@@ -538,7 +542,7 @@ namespace DeadCoreEditor
 
             CreateSingleFloatRow(transCard.transform, "Scale", out _scaleInput, OnTransformInputChanged);
 
-            // 2. Specialized Gameplay Cards
+            // 2. Gameplay Cards
             _jumperSection = CreateSectionCard(_inspectorContent, "Jumper", "Jumper Launch Pad");
             CreateInspectorSliderRow(_jumperSection.transform, "Launch Force", out _jumperSlider, out _jumperValueText, 5f, 75f, (val) =>
             {
@@ -635,47 +639,102 @@ namespace DeadCoreEditor
             CreateButton(colorPresetsRow.transform, "Btn_White", "White", 40f, () => ApplyPresetColor(Color.white), Color.white);
             CreateButton(colorPresetsRow.transform, "Btn_Violet", "Violet", 40f, () => ApplyPresetColor(new Color(0.7f, 0.3f, 1f)), new Color(0.7f, 0.3f, 1f));
 
-            // 4. Motion Path Card
+            // 4. Overhauled Motion Path Card with Live Speed Control & In-Scene Waypoint Selector
             _motionPathSection = CreateSectionCard(_inspectorContent, "MotionPath", "Kinematic Motion Path");
-            _motionPathStatusText = CreateText(_motionPathSection.transform, "No Path Bound", new Vector2(0f, 0f), new Vector2(1f, 1f), Vector2.zero, Vector2.zero, 11f, FontStyles.Normal, Color.gray, TextAlignmentOptions.MidlineLeft);
+
+            // Creation Button Container (Shown if object has NO path)
+            _motionPathCreateBtnObj = CreateRowContainer(_motionPathSection.transform, "Row_CreatePath", 28f);
+            CreateButton(_motionPathCreateBtnObj.transform, "Btn_CreateMotionPath", "[+ Create Motion Path]", 240f, () =>
+            {
+                if (EditorSessionManager.SelectedObject == null) return;
+                GameObject obj = EditorSessionManager.SelectedObject;
+                Vector3 startPos = obj.transform.position;
+                Vector3 endPos = startPos + obj.transform.forward * 8f;
+
+                EditorSessionManager.MotionPaths[obj] = new ObjectMotionPath
+                {
+                    PointA = startPos,
+                    PointB = endPos,
+                    Speed = 3.5f,
+                    IsActive = true
+                };
+
+                RefreshInspectorValues();
+                EditorSessionManager.ShowNotification("Created motion path! Point B placed 8m forward.");
+            }, new Color(0.2f, 0.65f, 0.95f, 1f));
+
+            // Active Path Controls Container (Shown if object HAS a path)
+            _motionPathActiveControlsObj = new GameObject("ActiveControls");
+            _motionPathActiveControlsObj.transform.SetParent(_motionPathSection.transform, false);
+
+            VerticalLayoutGroup mpcVlg = _motionPathActiveControlsObj.AddComponent<VerticalLayoutGroup>();
+            mpcVlg.spacing = 4f;
+            mpcVlg.childControlWidth = true;
+            mpcVlg.childControlHeight = true;
+            mpcVlg.childForceExpandWidth = true;
+            mpcVlg.childForceExpandHeight = false;
+
+            ContentSizeFitter mpcCsf = _motionPathActiveControlsObj.AddComponent<ContentSizeFitter>();
+            mpcCsf.verticalFit = ContentSizeFitter.FitMode.PreferredSize;
+
+            LayoutElement mpcLe = _motionPathActiveControlsObj.AddComponent<LayoutElement>();
+            mpcLe.flexibleWidth = 1f;
+
+            _motionPathStatusText = CreateText(_motionPathActiveControlsObj.transform, "Path Active", new Vector2(0f, 0f), new Vector2(1f, 1f), Vector2.zero, Vector2.zero, 11f, FontStyles.Normal, Color.cyan, TextAlignmentOptions.MidlineLeft);
             LayoutElement mple = _motionPathStatusText.gameObject.AddComponent<LayoutElement>();
-            mple.preferredHeight = 20f;
+            mple.preferredHeight = 18f;
 
-            GameObject motionBtnRow = CreateRowContainer(_motionPathSection.transform, "Row_MotionButtons", 26f);
-            HorizontalLayoutGroup mhlg = motionBtnRow.AddComponent<HorizontalLayoutGroup>();
-            mhlg.spacing = 6f; mhlg.childControlWidth = true; mhlg.childForceExpandWidth = true;
+            // Movement Speed Slider (0.2 m/s to 25.0 m/s)
+            CreateInspectorSliderRow(_motionPathActiveControlsObj.transform, "Move Speed", out _motionPathSpeedSlider, out _motionPathSpeedValText, 0.2f, 25f, (val) =>
+            {
+                if (_suppressInspectorCallbacks || EditorSessionManager.SelectedObject == null) return;
+                if (EditorSessionManager.MotionPaths.TryGetValue(EditorSessionManager.SelectedObject, out var path))
+                {
+                    path.Speed = val;
+                    if (_motionPathSpeedValText != null) _motionPathSpeedValText.text = $"{val:F1} m/s";
+                }
+            });
 
-            CreateButton(motionBtnRow.transform, "Btn_SetA", "Lock Point A", 120f, () =>
+            GameObject motionBtnRow1 = CreateRowContainer(_motionPathActiveControlsObj.transform, "Row_MotionButtons1", 26f);
+            HorizontalLayoutGroup mhlg1 = motionBtnRow1.AddComponent<HorizontalLayoutGroup>();
+            mhlg1.spacing = 6f; mhlg1.childControlWidth = true; mhlg1.childForceExpandWidth = true;
+
+            CreateButton(motionBtnRow1.transform, "Btn_SetA", "Lock Point A", 120f, () =>
             {
                 if (EditorSessionManager.SelectedObject == null) return;
                 GameObject obj = EditorSessionManager.SelectedObject;
-                if (!EditorSessionManager.MotionPaths.ContainsKey(obj))
+                if (EditorSessionManager.MotionPaths.TryGetValue(obj, out var path))
                 {
-                    EditorSessionManager.MotionPaths[obj] = new ObjectMotionPath { PointA = obj.transform.position, PointB = obj.transform.position + Vector3.up * 5f, Speed = 3.5f };
+                    path.PointA = obj.transform.position;
+                    EditorSessionManager.ShowNotification("Locked Point A to object position!");
+                    RefreshInspectorValues();
                 }
-                else
-                {
-                    EditorSessionManager.MotionPaths[obj].PointA = obj.transform.position;
-                }
-                RefreshInspectorValues();
-                EditorSessionManager.ShowNotification("Point A locked!");
             });
 
-            CreateButton(motionBtnRow.transform, "Btn_SetB", "Lock Point B", 120f, () =>
+            CreateButton(motionBtnRow1.transform, "Btn_SetB", "Lock Point B", 120f, () =>
             {
                 if (EditorSessionManager.SelectedObject == null) return;
                 GameObject obj = EditorSessionManager.SelectedObject;
-                if (!EditorSessionManager.MotionPaths.ContainsKey(obj))
+                if (EditorSessionManager.MotionPaths.TryGetValue(obj, out var path))
                 {
-                    EditorSessionManager.MotionPaths[obj] = new ObjectMotionPath { PointA = obj.transform.position, PointB = obj.transform.position + Vector3.up * 5f, Speed = 3.5f };
+                    path.PointB = obj.transform.position;
+                    EditorSessionManager.ShowNotification("Locked Point B to object position!");
+                    RefreshInspectorValues();
                 }
-                else
-                {
-                    EditorSessionManager.MotionPaths[obj].PointB = obj.transform.position;
-                }
-                RefreshInspectorValues();
-                EditorSessionManager.ShowNotification("Point B locked!");
             });
+
+            GameObject motionBtnRow2 = CreateRowContainer(_motionPathActiveControlsObj.transform, "Row_MotionButtons2", 26f);
+            HorizontalLayoutGroup mhlg2 = motionBtnRow2.AddComponent<HorizontalLayoutGroup>();
+            mhlg2.spacing = 6f; mhlg2.childControlWidth = true; mhlg2.childForceExpandWidth = true;
+
+            CreateButton(motionBtnRow2.transform, "Btn_RemovePath", "[- Remove Path]", 120f, () =>
+            {
+                if (EditorSessionManager.SelectedObject == null) return;
+                GameObject obj = EditorSessionManager.SelectedObject;
+                EditorSessionManager.MotionPaths.Remove(obj);
+                RefreshInspectorValues();
+                EditorSessionManager.ShowNotification("Motion path removed.");
+            }, new Color(0.7f, 0.25f, 0.25f, 1f));
 
             // 5. Parenting Card
             _parentingSection = CreateSectionCard(_inspectorContent, "Parenting", "Assembly Parenting");
@@ -721,7 +780,7 @@ namespace DeadCoreEditor
         }
 
         // =========================================================================
-        // ASSET BROWSER (BOTTOM DOCKED BETWEEN HIERARCHY & INSPECTOR)
+        // ASSET BROWSER
         // =========================================================================
 
         private static void BuildAssetBrowserPanel()
@@ -941,7 +1000,7 @@ namespace DeadCoreEditor
         }
 
         // =========================================================================
-        // HIERARCHY REFRESH (TREE VIEW: PARENT-CHILD BRANCHES + EXPAND/COLLAPSE)
+        // HIERARCHY REFRESH (TREE VIEW)
         // =========================================================================
 
         public static void RefreshHierarchy()
@@ -1118,7 +1177,7 @@ namespace DeadCoreEditor
         }
 
         // =========================================================================
-        // INSPECTOR VALUES REFRESH (ZERO OVERLAPS, AUTO-EXPANDING)
+        // INSPECTOR VALUES REFRESH
         // =========================================================================
 
         public static void RefreshInspectorValues()
@@ -1162,6 +1221,7 @@ namespace DeadCoreEditor
 
             EditorSessionManager.PlacedObjectTypes.TryGetValue(obj, out PlacedObjectType type);
 
+            // Jumper Section
             if (_jumperSection != null)
             {
                 bool isJ = (type == PlacedObjectType.Jumper);
@@ -1174,6 +1234,7 @@ namespace DeadCoreEditor
                 }
             }
 
+            // Turbine Section
             if (_turbineSection != null)
             {
                 bool isT = (type == PlacedObjectType.Turbine);
@@ -1186,6 +1247,7 @@ namespace DeadCoreEditor
                 }
             }
 
+            // Turret Section
             if (_turretSection != null)
             {
                 bool isTur = (type == PlacedObjectType.Turret);
@@ -1198,6 +1260,7 @@ namespace DeadCoreEditor
                 }
             }
 
+            // Laser Section
             if (_laserSection != null)
             {
                 bool isRotLaser = (type == PlacedObjectType.RotatingLaser);
@@ -1210,6 +1273,7 @@ namespace DeadCoreEditor
                 }
             }
 
+            // Merged Lighting Section
             if (_lightSection != null)
             {
                 bool isLight = (type == PlacedObjectType.Spotlight || type == PlacedObjectType.Sunlight) || EditorSessionManager.PlacedLights.ContainsKey(obj);
@@ -1234,17 +1298,23 @@ namespace DeadCoreEditor
                 }
             }
 
+            // Overhauled Motion Path Section
             if (_motionPathSection != null)
             {
                 _motionPathSection.SetActive(true);
-                if (EditorSessionManager.MotionPaths.ContainsKey(obj))
+                bool hasPath = EditorSessionManager.MotionPaths.TryGetValue(obj, out var path);
+
+                if (_motionPathCreateBtnObj != null) _motionPathCreateBtnObj.SetActive(!hasPath);
+                if (_motionPathActiveControlsObj != null) _motionPathActiveControlsObj.SetActive(hasPath);
+
+                if (hasPath && path != null)
                 {
-                    var p = EditorSessionManager.MotionPaths[obj];
-                    if (_motionPathStatusText != null) _motionPathStatusText.text = $"Path: {p.Speed:F1} m/s (Active)";
-                }
-                else
-                {
-                    if (_motionPathStatusText != null) _motionPathStatusText.text = "No Path Bound (Stationary)";
+                    if (_motionPathStatusText != null) _motionPathStatusText.text = $"Kinematic Loop ({path.Speed:F1} m/s)";
+                    if (_motionPathSpeedSlider != null)
+                    {
+                        _motionPathSpeedSlider.value = path.Speed;
+                        if (_motionPathSpeedValText != null) _motionPathSpeedValText.text = $"{path.Speed:F1} m/s";
+                    }
                 }
             }
 
@@ -1288,7 +1358,7 @@ namespace DeadCoreEditor
         }
 
         // =========================================================================
-        // UGUI FACTORY HELPERS (EXPLICIT HEIGHTS, ZERO OVERLAPS)
+        // UGUI FACTORY HELPERS
         // =========================================================================
 
         private static GameObject CreatePanel(Transform parent, string name, Vector2 anchorMin, Vector2 anchorMax, Vector2 pos, Vector2 size, Color color)
@@ -1486,13 +1556,9 @@ namespace DeadCoreEditor
         {
             GameObject row = CreateRowContainer(parent, "Row_Slider_" + label, 24f);
 
-            // Label text on the left
             CreateText(row.transform, label, new Vector2(0f, 0f), new Vector2(0.32f, 1f), new Vector2(4f, 0f), Vector2.zero, 10f, FontStyles.Normal, Color.white, TextAlignmentOptions.MidlineLeft);
-
-            // Value text on the right
             valText = CreateText(row.transform, "0", new Vector2(0.80f, 0f), new Vector2(1f, 1f), Vector2.zero, new Vector2(-4f, 0f), 10f, FontStyles.Bold, new Color(0.2f, 0.85f, 1f), TextAlignmentOptions.MidlineRight);
 
-            // Slider container (33% to 78% width)
             GameObject sliderObj = new GameObject("Slider");
             sliderObj.transform.SetParent(row.transform, false);
 
@@ -1830,7 +1896,7 @@ namespace DeadCoreEditor
             ntrt.anchorMin = Vector2.zero; ntrt.anchorMax = Vector2.one;
             TMP_Text nt = nextTxt.AddComponent<TextMeshProUGUI>();
             if (sampleTmp != null) { nt.font = sampleTmp.font; nt.fontSharedMaterial = sampleTmp.fontSharedMaterial; }
-            nt.text = ">"; nt.fontSize = 22f; nt.alignment = TextAlignmentOptions.Center; nt.color = Color.white;
+            nt.text = ">"; nt.fontSize = 22f; nt.alignment = TextAlignmentOptions.Center; pt.color = Color.white;
         }
 
         private static void CycleStagingScene(int dir)

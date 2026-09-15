@@ -217,25 +217,60 @@ namespace DeadCoreEditor
             _ghostInstance.SetActive(true);
         }
 
+        /// <summary>
+        /// Mathematically exact local bounding box computed across all 8 corner vertices of child meshes.
+        /// </summary>
         public static Bounds CalculateOptimizedProxyBounds(GameObject go)
         {
-            Renderer[] rends = go.GetComponentsInChildren<Renderer>(true);
-            if (rends.Length > 0)
+            if (go == null) return new Bounds(Vector3.zero, Vector3.one * 2f);
+
+            MeshFilter[] mfs = go.GetComponentsInChildren<MeshFilter>(true);
+            Bounds localBounds = new Bounds(Vector3.zero, Vector3.zero);
+            bool hasBounds = false;
+
+            for (int i = 0; i < mfs.Length; i++)
             {
-                Bounds worldB = rends[0].bounds;
-                for (int i = 1; i < rends.Length; i++)
+                MeshFilter mf = mfs[i];
+                if (mf == null || mf.sharedMesh == null) continue;
+                string n = mf.gameObject.name.ToLower();
+                if (n.Contains("proxy") || n.Contains("highlight") || n.Contains("beacon") || n.Contains("volumetric")) continue;
+
+                Bounds b = mf.sharedMesh.bounds;
+                Vector3[] corners = new Vector3[8]
                 {
-                    if (rends[i] != null && !rends[i].gameObject.name.Contains("Proxy"))
+                    new Vector3(b.min.x, b.min.y, b.min.z),
+                    new Vector3(b.max.x, b.min.y, b.min.z),
+                    new Vector3(b.min.x, b.max.y, b.min.z),
+                    new Vector3(b.max.x, b.max.y, b.min.z),
+                    new Vector3(b.min.x, b.min.y, b.max.z),
+                    new Vector3(b.max.x, b.min.y, b.max.z),
+                    new Vector3(b.min.x, b.max.y, b.max.z),
+                    new Vector3(b.max.x, b.max.y, b.max.z)
+                };
+
+                for (int c = 0; c < 8; c++)
+                {
+                    Vector3 worldPt = mf.transform.TransformPoint(corners[c]);
+                    Vector3 localPt = go.transform.InverseTransformPoint(worldPt);
+
+                    if (!hasBounds)
                     {
-                        worldB.Encapsulate(rends[i].bounds);
+                        localBounds = new Bounds(localPt, Vector3.zero);
+                        hasBounds = true;
+                    }
+                    else
+                    {
+                        localBounds.Encapsulate(localPt);
                     }
                 }
-                Vector3 localCenter = go.transform.InverseTransformPoint(worldB.center);
-                Vector3 localSize = go.transform.InverseTransformVector(worldB.size);
-                return new Bounds(localCenter, new Vector3(Mathf.Abs(localSize.x), Mathf.Abs(localSize.y), Mathf.Abs(localSize.z)));
             }
 
-            return new Bounds(Vector3.zero, new Vector3(2f, 2f, 2f));
+            if (!hasBounds)
+            {
+                return new Bounds(Vector3.zero, Vector3.one * 2f);
+            }
+
+            return localBounds;
         }
 
         public static Vector3 SnapNormalToDiscreteAngles(Vector3 rawNormal)
@@ -301,6 +336,7 @@ namespace DeadCoreEditor
                 return;
             }
 
+            // KEYBOARD SCALE HOTKEYS
             float scaleStep = (Input.GetKey(KeyCode.LeftShift) || Input.GetKey(KeyCode.RightShift)) ? 0.5f : 0.1f;
             if (Input.GetKeyDown(KeyCode.KeypadPlus) || Input.GetKeyDown(KeyCode.Equals) || Input.GetKeyDown(KeyCode.RightBracket))
             {
@@ -311,12 +347,21 @@ namespace DeadCoreEditor
                 SetPlacementScale(EditorSessionManager.ActivePlacementScale - scaleStep);
             }
 
+            // SHIFT + MOUSE SCROLLWHEEL PRE-PLACEMENT SCALING
             if (!Input.GetMouseButton(1))
             {
                 float scroll = Input.GetAxis("Mouse ScrollWheel");
-                if (Mathf.Abs(scroll) > 0.01f && (Input.GetKey(KeyCode.LeftAlt) || Input.GetKey(KeyCode.RightAlt) || Input.GetKey(KeyCode.LeftControl) || Input.GetKey(KeyCode.RightControl)))
+                if (Mathf.Abs(scroll) > 0.01f)
                 {
-                    SetPlacementScale(EditorSessionManager.ActivePlacementScale + ((scroll > 0f) ? 0.1f : -0.1f));
+                    bool isShift = Input.GetKey(KeyCode.LeftShift) || Input.GetKey(KeyCode.RightShift);
+                    bool isAlt = Input.GetKey(KeyCode.LeftAlt) || Input.GetKey(KeyCode.RightAlt);
+                    bool isCtrl = Input.GetKey(KeyCode.LeftControl) || Input.GetKey(KeyCode.RightControl);
+
+                    if (isShift || isAlt || isCtrl)
+                    {
+                        float step = isShift ? 0.15f : 0.05f;
+                        SetPlacementScale(EditorSessionManager.ActivePlacementScale + (scroll > 0f ? step : -step));
+                    }
                 }
             }
 
@@ -379,6 +424,7 @@ namespace DeadCoreEditor
                 }
             }
         }
+
 
         public static Vector3 CalculateRowSnappedPosition(
             Vector3 rawPos,
