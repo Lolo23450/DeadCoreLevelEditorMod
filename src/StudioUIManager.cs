@@ -353,12 +353,15 @@ namespace DeadCoreEditor
 
         private static void BuildTopToolbar()
         {
-            _toolbarPanel = CreatePanel(_canvasRoot.transform, "Top_Toolbar", new Vector2(0f, 1f), new Vector2(1f, 1f), new Vector2(0f, -20f), new Vector2(0f, 40f), new Color(0.11f, 0.12f, 0.14f, 0.98f));
+            _toolbarPanel = CreatePanel(_canvasRoot.transform, "Top_Toolbar",
+                new Vector2(0f, 1f), new Vector2(1f, 1f),
+                new Vector2(0f, -20f), new Vector2(0f, 40f),
+                new Color(0.11f, 0.12f, 0.14f, 0.98f));
 
             HorizontalLayoutGroup hlg = _toolbarPanel.AddComponent<HorizontalLayoutGroup>();
-            hlg.padding = new RectOffset(10, 10, 5, 5);
+            hlg.padding = new RectOffset(10, 10, 6, 6);
             hlg.spacing = 6f;
-            hlg.childControlWidth = false;
+            hlg.childControlWidth = true;
             hlg.childControlHeight = true;
             hlg.childForceExpandWidth = false;
             hlg.childForceExpandHeight = true;
@@ -469,10 +472,6 @@ namespace DeadCoreEditor
         // EXPANDABLE INSPECTOR PANEL
         // =========================================================================
 
-        // =========================================================================
-        // EXPANDABLE INSPECTOR PANEL (CRASH-PROOF & ZERO OVERLAPS)
-        // =========================================================================
-
         private static void BuildInspectorPanel()
         {
             _isInspectorExpanded = false;
@@ -482,7 +481,6 @@ namespace DeadCoreEditor
                 new Color(0.12f, 0.13f, 0.15f, 0.98f));
             _inspectorPanelRt = _inspectorPanel.GetComponent<RectTransform>();
 
-            // Title bar with Expand button
             GameObject titleBar = new GameObject("TitleBar");
             titleBar.transform.SetParent(_inspectorPanel.transform, false);
             RectTransform tbrt = titleBar.AddComponent<RectTransform>();
@@ -646,7 +644,6 @@ namespace DeadCoreEditor
             // 4. Overhauled Motion Path Card with Live Speed Control
             _motionPathSection = CreateSectionCard(_inspectorContent, "MotionPath", "Kinematic Motion Path");
 
-            // Creation Button Container (Shown if object has NO path)
             _motionPathCreateBtnObj = CreateRowContainer(_motionPathSection.transform, "Row_CreatePath", 28f);
             SetupRowHorizontalLayout(_motionPathCreateBtnObj, 0f);
 
@@ -669,7 +666,6 @@ namespace DeadCoreEditor
                 EditorSessionManager.ShowNotification("Created motion path! Point B placed 8m forward.");
             }, new Color(0.2f, 0.65f, 0.95f, 1f));
 
-            // Active Path Controls Container (Shown if object HAS a path)
             _motionPathActiveControlsObj = new GameObject("ActiveControls");
             _motionPathActiveControlsObj.transform.SetParent(_motionPathSection.transform, false);
 
@@ -691,7 +687,6 @@ namespace DeadCoreEditor
             LayoutElement mple = _motionPathStatusText.gameObject.AddComponent<LayoutElement>();
             mple.preferredHeight = 18f;
 
-            // Movement Speed Slider (0.2 m/s to 25.0 m/s)
             CreateInspectorSliderRow(_motionPathActiveControlsObj.transform, "Move Speed", out _motionPathSpeedSlider, out _motionPathSpeedValText, 0.2f, 25f, (val) =>
             {
                 if (_suppressInspectorCallbacks || EditorSessionManager.SelectedObject == null) return;
@@ -768,38 +763,6 @@ namespace DeadCoreEditor
             });
         }
 
-        private static GameObject CreateRowContainer(Transform parent, string name, float height)
-        {
-            GameObject row = new GameObject(name);
-            row.transform.SetParent(parent, false);
-
-            RectTransform rt = row.AddComponent<RectTransform>();
-            rt.anchorMin = new Vector2(0f, 0f);
-            rt.anchorMax = new Vector2(1f, 0f);
-            rt.pivot = new Vector2(0.5f, 0.5f);
-            rt.sizeDelta = new Vector2(0f, height);
-
-            LayoutElement le = row.AddComponent<LayoutElement>();
-            le.preferredHeight = height;
-            le.minHeight = height;
-            le.flexibleWidth = 1f;
-
-            return row;
-        }
-
-        private static HorizontalLayoutGroup SetupRowHorizontalLayout(GameObject row, float spacing = 6f)
-        {
-            HorizontalLayoutGroup hlg = row.GetComponent<HorizontalLayoutGroup>();
-            if (hlg == null) hlg = row.AddComponent<HorizontalLayoutGroup>();
-            hlg.padding = new RectOffset(2, 2, 2, 2);
-            hlg.spacing = spacing;
-            hlg.childControlWidth = true;
-            hlg.childControlHeight = true;
-            hlg.childForceExpandWidth = true;
-            hlg.childForceExpandHeight = true;
-            return hlg;
-        }
-
         private static void ToggleInspectorExpansion()
         {
             _isInspectorExpanded = !_isInspectorExpanded;
@@ -816,7 +779,7 @@ namespace DeadCoreEditor
         }
 
         // =========================================================================
-        // ASSET BROWSER
+        // ASSET BROWSER (BOTTOM DOCKED BETWEEN HIERARCHY & INSPECTOR)
         // =========================================================================
 
         private static void BuildAssetBrowserPanel()
@@ -840,14 +803,16 @@ namespace DeadCoreEditor
             ttrt.anchorMin = new Vector2(0f, 1f);
             ttrt.anchorMax = new Vector2(1f, 1f);
             ttrt.pivot = new Vector2(0.5f, 1f);
-            ttrt.sizeDelta = new Vector2(0f, 30f);
+            ttrt.sizeDelta = new Vector2(0f, 32f);
             ttrt.anchoredPosition = new Vector2(0f, 0f);
 
             HorizontalLayoutGroup thlg = topTabs.AddComponent<HorizontalLayoutGroup>();
             thlg.padding = new RectOffset(8, 8, 4, 4);
-            thlg.spacing = 5f;
-            thlg.childControlWidth = false;
+            thlg.spacing = 6f;
+            thlg.childControlWidth = true;
+            thlg.childControlHeight = true;
             thlg.childForceExpandWidth = false;
+            thlg.childForceExpandHeight = true;
 
             string[] categories = new string[] { "Architecture", "Gameplay", "Hazards", "All" };
             for (int i = 0; i < categories.Length; i++)
@@ -860,7 +825,7 @@ namespace DeadCoreEditor
                 });
             }
 
-            _browserSearchInput = CreateInputField(_assetBrowserPanel.transform, "BrowserSearch", new Vector2(1f, 1f), new Vector2(1f, 1f), new Vector2(-105f, -15f), new Vector2(190f, 22f), "Filter catalog...", (s) => RefreshAssetBrowser());
+            _browserSearchInput = CreateInputField(_assetBrowserPanel.transform, "BrowserSearch", new Vector2(1f, 1f), new Vector2(1f, 1f), new Vector2(-105f, -16f), new Vector2(190f, 24f), "Filter catalog...", (s) => RefreshAssetBrowser());
 
             GameObject scrollObj = new GameObject("Browser_Scroll");
             scrollObj.transform.SetParent(_assetBrowserPanel.transform, false);
@@ -868,7 +833,7 @@ namespace DeadCoreEditor
             srt.anchorMin = Vector2.zero;
             srt.anchorMax = new Vector2(1f, 1f);
             srt.offsetMin = new Vector2(8f, 6f);
-            srt.offsetMax = new Vector2(-8f, -32f);
+            srt.offsetMax = new Vector2(-8f, -34f);
 
             ScrollRect sr = scrollObj.AddComponent<ScrollRect>();
             sr.horizontal = false;
@@ -1257,7 +1222,6 @@ namespace DeadCoreEditor
 
             EditorSessionManager.PlacedObjectTypes.TryGetValue(obj, out PlacedObjectType type);
 
-            // Jumper Section
             if (_jumperSection != null)
             {
                 bool isJ = (type == PlacedObjectType.Jumper);
@@ -1270,7 +1234,6 @@ namespace DeadCoreEditor
                 }
             }
 
-            // Turbine Section
             if (_turbineSection != null)
             {
                 bool isT = (type == PlacedObjectType.Turbine);
@@ -1283,7 +1246,6 @@ namespace DeadCoreEditor
                 }
             }
 
-            // Turret Section
             if (_turretSection != null)
             {
                 bool isTur = (type == PlacedObjectType.Turret);
@@ -1296,7 +1258,6 @@ namespace DeadCoreEditor
                 }
             }
 
-            // Laser Section
             if (_laserSection != null)
             {
                 bool isRotLaser = (type == PlacedObjectType.RotatingLaser);
@@ -1309,7 +1270,6 @@ namespace DeadCoreEditor
                 }
             }
 
-            // Merged Lighting Section
             if (_lightSection != null)
             {
                 bool isLight = (type == PlacedObjectType.Spotlight || type == PlacedObjectType.Sunlight) || EditorSessionManager.PlacedLights.ContainsKey(obj);
@@ -1334,7 +1294,6 @@ namespace DeadCoreEditor
                 }
             }
 
-            // Overhauled Motion Path Section
             if (_motionPathSection != null)
             {
                 _motionPathSection.SetActive(true);
@@ -1450,16 +1409,13 @@ namespace DeadCoreEditor
             }
             else
             {
-                // Fit cleanly inside parent container without 100x100 overflow
-                rt.anchorMin = Vector2.zero;
-                rt.anchorMax = Vector2.one;
-                rt.offsetMin = Vector2.zero;
-                rt.offsetMax = Vector2.zero;
-                rt.sizeDelta = Vector2.zero;
+                rt.sizeDelta = new Vector2(width, 26f);
 
                 LayoutElement le = obj.AddComponent<LayoutElement>();
                 le.preferredWidth = width;
                 le.preferredHeight = 26f;
+                le.minWidth = width > 0 ? Mathf.Min(width, 40f) : 0f;
+                le.minHeight = 22f;
                 le.flexibleWidth = 1f;
             }
 
@@ -1475,7 +1431,9 @@ namespace DeadCoreEditor
 
             btn.onClick.AddListener((Action)(() => onClick?.Invoke()));
 
-            CreateText(obj.transform, label, Vector2.zero, Vector2.one, Vector2.zero, Vector2.zero, 11f, FontStyles.Bold, Color.white, TextAlignmentOptions.Center);
+            TMP_Text btnText = CreateText(obj.transform, label, Vector2.zero, Vector2.one, Vector2.zero, Vector2.zero, 11f, FontStyles.Bold, Color.white, TextAlignmentOptions.Center);
+            btnText.enableWordWrapping = false;
+            btnText.overflowMode = TextOverflowModes.Ellipsis;
 
             return btn;
         }
@@ -1554,6 +1512,38 @@ namespace DeadCoreEditor
             return card;
         }
 
+        private static GameObject CreateRowContainer(Transform parent, string name, float height)
+        {
+            GameObject row = new GameObject(name);
+            row.transform.SetParent(parent, false);
+
+            RectTransform rt = row.AddComponent<RectTransform>();
+            rt.anchorMin = new Vector2(0f, 0f);
+            rt.anchorMax = new Vector2(1f, 0f);
+            rt.pivot = new Vector2(0.5f, 0.5f);
+            rt.sizeDelta = new Vector2(0f, height);
+
+            LayoutElement le = row.AddComponent<LayoutElement>();
+            le.preferredHeight = height;
+            le.minHeight = height;
+            le.flexibleWidth = 1f;
+
+            return row;
+        }
+
+        private static HorizontalLayoutGroup SetupRowHorizontalLayout(GameObject row, float spacing = 6f)
+        {
+            HorizontalLayoutGroup hlg = row.GetComponent<HorizontalLayoutGroup>();
+            if (hlg == null) hlg = row.AddComponent<HorizontalLayoutGroup>();
+            hlg.padding = new RectOffset(2, 2, 2, 2);
+            hlg.spacing = spacing;
+            hlg.childControlWidth = true;
+            hlg.childControlHeight = true;
+            hlg.childForceExpandWidth = true;
+            hlg.childForceExpandHeight = true;
+            return hlg;
+        }
+
         private static void CreateVector3Row(Transform parent, string label, out TMP_InputField xIn, out TMP_InputField yIn, out TMP_InputField zIn, Action<string> onChange)
         {
             GameObject row = CreateRowContainer(parent, "Row_" + label, 24f);
@@ -1573,10 +1563,6 @@ namespace DeadCoreEditor
             valIn = CreateInputField(row.transform, "Val", new Vector2(0.24f, 0f), new Vector2(0.98f, 1f), Vector2.zero, Vector2.zero, "Value", onChange);
         }
 
-        /// <summary>
-        /// Generates a clean, fully constrained uGUI Slider with a slim background track, cyan fill, and white handle.
-        /// Zero background overflows or oversized rect bounds.
-        /// </summary>
         private static GameObject CreateInspectorSliderRow(Transform parent, string label, out Slider slider, out TMP_Text valText, float minVal, float maxVal, Action<float> onSliderChanged)
         {
             GameObject row = CreateRowContainer(parent, "Row_Slider_" + label, 24f);

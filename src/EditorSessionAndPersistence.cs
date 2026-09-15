@@ -1302,10 +1302,18 @@ namespace DeadCoreEditor
             }
         }
 
+        // =========================================================================
+        // HDRP VOLUMETRIC LIGHTING & SUN CONTROLLER
+        // =========================================================================
+
         public static void ApplyLightConfig(GameObject lightObj, LightConfig cfg)
         {
             if (lightObj == null || cfg == null) return;
             PlacedLights[lightObj] = cfg;
+
+            // Remove legacy mesh if it exists
+            Transform legacy = lightObj.transform.Find("Volumetric_Beam");
+            if (legacy != null) GameObject.DestroyImmediate(legacy.gameObject);
 
             Light l = lightObj.GetComponentInChildren<Light>();
             if (l != null)
@@ -1322,12 +1330,17 @@ namespace DeadCoreEditor
                         targetSun.type = LightType.Directional;
                         targetSun.color = cfg.Color;
                         targetSun.transform.rotation = lightObj.transform.rotation;
-                        // HDRP Sunlight: 4,000 to 40,000 Lux
-                        targetSun.intensity = Mathf.Clamp(cfg.Intensity, 0.1f, 10f) * 4000f;
+
+                        // Physical HDRP Sunlight Intensity (Lux)
+                        float sunLux = Mathf.Max(0.1f, cfg.Intensity) * 6000f;
+                        targetSun.intensity = sunLux;
                         RenderSettings.sun = targetSun;
 
-                        ApplyHDRPVolumetricSettings(targetSun.gameObject, cfg.VolumetricIntensity);
+                        ApplyHDRPVolumetricSettings(targetSun.gameObject, cfg.VolumetricIntensity, sunLux);
                     }
+
+                    // Attach or update 3D Sun Widget in scene
+                    AttachSunVisualWidget(lightObj);
                 }
                 else
                 {
@@ -1336,49 +1349,49 @@ namespace DeadCoreEditor
                     l.range = 150f;
                     l.spotAngle = Mathf.Clamp(cfg.SpotAngle, 5f, 150f);
                     l.color = cfg.Color;
-                    // HDRP Spotlight: 4,000 to 120,000 Lumens (required for visible volumetric fog scattering)
-                    l.intensity = Mathf.Clamp(cfg.Intensity, 0.1f, 30f) * 4000f;
 
-                    ApplyHDRPVolumetricSettings(l.gameObject, cfg.VolumetricIntensity);
+                    // Physical HDRP Spotlight Intensity (Lumens)
+                    // High lumen output is required for volumetric scattering in HDRP fog
+                    float lumens = Mathf.Pow(Mathf.Max(0.1f, cfg.Intensity), 2.2f) * 8000f;
+                    l.intensity = lumens;
+
+                    ApplyHDRPVolumetricSettings(l.gameObject, cfg.VolumetricIntensity, lumens);
                 }
 
                 l.enabled = true;
             }
 
-            // Forward volumetric parameters to native light shaders/lens materials if present
+            // Forward color & intensity to fixture lens materials/shaders
             Renderer[] rends = lightObj.GetComponentsInChildren<Renderer>(true);
             for (int i = 0; i < rends.Length; i++)
             {
-                if (rends[i] == null || rends[i].material == null) continue;
+                if (rends[i] == null) continue;
                 Material m = rends[i].material;
+                if (m == null) continue;
 
                 float volVal = Mathf.Clamp(cfg.VolumetricIntensity, 0f, 16f);
-
                 if (m.HasProperty("_VolumetricIntensity")) m.SetFloat("_VolumetricIntensity", volVal);
                 if (m.HasProperty("_VolumetricDimmer")) m.SetFloat("_VolumetricDimmer", volVal);
                 if (m.HasProperty("_Volumetric")) m.SetFloat("_Volumetric", volVal);
-                if (m.HasProperty("_Dimmer")) m.SetFloat("_Dimmer", volVal);
                 if (m.HasProperty("_Color")) m.SetColor("_Color", cfg.Color);
                 if (m.HasProperty("_EmissionColor"))
                 {
-                    m.SetColor("_EmissionColor", cfg.Color * (cfg.Intensity * 0.5f));
+                    m.SetColor("_EmissionColor", cfg.Color * (cfg.Intensity * 0.75f));
                     m.EnableKeyword("_EMISSION");
                 }
             }
         }
 
         /// <summary>
-        /// Robust HDRP Volumetric Controller: locates HDAdditionalLightData across namespaces
-        /// and applies volumetricDimmer and affectsVolumetric to the light.
+        /// Directly controls Unity HDRP's native volumetricDimmer and intensity on HDAdditionalLightData.
         /// </summary>
-        private static void ApplyHDRPVolumetricSettings(GameObject lightGo, float volumetricIntensity)
+        private static void ApplyHDRPVolumetricSettings(GameObject lightGo, float volumetricIntensity, float physicalIntensity)
         {
             if (lightGo == null) return;
 
             Component hdLight = null;
             Component[] comps = lightGo.GetComponentsInChildren<Component>(true);
 
-            // Full namespace scan for Unity HDRP Additional Light Data
             for (int i = 0; i < comps.Length; i++)
             {
                 if (comps[i] == null) continue;
@@ -1395,23 +1408,127 @@ namespace DeadCoreEditor
                 try
                 {
                     Type type = hdLight.GetType();
+
+                    // volumetricDimmer directly controls the light's volumetric multiplier in HDRP (0.0 to 16.0)
                     float dimmer = Mathf.Clamp(volumetricIntensity, 0f, 16f);
                     bool enableVol = volumetricIntensity > 0.01f;
 
-                    // Set volumetric dimmer and activation properties & backing fields
-                    SetFieldOrProperty(type, hdLight, "volumetricDimmer", dimmer);
-                    SetFieldOrProperty(type, hdLight, "m_VolumetricDimmer", dimmer);
-                    SetFieldOrProperty(type, hdLight, "affectsVolumetric", enableVol);
-                    SetFieldOrProperty(type, hdLight, "m_AffectsVolumetric", enableVol);
-                    SetFieldOrProperty(type, hdLight, "useVolumetric", enableVol);
-                    SetFieldOrProperty(type, hdLight, "m_UseVolumetric", enableVol);
-                    SetFieldOrProperty(type, hdLight, "volumetricShadowDimmer", enableVol ? 1f : 0f);
+                    SetFieldOrProp(type, hdLight, "volumetricDimmer", dimmer);
+                    SetFieldOrProp(type, hdLight, "m_VolumetricDimmer", dimmer);
+                    SetFieldOrProp(type, hdLight, "affectsVolumetric", enableVol);
+                    SetFieldOrProp(type, hdLight, "m_AffectsVolumetric", enableVol);
+                    SetFieldOrProp(type, hdLight, "useVolumetric", enableVol);
+                    SetFieldOrProp(type, hdLight, "m_UseVolumetric", enableVol);
+                    SetFieldOrProp(type, hdLight, "volumetricShadowDimmer", enableVol ? 1f : 0f);
+
+                    // Update HDRP internal physical intensity property
+                    SetFieldOrProp(type, hdLight, "intensity", physicalIntensity);
                 }
                 catch (Exception ex)
                 {
                     MelonLogger.Warning($"[HDRP Light] Volumetric dimmer hook error: {ex.Message}");
                 }
             }
+        }
+
+        private static void SetFieldOrProp(Type type, object target, string name, object val)
+        {
+            try
+            {
+                var prop = type.GetProperty(name, System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+                if (prop != null && prop.CanWrite)
+                {
+                    prop.SetValue(target, val, null);
+                    return;
+                }
+                var field = type.GetField(name, System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+                if (field != null)
+                {
+                    field.SetValue(target, val);
+                }
+            }
+            catch { }
+        }
+
+        // =========================================================================
+        // IN-EDITOR DIRECTIONAL SUN 3D GIZMO WIDGET
+        // =========================================================================
+
+        public static void AttachSunVisualWidget(GameObject sunObj)
+        {
+            if (sunObj == null) return;
+
+            Transform old = sunObj.transform.Find("Sun_Editor_Widget");
+            if (old != null) GameObject.DestroyImmediate(old.gameObject);
+
+            GameObject widget = new GameObject("Sun_Editor_Widget");
+            widget.transform.SetParent(sunObj.transform, false);
+            widget.layer = 0; // Default layer, selectable in viewport
+
+            Material sunMat = new Material(Shader.Find("Unlit/Color") ?? Shader.Find("Sprites/Default"));
+            Color gold = new Color(1.0f, 0.85f, 0.2f, 1f);
+            sunMat.color = gold;
+            if (sunMat.HasProperty("_Color")) sunMat.SetColor("_Color", gold);
+            if (sunMat.HasProperty("_EmissionColor"))
+            {
+                sunMat.SetColor("_EmissionColor", gold * 2.5f);
+                sunMat.EnableKeyword("_EMISSION");
+            }
+
+            // 1. Center Glowing Sun Sphere
+            GameObject orb = GameObject.CreatePrimitive(PrimitiveType.Sphere);
+            orb.name = "Sun_Orb";
+            orb.transform.SetParent(widget.transform, false);
+            orb.transform.localScale = Vector3.one * 2.2f;
+            Renderer rOrb = orb.GetComponent<Renderer>();
+            rOrb.material = sunMat;
+            rOrb.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
+
+            // 2. Direction Pointer Arrow (shows sunlight angle along forward Z)
+            GameObject ray = GameObject.CreatePrimitive(PrimitiveType.Cylinder);
+            ray.name = "Sun_Ray_Shaft";
+            ray.transform.SetParent(widget.transform, false);
+            ray.transform.localRotation = Quaternion.Euler(90f, 0f, 0f);
+            ray.transform.localPosition = new Vector3(0f, 0f, 3.0f);
+            ray.transform.localScale = new Vector3(0.28f, 2.0f, 0.28f);
+            Renderer rRay = ray.GetComponent<Renderer>();
+            rRay.material = sunMat;
+            rRay.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
+
+            GameObject tip = GameObject.CreatePrimitive(PrimitiveType.Sphere);
+            tip.name = "Sun_Ray_Tip";
+            tip.transform.SetParent(widget.transform, false);
+            tip.transform.localPosition = new Vector3(0f, 0f, 5.2f);
+            tip.transform.localScale = Vector3.one * 0.7f;
+            Renderer rTip = tip.GetComponent<Renderer>();
+            rTip.material = sunMat;
+            rTip.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
+
+            // 3. Four Sunburst Corona Rays
+            CreateCoronaRay(widget.transform, new Vector3(1.6f, 1.6f, 0f), Quaternion.Euler(0f, 0f, 45f), sunMat);
+            CreateCoronaRay(widget.transform, new Vector3(-1.6f, 1.6f, 0f), Quaternion.Euler(0f, 0f, -45f), sunMat);
+            CreateCoronaRay(widget.transform, new Vector3(1.6f, -1.6f, 0f), Quaternion.Euler(0f, 0f, -45f), sunMat);
+            CreateCoronaRay(widget.transform, new Vector3(-1.6f, -1.6f, 0f), Quaternion.Euler(0f, 0f, 45f), sunMat);
+
+            // 4. Large Picking Collider for Viewport Selection
+            SphereCollider sc = widget.AddComponent<SphereCollider>();
+            sc.radius = 2.8f;
+            sc.isTrigger = false;
+
+            widget.SetActive(IsEditModeActive);
+        }
+
+        private static void CreateCoronaRay(Transform parent, Vector3 localPos, Quaternion localRot, Material mat)
+        {
+            GameObject ray = GameObject.CreatePrimitive(PrimitiveType.Cylinder);
+            ray.name = "Corona_Ray";
+            ray.transform.SetParent(parent, false);
+            ray.transform.localPosition = localPos;
+            ray.transform.localRotation = localRot;
+            ray.transform.localScale = new Vector3(0.12f, 0.8f, 0.12f);
+            Renderer r = ray.GetComponent<Renderer>();
+            r.material = mat;
+            r.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
         }
 
         private static void SetFieldOrProperty(Type type, object target, string memberName, object value)
@@ -1525,15 +1642,15 @@ namespace DeadCoreEditor
             {
                 GameObject obj = PlacedObjects[i];
                 if (obj == null) continue;
-                if (PlacedObjectTypes.TryGetValue(obj, out PlacedObjectType type) &&
-                    (type == PlacedObjectType.Spotlight || type == PlacedObjectType.Sunlight))
-                {
-                    Transform housing = obj.transform.Find("Light_Housing");
-                    if (housing != null) housing.gameObject.SetActive(visible);
 
-                    Transform lens = obj.transform.Find("Light_Lens");
-                    if (lens != null) lens.gameObject.SetActive(visible);
-                }
+                Transform housing = obj.transform.Find("Light_Housing");
+                if (housing != null) housing.gameObject.SetActive(visible);
+
+                Transform lens = obj.transform.Find("Light_Lens");
+                if (lens != null) lens.gameObject.SetActive(visible);
+
+                Transform sunWidget = obj.transform.Find("Sun_Editor_Widget");
+                if (sunWidget != null) sunWidget.gameObject.SetActive(visible);
             }
         }
 
