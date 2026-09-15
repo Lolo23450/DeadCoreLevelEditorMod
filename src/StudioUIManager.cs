@@ -39,11 +39,20 @@ namespace DeadCoreEditor
 
         // Scene Hierarchy (Left Panel: 260px Interactive Tree View)
         private static GameObject _hierarchyPanel = null;
-        private static RectTransform _hierarchyContent = null;
         private static ScrollRect _hierarchyScrollRect = null;
+        private static RectTransform _hierarchyContent = null;
         private static TMP_InputField _hierarchySearchInput = null;
         private static readonly List<GameObject> _hierarchyRows = new List<GameObject>();
         private static readonly HashSet<GameObject> _collapsedParents = new HashSet<GameObject>();
+
+        // Hierarchy Drag & Drop Mapping
+        private static readonly Dictionary<GameObject, GameObject> _targetToRowMap = new Dictionary<GameObject, GameObject>();
+        private static readonly Dictionary<GameObject, GameObject> _rowToTargetMap = new Dictionary<GameObject, GameObject>();
+        private static GameObject _dragCandidateNode = null;
+        private static Vector2 _dragStartMousePos = Vector2.zero;
+        private static bool _isDraggingHierarchyNode = false;
+        private static GameObject _dragGhostObj = null;
+        private static TMP_Text _dragGhostText = null;
 
         // Contextual Inspector (Right Panel: 280px - 380px)
         private static GameObject _inspectorPanel = null;
@@ -80,7 +89,7 @@ namespace DeadCoreEditor
         private static Slider _laserSlider = null;
         private static TMP_Text _laserValueText = null;
 
-        // Merged Lighting & Atmosphere Section
+        // Merged Lighting & Atmosphere Section + RGB Selector
         private static GameObject _lightSection = null;
         private static TMP_Text _lightTypeBadgeText = null;
         private static Slider _lightIntensitySlider = null;
@@ -91,6 +100,13 @@ namespace DeadCoreEditor
         private static Slider _lightVolSlider = null;
         private static TMP_Text _lightVolValText = null;
         private static Image _lightColorPreviewSwatch = null;
+
+        private static Slider _lightRSlider = null;
+        private static TMP_Text _lightRValText = null;
+        private static Slider _lightGSlider = null;
+        private static TMP_Text _lightGValText = null;
+        private static Slider _lightBSlider = null;
+        private static TMP_Text _lightBValText = null;
 
         // Motion Path Section
         private static GameObject _motionPathSection = null;
@@ -156,11 +172,11 @@ namespace DeadCoreEditor
 
             _canvasRoot.AddComponent<GraphicRaycaster>();
 
-            BuildTopToolbar();
-            BuildHierarchyPanel();
-            BuildInspectorPanel();
-            BuildAssetBrowserPanel();
-            BuildToastOverlay();
+            try { BuildTopToolbar(); } catch (Exception ex) { MelonLogger.Error($"[UI] TopToolbar Error: {ex}"); }
+            try { BuildHierarchyPanel(); } catch (Exception ex) { MelonLogger.Error($"[UI] HierarchyPanel Error: {ex}"); }
+            try { BuildInspectorPanel(); } catch (Exception ex) { MelonLogger.Error($"[UI] InspectorPanel Error: {ex}"); }
+            try { BuildAssetBrowserPanel(); } catch (Exception ex) { MelonLogger.Error($"[UI] AssetBrowser Error: {ex}"); }
+            try { BuildToastOverlay(); } catch (Exception ex) { MelonLogger.Error($"[UI] Toast Error: {ex}"); }
 
             EnsureSelectableColliders();
             RefreshHierarchy();
@@ -227,7 +243,7 @@ namespace DeadCoreEditor
         }
 
         // =========================================================================
-        // ISOMETRIC THUMBNAIL RENDERER (DIMMED STUDIO LIGHTING & PRECISE ANGLE)
+        // ISOMETRIC THUMBNAIL RENDERER
         // =========================================================================
 
         public static class AssetThumbnailRenderer
@@ -266,7 +282,7 @@ namespace DeadCoreEditor
                 _studioKeyLight = keyObj.AddComponent<Light>();
                 _studioKeyLight.type = LightType.Directional;
                 _studioKeyLight.color = new Color(1f, 0.95f, 0.88f);
-                _studioKeyLight.intensity = 0.15f;
+                _studioKeyLight.intensity = 0.95f;
                 _studioKeyLight.cullingMask = 1 << 2;
                 keyObj.transform.rotation = Quaternion.Euler(38f, -42f, 0f);
 
@@ -275,7 +291,7 @@ namespace DeadCoreEditor
                 _studioFillLight = fillObj.AddComponent<Light>();
                 _studioFillLight.type = LightType.Directional;
                 _studioFillLight.color = new Color(0.45f, 0.75f, 1f);
-                _studioFillLight.intensity = 0.05f;
+                _studioFillLight.intensity = 0.35f;
                 _studioFillLight.cullingMask = 1 << 2;
                 fillObj.transform.rotation = Quaternion.Euler(60f, 135f, 0f);
             }
@@ -390,9 +406,9 @@ namespace DeadCoreEditor
             }, new Color(0.18f, 0.45f, 0.85f, 1f));
             _modeToggleBtnText = _modeToggleBtn.GetComponentInChildren<TMP_Text>();
 
-            CreateButton(_toolbarPanel.transform, "Btn_Translate", "Move (W)", 75f, () => SetGizmoMode(EditorGizmoMode.Translate));
-            CreateButton(_toolbarPanel.transform, "Btn_Rotate", "Rotate (E)", 75f, () => SetGizmoMode(EditorGizmoMode.Rotate));
-            CreateButton(_toolbarPanel.transform, "Btn_Scale", "Scale (R)", 75f, () => SetGizmoMode(EditorGizmoMode.Scale));
+            CreateButton(_toolbarPanel.transform, "Btn_Translate", "Move", 75f, () => SetGizmoMode(EditorGizmoMode.Translate));
+            CreateButton(_toolbarPanel.transform, "Btn_Rotate", "Rotate", 75f, () => SetGizmoMode(EditorGizmoMode.Rotate));
+            CreateButton(_toolbarPanel.transform, "Btn_Scale", "Scale", 75f, () => SetGizmoMode(EditorGizmoMode.Scale));
 
             Button alignBtn = CreateButton(_toolbarPanel.transform, "Btn_SurfaceAlign", "Align: OFF", 95f, () =>
             {
@@ -481,9 +497,12 @@ namespace DeadCoreEditor
         }
 
         // =========================================================================
-        // EXPANDABLE INSPECTOR PANEL
+        // EXPANDABLE INSPECTOR PANEL + RGB LIGHTING SELECTOR
         // =========================================================================
 
+        // =========================================================================
+        // TARGETED FIX: Safe RectTransform Instantiation
+        // =========================================================================
         private static void BuildInspectorPanel()
         {
             _isInspectorExpanded = false;
@@ -493,30 +512,43 @@ namespace DeadCoreEditor
                 new Color(0.12f, 0.13f, 0.15f, 0.98f));
             _inspectorPanelRt = _inspectorPanel.GetComponent<RectTransform>();
 
-            GameObject titleBar = new GameObject("TitleBar");
+            // 1. TitleBar created with native RectTransform
+            GameObject titleBar = new GameObject("TitleBar", Il2CppType.Of<RectTransform>());
             titleBar.transform.SetParent(_inspectorPanel.transform, false);
-            RectTransform tbrt = titleBar.AddComponent<RectTransform>();
-            tbrt.anchorMin = new Vector2(0f, 1f);
-            tbrt.anchorMax = new Vector2(1f, 1f);
-            tbrt.pivot = new Vector2(0.5f, 1f);
-            tbrt.anchoredPosition = new Vector2(0f, 0f);
-            tbrt.sizeDelta = new Vector2(0f, 34f);
+            RectTransform tbrt = titleBar.GetComponent<RectTransform>();
+            if (tbrt != null)
+            {
+                tbrt.anchorMin = new Vector2(0f, 1f);
+                tbrt.anchorMax = new Vector2(1f, 1f);
+                tbrt.pivot = new Vector2(0.5f, 1f);
+                tbrt.anchoredPosition = new Vector2(0f, 0f);
+                tbrt.sizeDelta = new Vector2(0f, 34f);
+            }
 
             _inspectorTitleText = CreateText(titleBar.transform, "Inspector",
                 new Vector2(0f, 0f), new Vector2(1f, 1f),
                 new Vector2(12f, 0f), new Vector2(-95f, 0f),
                 13f, FontStyles.Bold, Color.white, TextAlignmentOptions.MidlineLeft);
-            _inspectorTitleText.enableWordWrapping = false;
-            _inspectorTitleText.overflowMode = TextOverflowModes.Ellipsis;
+            if (_inspectorTitleText != null)
+            {
+                _inspectorTitleText.enableWordWrapping = false;
+                _inspectorTitleText.overflowMode = TextOverflowModes.Ellipsis;
+            }
 
             _inspectorExpandBtn = CreateButton(titleBar.transform, "Btn_ExpandInspector", "[+ Expand]", 80f, ToggleInspectorExpansion, new Color(0.20f, 0.23f, 0.28f, 1f));
-            RectTransform ebrt = _inspectorExpandBtn.GetComponent<RectTransform>();
-            ebrt.anchorMin = new Vector2(1f, 0.5f);
-            ebrt.anchorMax = new Vector2(1f, 0.5f);
-            ebrt.pivot = new Vector2(1f, 0.5f);
-            ebrt.anchoredPosition = new Vector2(-8f, 0f);
-            ebrt.sizeDelta = new Vector2(80f, 22f);
-            _inspectorExpandBtnText = _inspectorExpandBtn.GetComponentInChildren<TMP_Text>();
+            if (_inspectorExpandBtn != null)
+            {
+                RectTransform ebrt = _inspectorExpandBtn.GetComponent<RectTransform>();
+                if (ebrt != null)
+                {
+                    ebrt.anchorMin = new Vector2(1f, 0.5f);
+                    ebrt.anchorMax = new Vector2(1f, 0.5f);
+                    ebrt.pivot = new Vector2(1f, 0.5f);
+                    ebrt.anchoredPosition = new Vector2(-8f, 0f);
+                    ebrt.sizeDelta = new Vector2(80f, 22f);
+                }
+                _inspectorExpandBtnText = _inspectorExpandBtn.GetComponentInChildren<TMP_Text>();
+            }
 
             GameObject scrollObj = CreateScrollView(_inspectorPanel.transform, "Inspector_Scroll",
                 new Vector2(0f, 0f), new Vector2(1f, 1f),
@@ -591,7 +623,7 @@ namespace DeadCoreEditor
                 if (_laserValueText != null) _laserValueText.text = $"{val:F0} d/s";
             });
 
-            // 3. Merged Lighting Card
+            // 3. Merged Lighting Card + RGB Color Selector
             _lightSection = CreateSectionCard(_inspectorContent, "Lighting", "Lighting Properties");
 
             GameObject badgeRow = CreateRowContainer(_lightSection.transform, "Row_Badge", 22f);
@@ -633,17 +665,39 @@ namespace DeadCoreEditor
             GameObject swatchRow = CreateRowContainer(_lightSection.transform, "Row_Swatch", 24f);
             CreateText(swatchRow.transform, "Active Color Swatch", new Vector2(0f, 0f), new Vector2(0.65f, 1f), new Vector2(4f, 0f), Vector2.zero, 10f, FontStyles.Normal, Color.white, TextAlignmentOptions.MidlineLeft);
 
-            GameObject swatchObj = new GameObject("Swatch");
+            // 2. Swatch created with native RectTransform
+            GameObject swatchObj = new GameObject("Swatch", Il2CppType.Of<RectTransform>());
             swatchObj.transform.SetParent(swatchRow.transform, false);
-            RectTransform swrt = swatchObj.AddComponent<RectTransform>();
-            swrt.anchorMin = new Vector2(1f, 0.5f);
-            swrt.anchorMax = new Vector2(1f, 0.5f);
-            swrt.pivot = new Vector2(1f, 0.5f);
-            swrt.anchoredPosition = new Vector2(-4f, 0f);
-            swrt.sizeDelta = new Vector2(60f, 18f);
+            RectTransform swrt = swatchObj.GetComponent<RectTransform>();
+            if (swrt != null)
+            {
+                swrt.anchorMin = new Vector2(1f, 0.5f);
+                swrt.anchorMax = new Vector2(1f, 0.5f);
+                swrt.pivot = new Vector2(1f, 0.5f);
+                swrt.anchoredPosition = new Vector2(-4f, 0f);
+                swrt.sizeDelta = new Vector2(60f, 18f);
+            }
 
             _lightColorPreviewSwatch = swatchObj.AddComponent<Image>();
             _lightColorPreviewSwatch.color = Color.cyan;
+
+            CreateInspectorSliderRow(_lightSection.transform, "Red (R)", out _lightRSlider, out _lightRValText, 0f, 255f, (val) =>
+            {
+                if (_suppressInspectorCallbacks || EditorSessionManager.SelectedObject == null) return;
+                OnLightRGBChanged();
+            });
+
+            CreateInspectorSliderRow(_lightSection.transform, "Green (G)", out _lightGSlider, out _lightGValText, 0f, 255f, (val) =>
+            {
+                if (_suppressInspectorCallbacks || EditorSessionManager.SelectedObject == null) return;
+                OnLightRGBChanged();
+            });
+
+            CreateInspectorSliderRow(_lightSection.transform, "Blue (B)", out _lightBSlider, out _lightBValText, 0f, 255f, (val) =>
+            {
+                if (_suppressInspectorCallbacks || EditorSessionManager.SelectedObject == null) return;
+                OnLightRGBChanged();
+            });
 
             GameObject colorPresetsRow = CreateRowContainer(_lightSection.transform, "Row_ColorPresets", 26f);
             SetupRowHorizontalLayout(colorPresetsRow, 4f);
@@ -680,7 +734,8 @@ namespace DeadCoreEditor
                 EditorSessionManager.ShowNotification("Created motion path! Point B placed 8m forward.");
             }, new Color(0.2f, 0.65f, 0.95f, 1f));
 
-            _motionPathActiveControlsObj = new GameObject("ActiveControls");
+            // 3. ActiveControls created with native RectTransform
+            _motionPathActiveControlsObj = new GameObject("ActiveControls", Il2CppType.Of<RectTransform>());
             _motionPathActiveControlsObj.transform.SetParent(_motionPathSection.transform, false);
 
             VerticalLayoutGroup mpcVlg = _motionPathActiveControlsObj.AddComponent<VerticalLayoutGroup>();
@@ -698,8 +753,11 @@ namespace DeadCoreEditor
             mpcLe.flexibleWidth = 1f;
 
             _motionPathStatusText = CreateText(_motionPathActiveControlsObj.transform, "Path Active", new Vector2(0f, 0f), new Vector2(1f, 1f), Vector2.zero, Vector2.zero, 11f, FontStyles.Normal, Color.cyan, TextAlignmentOptions.MidlineLeft);
-            LayoutElement mple = _motionPathStatusText.gameObject.AddComponent<LayoutElement>();
-            mple.preferredHeight = 18f;
+            if (_motionPathStatusText != null)
+            {
+                LayoutElement mple = _motionPathStatusText.gameObject.AddComponent<LayoutElement>();
+                mple.preferredHeight = 18f;
+            }
 
             CreateInspectorSliderRow(_motionPathActiveControlsObj.transform, "Move Speed", out _motionPathSpeedSlider, out _motionPathSpeedValText, 0.2f, 25f, (val) =>
             {
@@ -749,6 +807,45 @@ namespace DeadCoreEditor
                 RefreshInspectorValues();
                 EditorSessionManager.ShowNotification("Motion path removed.");
             }, new Color(0.7f, 0.25f, 0.25f, 1f));
+        }
+
+        private static void OnLightRGBChanged()
+        {
+            if (EditorSessionManager.SelectedObject == null) return;
+            if (!EditorSessionManager.PlacedLights.TryGetValue(EditorSessionManager.SelectedObject, out var cfg)) return;
+
+            float r = (_lightRSlider != null) ? _lightRSlider.value / 255f : cfg.Color.r;
+            float g = (_lightGSlider != null) ? _lightGSlider.value / 255f : cfg.Color.g;
+            float b = (_lightBSlider != null) ? _lightBSlider.value / 255f : cfg.Color.b;
+
+            Color newCol = new Color(r, g, b, 1f);
+            cfg.Color = newCol;
+
+            if (_lightRValText != null) _lightRValText.text = Mathf.RoundToInt(_lightRSlider.value).ToString();
+            if (_lightGValText != null) _lightGValText.text = Mathf.RoundToInt(_lightGSlider.value).ToString();
+            if (_lightBValText != null) _lightBValText.text = Mathf.RoundToInt(_lightBSlider.value).ToString();
+            if (_lightColorPreviewSwatch != null) _lightColorPreviewSwatch.color = newCol;
+
+            EditorSessionManager.ApplyLightConfig(EditorSessionManager.SelectedObject, cfg);
+        }
+
+        private static void ApplyPresetColor(Color c)
+        {
+            if (EditorSessionManager.SelectedObject == null) return;
+            if (EditorSessionManager.PlacedLights.TryGetValue(EditorSessionManager.SelectedObject, out var cfg))
+            {
+                cfg.Color = c;
+                EditorSessionManager.ApplyLightConfig(EditorSessionManager.SelectedObject, cfg);
+
+                _suppressInspectorCallbacks = true;
+                if (_lightRSlider != null) { _lightRSlider.value = c.r * 255f; if (_lightRValText != null) _lightRValText.text = Mathf.RoundToInt(c.r * 255f).ToString(); }
+                if (_lightGSlider != null) { _lightGSlider.value = c.g * 255f; if (_lightGValText != null) _lightGValText.text = Mathf.RoundToInt(c.g * 255f).ToString(); }
+                if (_lightBSlider != null) { _lightBSlider.value = c.b * 255f; if (_lightBValText != null) _lightBValText.text = Mathf.RoundToInt(c.b * 255f).ToString(); }
+                if (_lightColorPreviewSwatch != null) _lightColorPreviewSwatch.color = c;
+                _suppressInspectorCallbacks = false;
+
+                EditorSessionManager.ShowNotification("Applied light preset.");
+            }
         }
 
         private static void ToggleInspectorExpansion()
@@ -970,18 +1067,6 @@ namespace DeadCoreEditor
             }
         }
 
-        private static void ApplyPresetColor(Color c)
-        {
-            if (EditorSessionManager.SelectedObject == null) return;
-            if (EditorSessionManager.PlacedLights.TryGetValue(EditorSessionManager.SelectedObject, out var cfg))
-            {
-                cfg.Color = c;
-                EditorSessionManager.ApplyLightConfig(EditorSessionManager.SelectedObject, cfg);
-                if (_lightColorPreviewSwatch != null) _lightColorPreviewSwatch.color = c;
-                EditorSessionManager.ShowNotification("Applied light preset.");
-            }
-        }
-
         private static void BuildToastOverlay()
         {
             GameObject toastObj = CreatePanel(_canvasRoot.transform, "Toast_Overlay", new Vector2(0.5f, 0f), new Vector2(0.5f, 0f), new Vector2(0f, 225f), new Vector2(480f, 26f), new Color(0.08f, 0.10f, 0.12f, 0.90f));
@@ -989,17 +1074,8 @@ namespace DeadCoreEditor
         }
 
         // =========================================================================
-        // HIERARCHY DRAG & DROP PARENTING STATE
+        // OVERHAULED INTERACTIVE HIERARCHY REFRESH
         // =========================================================================
-        private static readonly Dictionary<GameObject, GameObject> _targetToRowMap = new Dictionary<GameObject, GameObject>();
-        private static readonly Dictionary<GameObject, GameObject> _rowToTargetMap = new Dictionary<GameObject, GameObject>();
-
-        private static GameObject _dragCandidateNode = null;
-        private static Vector2 _dragStartMousePos = Vector2.zero;
-        private static bool _isDraggingHierarchyNode = false;
-
-        private static GameObject _dragGhostObj = null;
-        private static TMP_Text _dragGhostText = null;
 
         public static void RefreshHierarchy()
         {
@@ -1078,7 +1154,6 @@ namespace DeadCoreEditor
             le.flexibleHeight = 0f;
             le.flexibleWidth = 1f;
 
-            // Dual reference mapping
             _targetToRowMap[node] = row;
             _rowToTargetMap[row] = node;
 
@@ -1138,7 +1213,6 @@ namespace DeadCoreEditor
                 }
             }));
 
-            // Hierarchy Row Label
             string treeBranch = (depth > 0) ? "|-- " : "";
             string parentBadge = hasChildren ? $" ({childrenMap[node].Count})" : "";
             string displayName = treeBranch + captured.name + parentBadge;
@@ -1154,7 +1228,7 @@ namespace DeadCoreEditor
 
             bool isChild = (node.transform.parent != null && EditorSessionManager.PlacedObjects.Contains(node.transform.parent.gameObject));
 
-            // Inline Focus Button [F] (Always available)
+            // Focus Button [F]
             GameObject focusBtnObj = new GameObject("Btn_Focus");
             focusBtnObj.transform.SetParent(row.transform, false);
             RectTransform fcrt = focusBtnObj.AddComponent<RectTransform>();
@@ -1173,7 +1247,7 @@ namespace DeadCoreEditor
                 EditorViewportCamera.FocusOnObject(captured);
             }));
 
-            // Inline Quick-Unparent Button [X] (Only displayed for child entities)
+            // Quick Unparent Button [X]
             if (isChild)
             {
                 GameObject unpBtnObj = new GameObject("Btn_Unparent");
@@ -1210,13 +1284,12 @@ namespace DeadCoreEditor
         }
 
         // =========================================================================
-        // DRAG & DROP PARENTING: SCROLL LOCK & EDGE AUTO-SCROLL
+        // DRAG & DROP PARENTING UPDATE LOOP
         // =========================================================================
         public static void UpdateHierarchyDragDrop()
         {
             if (_hierarchyPanel == null || !_hierarchyPanel.activeInHierarchy || _hierarchyScrollRect == null) return;
 
-            // 1. Mouse Button Down: Lock ScrollRect immediately if clicked on a row
             if (Input.GetMouseButtonDown(0))
             {
                 GameObject hovered = GetHoveredHierarchyNode();
@@ -1226,16 +1299,13 @@ namespace DeadCoreEditor
                     _dragStartMousePos = Input.mousePosition;
                     _isDraggingHierarchyNode = false;
 
-                    // Instantly freeze ScrollRect movement so it doesn't move while dragging
                     _hierarchyScrollRect.StopMovement();
                     _hierarchyScrollRect.vertical = false;
                 }
             }
 
-            // 2. Mouse Held Down: Detect drag threshold (>8 pixels)
             if (Input.GetMouseButton(0) && _dragCandidateNode != null)
             {
-                // Ensure vertical drag scrolling stays locked while holding a row
                 if (_hierarchyScrollRect.vertical)
                 {
                     _hierarchyScrollRect.StopMovement();
@@ -1255,14 +1325,12 @@ namespace DeadCoreEditor
                 {
                     UpdateDragGhostPosition();
                     UpdateHierarchyDragVisuals();
-                    HandleHierarchyAutoScroll(); // Smoothly scrolls only when hovering top/bottom edges
+                    HandleHierarchyAutoScroll();
                 }
             }
 
-            // 3. Mouse Button Released: Re-enable ScrollRect and complete drop
             if (Input.GetMouseButtonUp(0))
             {
-                // Restore normal scrolling (mouse wheel)
                 if (_hierarchyScrollRect != null)
                 {
                     _hierarchyScrollRect.vertical = true;
@@ -1274,7 +1342,6 @@ namespace DeadCoreEditor
 
                     if (dropTarget != null)
                     {
-                        // Valid drop target: cannot parent to self or into own child
                         if (dropTarget != _dragCandidateNode && !IsDescendantOf(_dragCandidateNode, dropTarget))
                         {
                             GameObject prevParent = _dragCandidateNode.transform.parent != null
@@ -1291,7 +1358,6 @@ namespace DeadCoreEditor
                     }
                     else
                     {
-                        // Dropped on empty space inside hierarchy panel: Unparent to root
                         if (IsMouseOverHierarchyPanel() && _dragCandidateNode.transform.parent != null)
                         {
                             GameObject oldParent = _dragCandidateNode.transform.parent.gameObject;
@@ -1312,7 +1378,6 @@ namespace DeadCoreEditor
             }
         }
 
-        // Smoothly auto-scrolls only if you drag an item against the extreme top or bottom edge
         private static void HandleHierarchyAutoScroll()
         {
             if (_hierarchyScrollRect == null || _hierarchyScrollRect.viewport == null) return;
@@ -1393,7 +1458,7 @@ namespace DeadCoreEditor
             rt.pivot = new Vector2(0f, 1f);
 
             Image bg = _dragGhostObj.AddComponent<Image>();
-            bg.color = new Color(0.95f, 0.65f, 0.15f, 0.90f); // Amber / Gold indicator
+            bg.color = new Color(0.95f, 0.65f, 0.15f, 0.90f);
             bg.raycastTarget = false;
 
             _dragGhostText = CreateText(_dragGhostObj.transform, "[Moving] " + node.name,
@@ -1441,13 +1506,13 @@ namespace DeadCoreEditor
                 {
                     if (dropTarget == _dragCandidateNode || IsDescendantOf(_dragCandidateNode, dropTarget))
                     {
-                        bg.color = new Color(0.75f, 0.2f, 0.2f, 0.90f); // Red: Invalid drop target
+                        bg.color = new Color(0.75f, 0.2f, 0.2f, 0.90f);
                         if (_dragGhostText != null) _dragGhostText.text = "[Invalid] Child Loop";
                     }
                     else
                     {
-                        bg.color = new Color(0.95f, 0.65f, 0.15f, 0.95f); // Gold: Valid drop target
-                        if (_dragGhostText != null) _dragGhostText.text = $"[⬇ Parent] {dropTarget.name}";
+                        bg.color = new Color(0.95f, 0.65f, 0.15f, 0.95f);
+                        if (_dragGhostText != null) _dragGhostText.text = $"[Parent] {dropTarget.name}";
                     }
                 }
                 else
@@ -1463,6 +1528,24 @@ namespace DeadCoreEditor
             {
                 _dragGhostText.text = "[Release to Unparent] (Root)";
             }
+        }
+
+        public static void NotifyObjectSelected(GameObject obj)
+        {
+            if (_inspectorTitleText != null)
+            {
+                if (EditorSessionManager.SelectedObjects != null && EditorSessionManager.SelectedObjects.Count > 1)
+                {
+                    _inspectorTitleText.text = $"Selection ({EditorSessionManager.SelectedObjects.Count} Objects)";
+                }
+                else
+                {
+                    _inspectorTitleText.text = (obj != null) ? obj.name : "Inspector (None Selected)";
+                }
+            }
+
+            UpdateHierarchyHighlightOnly();
+            RefreshInspectorValues();
         }
 
         private static void UpdateHierarchyHighlightOnly()
@@ -1488,11 +1571,11 @@ namespace DeadCoreEditor
 
                 if (isDirectlySelected)
                 {
-                    bg.color = new Color(0.18f, 0.52f, 0.88f, 0.95f); // Bright Blue: Active selection
+                    bg.color = new Color(0.18f, 0.52f, 0.88f, 0.95f);
                 }
                 else if (isSameTypeSibling)
                 {
-                    bg.color = new Color(0.06f, 0.22f, 0.44f, 0.90f); // Darker Blue: Same-name duplicate
+                    bg.color = new Color(0.06f, 0.22f, 0.44f, 0.90f);
                 }
                 else
                 {
@@ -1501,24 +1584,6 @@ namespace DeadCoreEditor
                     bg.color = (childCount > 0) ? new Color(0.16f, 0.18f, 0.22f, 0.80f) : new Color(0.11f, 0.12f, 0.14f, 0.60f);
                 }
             }
-        }
-
-        public static void NotifyObjectSelected(GameObject obj)
-        {
-            if (_inspectorTitleText != null)
-            {
-                if (EditorSessionManager.SelectedObjects != null && EditorSessionManager.SelectedObjects.Count > 1)
-                {
-                    _inspectorTitleText.text = $"Selection ({EditorSessionManager.SelectedObjects.Count} Objects)";
-                }
-                else
-                {
-                    _inspectorTitleText.text = (obj != null) ? obj.name : "Inspector (None Selected)";
-                }
-            }
-
-            UpdateHierarchyHighlightOnly();
-            RefreshInspectorValues();
         }
 
         // =========================================================================
@@ -1633,6 +1698,11 @@ namespace DeadCoreEditor
                     if (_lightIntensitySlider != null) { _lightIntensitySlider.value = cfg.Intensity; _lightIntensityValText.text = $"{cfg.Intensity:F1}"; }
                     if (_lightAngleSlider != null) { _lightAngleSlider.value = cfg.SpotAngle; _lightAngleValText.text = $"{cfg.SpotAngle:F0} deg"; }
                     if (_lightVolSlider != null) { _lightVolSlider.value = cfg.VolumetricIntensity; _lightVolValText.text = $"{cfg.VolumetricIntensity:F1}"; }
+
+                    if (_lightRSlider != null) { _lightRSlider.value = cfg.Color.r * 255f; if (_lightRValText != null) _lightRValText.text = Mathf.RoundToInt(cfg.Color.r * 255f).ToString(); }
+                    if (_lightGSlider != null) { _lightGSlider.value = cfg.Color.g * 255f; if (_lightGValText != null) _lightGValText.text = Mathf.RoundToInt(cfg.Color.g * 255f).ToString(); }
+                    if (_lightBSlider != null) { _lightBSlider.value = cfg.Color.b * 255f; if (_lightBValText != null) _lightBValText.text = Mathf.RoundToInt(cfg.Color.b * 255f).ToString(); }
+
                     if (_lightColorPreviewSwatch != null) { _lightColorPreviewSwatch.color = cfg.Color; }
                 }
             }
