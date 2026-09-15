@@ -1302,19 +1302,23 @@ namespace DeadCoreEditor
             }
         }
 
-        // =========================================================================
-        // PROCEDURAL VOLUMETRIC LIGHT CONE & CONFIGURATION
-        // =========================================================================
-
         public static void ApplyLightConfig(GameObject lightObj, LightConfig cfg)
         {
             if (lightObj == null || cfg == null) return;
             PlacedLights[lightObj] = cfg;
 
+            // 1. Purge any legacy cone/cylinder meshes if they still exist
+            Transform legacyBeam = lightObj.transform.Find("Volumetric_Beam");
+            if (legacyBeam != null)
+            {
+                GameObject.DestroyImmediate(legacyBeam.gameObject);
+            }
+
             Light l = lightObj.GetComponentInChildren<Light>();
             if (l != null)
             {
                 l.enabled = false;
+
                 if (cfg.IsDirectional)
                 {
                     Light targetSun = SceneHarvestingService.NativeSceneSun != null ? SceneHarvestingService.NativeSceneSun : l;
@@ -1325,8 +1329,10 @@ namespace DeadCoreEditor
                         targetSun.type = LightType.Directional;
                         targetSun.color = cfg.Color;
                         targetSun.transform.rotation = lightObj.transform.rotation;
-                        targetSun.intensity = Mathf.Max(0.1f, cfg.Intensity) * 4000f;
+                        targetSun.intensity = Mathf.Max(0.1f, cfg.Intensity) * 4000f; // HDRP Lux
                         RenderSettings.sun = targetSun;
+
+                        ApplyHDRPVolumetricSettings(targetSun.gameObject, cfg.VolumetricIntensity);
                     }
                 }
                 else
@@ -1336,51 +1342,66 @@ namespace DeadCoreEditor
                     l.range = 150f;
                     l.spotAngle = Mathf.Clamp(cfg.SpotAngle, 5f, 150f);
                     l.color = cfg.Color;
-                    l.intensity = Mathf.Pow(Mathf.Max(0.1f, cfg.Intensity), 2.2f) * 8000f;
+                    l.intensity = Mathf.Pow(Mathf.Max(0.1f, cfg.Intensity), 2.2f) * 8000f; // HDRP Lumens
 
-                    // VOLUMETRIC LIGHT BEAM CONE
-                    Transform oldBeam = lightObj.transform.Find("Volumetric_Beam");
-                    if (cfg.VolumetricIntensity > 0.05f)
+                    ApplyHDRPVolumetricSettings(l.gameObject, cfg.VolumetricIntensity);
+                }
+
+                l.enabled = true;
+            }
+
+            // 2. Also forward color/intensity to any native light lens shaders if present
+            Renderer[] rends = lightObj.GetComponentsInChildren<Renderer>(true);
+            for (int i = 0; i < rends.Length; i++)
+            {
+                if (rends[i] == null) continue;
+                Material m = rends[i].material;
+                if (m == null) continue;
+
+                if (m.HasProperty("_Color")) m.SetColor("_Color", cfg.Color);
+                if (m.HasProperty("_EmissionColor"))
+                {
+                    m.SetColor("_EmissionColor", cfg.Color * (cfg.Intensity * 0.5f));
+                    m.EnableKeyword("_EMISSION");
+                }
+                if (m.HasProperty("_VolumetricDimmer")) m.SetFloat("_VolumetricDimmer", cfg.VolumetricIntensity);
+                if (m.HasProperty("_VolumetricIntensity")) m.SetFloat("_VolumetricIntensity", cfg.VolumetricIntensity);
+            }
+        }
+
+        /// <summary>
+        /// Directly configures HDRP's native volumetric scattering dimmer on the light.
+        /// </summary>
+        private static void ApplyHDRPVolumetricSettings(GameObject lightGo, float volumetricIntensity)
+        {
+            if (lightGo == null) return;
+
+            // Find Unity HDRP's HDAdditionalLightData component on the light
+            Component hdLight = lightGo.GetComponent("HDAdditionalLightData");
+            if (hdLight != null)
+            {
+                try
+                {
+                    var type = hdLight.GetType();
+
+                    // volumetricDimmer controls the light's volumetric multiplier in HDRP (0.0 to 16.0)
+                    var dimmerProp = type.GetProperty("volumetricDimmer");
+                    if (dimmerProp != null)
                     {
-                        GameObject beamObj = (oldBeam != null) ? oldBeam.gameObject : null;
-                        if (beamObj == null)
-                        {
-                            beamObj = GameObject.CreatePrimitive(PrimitiveType.Cylinder);
-                            beamObj.name = "Volumetric_Beam";
-                            beamObj.transform.SetParent(lightObj.transform, false);
-                            beamObj.layer = 2; // Ignore Raycast
-
-                            Collider c = beamObj.GetComponent<Collider>();
-                            if (c != null) GameObject.DestroyImmediate(c);
-
-                            Shader beamShader = Shader.Find("Particles/Additive") ?? Shader.Find("Particles/Standard Unlit") ?? Shader.Find("Sprites/Default");
-                            Material beamMat = new Material(beamShader);
-                            beamObj.GetComponent<Renderer>().material = beamMat;
-                            beamObj.GetComponent<Renderer>().shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
-                            beamObj.GetComponent<Renderer>().receiveShadows = false;
-                        }
-
-                        beamObj.SetActive(true);
-
-                        float beamLength = 40f;
-                        float rad = Mathf.Tan(cfg.SpotAngle * 0.5f * Mathf.Deg2Rad) * beamLength;
-
-                        beamObj.transform.localPosition = new Vector3(0f, 0f, beamLength * 0.5f);
-                        beamObj.transform.localRotation = Quaternion.Euler(90f, 0f, 0f);
-                        beamObj.transform.localScale = new Vector3(rad * 1.5f, beamLength * 0.5f, rad * 1.5f);
-
-                        Renderer r = beamObj.GetComponent<Renderer>();
-                        Color beamColor = cfg.Color;
-                        beamColor.a = Mathf.Clamp01(cfg.VolumetricIntensity * 0.08f);
-                        r.material.color = beamColor;
-                        if (r.material.HasProperty("_TintColor")) r.material.SetColor("_TintColor", beamColor);
+                        dimmerProp.SetValue(hdLight, Mathf.Clamp(volumetricIntensity, 0f, 16f));
                     }
-                    else if (oldBeam != null)
+
+                    // Ensure volumetric scattering is toggled on for this light
+                    var affectsVolProp = type.GetProperty("affectsVolumetric");
+                    if (affectsVolProp != null)
                     {
-                        oldBeam.gameObject.SetActive(false);
+                        affectsVolProp.SetValue(hdLight, volumetricIntensity > 0.01f);
                     }
                 }
-                l.enabled = true;
+                catch (Exception ex)
+                {
+                    MelonLogger.Warning($"[HDRP Light] Could not set volumetric dimmer: {ex.Message}");
+                }
             }
         }
 
