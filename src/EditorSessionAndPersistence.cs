@@ -84,8 +84,12 @@ namespace DeadCoreEditor
         public static float ActiveLaserRotationSpeed = 45.0f;
         public static float DefaultPathSpeed = 3.5f;
 
-        // Motion Path & Parenting Tools
+        // Motion Path & In-Scene Waypoint Tracking
         public static Dictionary<GameObject, ObjectMotionPath> MotionPaths = new Dictionary<GameObject, ObjectMotionPath>();
+        public static readonly Dictionary<GameObject, GameObject> WaypointMarkersA = new Dictionary<GameObject, GameObject>();
+        public static readonly Dictionary<GameObject, GameObject> WaypointMarkersB = new Dictionary<GameObject, GameObject>();
+        public static readonly Dictionary<GameObject, LineRenderer> WaypointLines = new Dictionary<GameObject, LineRenderer>();
+
         public static GameObject PathEditTarget = null;
         public static GameObject ParentingChildTarget = null;
         public static GameObject RepositionTarget = null;
@@ -147,7 +151,7 @@ namespace DeadCoreEditor
             {
                 IsBlockSelected = false;
                 PlacementHologramController.DestroyPreview();
-                ShowNotification("Mode: [SELECT] - Click objects (Ctrl to multi-select, W/E/R to transform)");
+                ShowNotification("Mode: [SELECT] - Click objects or waypoints (Ctrl to multi-select, W/E/R to transform)");
             }
             else
             {
@@ -217,12 +221,6 @@ namespace DeadCoreEditor
             ShowNotification($"Equipped: {asset.DisplayName} (Scale: {ActivePlacementScale:F2}x)");
         }
 
-
-
-        // =========================================================================
-        // ACCURATE SELECTION BOX (NO DOUBLE-SCALING)
-        // =========================================================================
-
         public static void UpdateSelectionHighlight()
         {
             CleanHighlightPool();
@@ -238,6 +236,9 @@ namespace DeadCoreEditor
             {
                 GameObject obj = SelectedObjects[i];
                 if (obj == null || !obj.activeSelf) continue;
+
+                // Waypoints have their own distinct visual emissive color
+                if (IsWaypointMarker(obj, out _, out _)) continue;
 
                 GameObject box = GameObject.CreatePrimitive(PrimitiveType.Cube);
                 box.name = "Studio_Selection_Highlight_Wire";
@@ -258,7 +259,6 @@ namespace DeadCoreEditor
 
                 box.transform.position = worldCenter;
                 box.transform.rotation = obj.transform.rotation;
-                // Tight fit hugging the object bounds accurately
                 box.transform.localScale = Vector3.Scale(b.size * 1.02f, obj.transform.lossyScale);
 
                 beacon.transform.position = worldCenter + Vector3.up * (b.extents.y * obj.transform.lossyScale.y + 0.5f);
@@ -320,6 +320,7 @@ namespace DeadCoreEditor
             {
                 GameObject obj = SelectedObjects[i];
                 if (obj == null) continue;
+                if (IsWaypointMarker(obj, out _, out _)) continue;
 
                 float param = 0f;
                 if (JumperForces.ContainsKey(obj)) param = JumperForces[obj];
@@ -362,7 +363,6 @@ namespace DeadCoreEditor
             }
             else
             {
-                // Paste slightly offset from camera or current selection
                 Vector3 basePos = (SelectedObject != null) ? SelectedObject.transform.position : LevelSpawnPosition;
                 pasteOrigin = basePos + new Vector3(2.5f, 0f, 2.5f);
             }
@@ -399,7 +399,8 @@ namespace DeadCoreEditor
                         {
                             PointA = spawnPos,
                             PointB = item.MotionPath.PointB + delta,
-                            Speed = item.MotionPath.Speed
+                            Speed = item.MotionPath.Speed,
+                            IsActive = true
                         };
                     }
 
@@ -436,10 +437,22 @@ namespace DeadCoreEditor
             var toDelete = new List<GameObject>(SelectedObjects);
             for (int i = 0; i < toDelete.Count; i++)
             {
-                if (toDelete[i] != null)
+                GameObject target = toDelete[i];
+                if (target == null) continue;
+
+                // If deleting a waypoint marker directly, delete the owner's motion path
+                if (IsWaypointMarker(target, out GameObject owner, out _))
                 {
-                    DeleteSpecifiedObject(toDelete[i]);
+                    if (owner != null)
+                    {
+                        MotionPaths.Remove(owner);
+                        DestroyWaypointVisuals(owner);
+                        ShowNotification($"Removed motion path from '{owner.name}'");
+                    }
+                    continue;
                 }
+
+                DeleteSpecifiedObject(target);
             }
 
             SelectedObjects.Clear();
@@ -490,6 +503,7 @@ namespace DeadCoreEditor
                 StudioGizmoController.DestroyGizmo();
 
                 CleanHighlightPool();
+                HideAllWaypointMarkers();
 
                 StudioUIManager.SetUIVisible(false);
 
@@ -523,6 +537,7 @@ namespace DeadCoreEditor
             StudioGizmoController.DestroyGizmo();
 
             SceneHarvestingService.CleanupProceduralResources();
+            DestroyAllWaypointVisuals();
 
             PlayerCameraInstance = null;
             PlayerControllerInstance = null;
@@ -634,7 +649,7 @@ namespace DeadCoreEditor
                 {
                     StudioGizmoController.UpdateGizmo();
 
-                    // Viewport Click Selection (Ctrl toggles multi-selection)
+                    // Viewport Click Selection (supports objects and in-scene waypoints)
                     if (Input.GetMouseButtonDown(0) && !Input.GetMouseButton(1) && !StudioUIManager.IsPointerOverUI())
                     {
                         if (!StudioGizmoController.IsHoveringHandle)
@@ -742,7 +757,6 @@ namespace DeadCoreEditor
             bool isLight = asset.IsSpotlight || asset.IsSunlight;
             bool isHelix = asset.IsHelix;
 
-            // Configure colliders: solid geometry for platforms vs triggers for hazards/wind/gates
             Collider[] existingCols = obj.GetComponentsInChildren<Collider>(true);
             bool hasSolidCollider = false;
 
@@ -759,14 +773,13 @@ namespace DeadCoreEditor
                 }
                 else if (isGate)
                 {
-                    // CHECKPOINTS & GATES: NEVER HAVE BLOCKING COLLISION
-                    // Turn all gate/arch/pillar colliders into triggers so the player walks straight through
+                    // CHECKPOINTS & GATES: ZERO BLOCKING COLLISION
                     c.isTrigger = true;
                 }
                 else if (isHelix)
                 {
                     // HELIX FIX: Only the wind pushing zone is a trigger!
-                    // The switch target and housing remain solid non-triggers so player gun shots hit and deactivate the turbine
+                    // Switch buttons/targets remain solid non-triggers so player gun raycasts hit and deactivate the turbine
                     HelixPushingZone zone = c.GetComponent<HelixPushingZone>() ?? c.GetComponentInParent<HelixPushingZone>();
                     string cName = c.gameObject.name.ToLower();
                     if (zone != null || cName.Contains("zone") || cName.Contains("push") || cName.Contains("vent") || cName.Contains("wind"))
@@ -781,7 +794,6 @@ namespace DeadCoreEditor
                 }
                 else
                 {
-                    // Standard building blocks (platforms, walls, pillars) must be solid
                     c.isTrigger = false;
                     hasSolidCollider = true;
                 }
@@ -862,6 +874,7 @@ namespace DeadCoreEditor
                     };
                     ApplyLightConfig(obj, PlacedLights[obj]);
                 }
+                AttachSunVisualWidget(obj);
             }
             else if (asset.IsSpotlight)
             {
@@ -1017,7 +1030,11 @@ namespace DeadCoreEditor
                 RecalculateParentChildCount(target.transform.parent.gameObject);
 
             if (PlacedLights.ContainsKey(target)) PlacedLights.Remove(target);
+
+            // Clean up Motion Paths and their associated Waypoint Markers
             if (MotionPaths.ContainsKey(target)) MotionPaths.Remove(target);
+            DestroyWaypointVisuals(target);
+
             if (PathEditTarget == target) PathEditTarget = null;
             if (ParentingChildTarget == target) ParentingChildTarget = null;
             if (RepositionTarget == target) RepositionTarget = null;
@@ -1100,7 +1117,11 @@ namespace DeadCoreEditor
             JumperForces.Clear();
             TurbineSpeeds.Clear();
             TurretFireDelays.Clear();
+
+            // Destroy all waypoints and motion paths
             MotionPaths.Clear();
+            DestroyAllWaypointVisuals();
+
             PathEditTarget = null;
             ParentingChildTarget = null;
             UndoHistory.Clear();
@@ -1303,7 +1324,7 @@ namespace DeadCoreEditor
         }
 
         // =========================================================================
-        // HDRP VOLUMETRIC LIGHTING & SUN CONTROLLER
+        // HDRP VOLUMETRIC LIGHTING & DIRECTIONAL SUN CONTROLLER
         // =========================================================================
 
         public static void ApplyLightConfig(GameObject lightObj, LightConfig cfg)
@@ -1311,7 +1332,6 @@ namespace DeadCoreEditor
             if (lightObj == null || cfg == null) return;
             PlacedLights[lightObj] = cfg;
 
-            // Remove legacy mesh if it exists
             Transform legacy = lightObj.transform.Find("Volumetric_Beam");
             if (legacy != null) GameObject.DestroyImmediate(legacy.gameObject);
 
@@ -1331,7 +1351,6 @@ namespace DeadCoreEditor
                         targetSun.color = cfg.Color;
                         targetSun.transform.rotation = lightObj.transform.rotation;
 
-                        // Physical HDRP Sunlight Intensity (Lux)
                         float sunLux = Mathf.Max(0.1f, cfg.Intensity) * 6000f;
                         targetSun.intensity = sunLux;
                         RenderSettings.sun = targetSun;
@@ -1339,7 +1358,6 @@ namespace DeadCoreEditor
                         ApplyHDRPVolumetricSettings(targetSun.gameObject, cfg.VolumetricIntensity, sunLux);
                     }
 
-                    // Attach or update 3D Sun Widget in scene
                     AttachSunVisualWidget(lightObj);
                 }
                 else
@@ -1350,8 +1368,6 @@ namespace DeadCoreEditor
                     l.spotAngle = Mathf.Clamp(cfg.SpotAngle, 5f, 150f);
                     l.color = cfg.Color;
 
-                    // Physical HDRP Spotlight Intensity (Lumens)
-                    // High lumen output is required for volumetric scattering in HDRP fog
                     float lumens = Mathf.Pow(Mathf.Max(0.1f, cfg.Intensity), 2.2f) * 8000f;
                     l.intensity = lumens;
 
@@ -1361,7 +1377,6 @@ namespace DeadCoreEditor
                 l.enabled = true;
             }
 
-            // Forward color & intensity to fixture lens materials/shaders
             Renderer[] rends = lightObj.GetComponentsInChildren<Renderer>(true);
             for (int i = 0; i < rends.Length; i++)
             {
@@ -1382,9 +1397,6 @@ namespace DeadCoreEditor
             }
         }
 
-        /// <summary>
-        /// Directly controls Unity HDRP's native volumetricDimmer and intensity on HDAdditionalLightData.
-        /// </summary>
         private static void ApplyHDRPVolumetricSettings(GameObject lightGo, float volumetricIntensity, float physicalIntensity)
         {
             if (lightGo == null) return;
@@ -1408,8 +1420,6 @@ namespace DeadCoreEditor
                 try
                 {
                     Type type = hdLight.GetType();
-
-                    // volumetricDimmer directly controls the light's volumetric multiplier in HDRP (0.0 to 16.0)
                     float dimmer = Mathf.Clamp(volumetricIntensity, 0f, 16f);
                     bool enableVol = volumetricIntensity > 0.01f;
 
@@ -1420,14 +1430,9 @@ namespace DeadCoreEditor
                     SetFieldOrProp(type, hdLight, "useVolumetric", enableVol);
                     SetFieldOrProp(type, hdLight, "m_UseVolumetric", enableVol);
                     SetFieldOrProp(type, hdLight, "volumetricShadowDimmer", enableVol ? 1f : 0f);
-
-                    // Update HDRP internal physical intensity property
                     SetFieldOrProp(type, hdLight, "intensity", physicalIntensity);
                 }
-                catch (Exception ex)
-                {
-                    MelonLogger.Warning($"[HDRP Light] Volumetric dimmer hook error: {ex.Message}");
-                }
+                catch { }
             }
         }
 
@@ -1450,106 +1455,6 @@ namespace DeadCoreEditor
             catch { }
         }
 
-        // =========================================================================
-        // IN-EDITOR DIRECTIONAL SUN 3D GIZMO WIDGET
-        // =========================================================================
-
-        public static void AttachSunVisualWidget(GameObject sunObj)
-        {
-            if (sunObj == null) return;
-
-            Transform old = sunObj.transform.Find("Sun_Editor_Widget");
-            if (old != null) GameObject.DestroyImmediate(old.gameObject);
-
-            GameObject widget = new GameObject("Sun_Editor_Widget");
-            widget.transform.SetParent(sunObj.transform, false);
-            widget.layer = 0; // Default layer, selectable in viewport
-
-            Material sunMat = new Material(Shader.Find("Unlit/Color") ?? Shader.Find("Sprites/Default"));
-            Color gold = new Color(1.0f, 0.85f, 0.2f, 1f);
-            sunMat.color = gold;
-            if (sunMat.HasProperty("_Color")) sunMat.SetColor("_Color", gold);
-            if (sunMat.HasProperty("_EmissionColor"))
-            {
-                sunMat.SetColor("_EmissionColor", gold * 2.5f);
-                sunMat.EnableKeyword("_EMISSION");
-            }
-
-            // 1. Center Glowing Sun Sphere
-            GameObject orb = GameObject.CreatePrimitive(PrimitiveType.Sphere);
-            orb.name = "Sun_Orb";
-            orb.transform.SetParent(widget.transform, false);
-            orb.transform.localScale = Vector3.one * 2.2f;
-            Renderer rOrb = orb.GetComponent<Renderer>();
-            rOrb.material = sunMat;
-            rOrb.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
-
-            // 2. Direction Pointer Arrow (shows sunlight angle along forward Z)
-            GameObject ray = GameObject.CreatePrimitive(PrimitiveType.Cylinder);
-            ray.name = "Sun_Ray_Shaft";
-            ray.transform.SetParent(widget.transform, false);
-            ray.transform.localRotation = Quaternion.Euler(90f, 0f, 0f);
-            ray.transform.localPosition = new Vector3(0f, 0f, 3.0f);
-            ray.transform.localScale = new Vector3(0.28f, 2.0f, 0.28f);
-            Renderer rRay = ray.GetComponent<Renderer>();
-            rRay.material = sunMat;
-            rRay.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
-
-            GameObject tip = GameObject.CreatePrimitive(PrimitiveType.Sphere);
-            tip.name = "Sun_Ray_Tip";
-            tip.transform.SetParent(widget.transform, false);
-            tip.transform.localPosition = new Vector3(0f, 0f, 5.2f);
-            tip.transform.localScale = Vector3.one * 0.7f;
-            Renderer rTip = tip.GetComponent<Renderer>();
-            rTip.material = sunMat;
-            rTip.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
-
-            // 3. Four Sunburst Corona Rays
-            CreateCoronaRay(widget.transform, new Vector3(1.6f, 1.6f, 0f), Quaternion.Euler(0f, 0f, 45f), sunMat);
-            CreateCoronaRay(widget.transform, new Vector3(-1.6f, 1.6f, 0f), Quaternion.Euler(0f, 0f, -45f), sunMat);
-            CreateCoronaRay(widget.transform, new Vector3(1.6f, -1.6f, 0f), Quaternion.Euler(0f, 0f, -45f), sunMat);
-            CreateCoronaRay(widget.transform, new Vector3(-1.6f, -1.6f, 0f), Quaternion.Euler(0f, 0f, 45f), sunMat);
-
-            // 4. Large Picking Collider for Viewport Selection
-            SphereCollider sc = widget.AddComponent<SphereCollider>();
-            sc.radius = 2.8f;
-            sc.isTrigger = false;
-
-            widget.SetActive(IsEditModeActive);
-        }
-
-        private static void CreateCoronaRay(Transform parent, Vector3 localPos, Quaternion localRot, Material mat)
-        {
-            GameObject ray = GameObject.CreatePrimitive(PrimitiveType.Cylinder);
-            ray.name = "Corona_Ray";
-            ray.transform.SetParent(parent, false);
-            ray.transform.localPosition = localPos;
-            ray.transform.localRotation = localRot;
-            ray.transform.localScale = new Vector3(0.12f, 0.8f, 0.12f);
-            Renderer r = ray.GetComponent<Renderer>();
-            r.material = mat;
-            r.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
-        }
-
-        private static void SetFieldOrProperty(Type type, object target, string memberName, object value)
-        {
-            try
-            {
-                var prop = type.GetProperty(memberName, System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-                if (prop != null && prop.CanWrite)
-                {
-                    prop.SetValue(target, value, null);
-                    return;
-                }
-                var field = type.GetField(memberName, System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-                if (field != null)
-                {
-                    field.SetValue(target, value);
-                }
-            }
-            catch { }
-        }
-
         public static void ForceRefreshAllLights()
         {
             foreach (var kvp in PlacedLights)
@@ -1566,6 +1471,75 @@ namespace DeadCoreEditor
                 }
                 ApplyLightConfig(obj, cfg);
             }
+        }
+
+        public static void AttachSunVisualWidget(GameObject sunObj)
+        {
+            if (sunObj == null) return;
+
+            Transform old = sunObj.transform.Find("Sun_Editor_Widget");
+            if (old != null) GameObject.DestroyImmediate(old.gameObject);
+
+            GameObject widget = new GameObject("Sun_Editor_Widget");
+            widget.transform.SetParent(sunObj.transform, false);
+            widget.layer = 0;
+
+            Material sunMat = new Material(Shader.Find("Unlit/Color") ?? Shader.Find("Sprites/Default"));
+            Color gold = new Color(1.0f, 0.85f, 0.2f, 1f);
+            sunMat.color = gold;
+            if (sunMat.HasProperty("_Color")) sunMat.SetColor("_Color", gold);
+            if (sunMat.HasProperty("_EmissionColor"))
+            {
+                sunMat.SetColor("_EmissionColor", gold * 2.5f);
+                sunMat.EnableKeyword("_EMISSION");
+            }
+
+            GameObject orb = GameObject.CreatePrimitive(PrimitiveType.Sphere);
+            orb.name = "Sun_Orb";
+            orb.transform.SetParent(widget.transform, false);
+            orb.transform.localScale = Vector3.one * 2.2f;
+            orb.GetComponent<Renderer>().material = sunMat;
+            orb.GetComponent<Renderer>().shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
+
+            GameObject ray = GameObject.CreatePrimitive(PrimitiveType.Cylinder);
+            ray.name = "Sun_Ray_Shaft";
+            ray.transform.SetParent(widget.transform, false);
+            ray.transform.localRotation = Quaternion.Euler(90f, 0f, 0f);
+            ray.transform.localPosition = new Vector3(0f, 0f, 3.0f);
+            ray.transform.localScale = new Vector3(0.28f, 2.0f, 0.28f);
+            ray.GetComponent<Renderer>().material = sunMat;
+            ray.GetComponent<Renderer>().shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
+
+            GameObject tip = GameObject.CreatePrimitive(PrimitiveType.Sphere);
+            tip.name = "Sun_Ray_Tip";
+            tip.transform.SetParent(widget.transform, false);
+            tip.transform.localPosition = new Vector3(0f, 0f, 5.2f);
+            tip.transform.localScale = Vector3.one * 0.7f;
+            tip.GetComponent<Renderer>().material = sunMat;
+            tip.GetComponent<Renderer>().shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
+
+            CreateCoronaRay(widget.transform, new Vector3(1.6f, 1.6f, 0f), Quaternion.Euler(0f, 0f, 45f), sunMat);
+            CreateCoronaRay(widget.transform, new Vector3(-1.6f, 1.6f, 0f), Quaternion.Euler(0f, 0f, -45f), sunMat);
+            CreateCoronaRay(widget.transform, new Vector3(1.6f, -1.6f, 0f), Quaternion.Euler(0f, 0f, -45f), sunMat);
+            CreateCoronaRay(widget.transform, new Vector3(-1.6f, -1.6f, 0f), Quaternion.Euler(0f, 0f, 45f), sunMat);
+
+            SphereCollider sc = widget.AddComponent<SphereCollider>();
+            sc.radius = 2.8f;
+            sc.isTrigger = false;
+
+            widget.SetActive(IsEditModeActive);
+        }
+
+        private static void CreateCoronaRay(Transform parent, Vector3 localPos, Quaternion localRot, Material mat)
+        {
+            GameObject ray = GameObject.CreatePrimitive(PrimitiveType.Cylinder);
+            ray.name = "Corona_Ray";
+            ray.transform.SetParent(parent, false);
+            ray.transform.localPosition = localPos;
+            ray.transform.localRotation = localRot;
+            ray.transform.localScale = new Vector3(0.12f, 0.8f, 0.12f);
+            ray.GetComponent<Renderer>().material = mat;
+            ray.GetComponent<Renderer>().shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
         }
 
         public static void ApplyGateVisualTint(GameObject gateObj, Color tintColor)
@@ -1655,16 +1629,105 @@ namespace DeadCoreEditor
         }
 
         // =========================================================================
-        // RUNTIME SIMULATION & PLAYER CONTROL CHECKS
+        // MOTION PATHS & FULLY MOVEABLE IN-SCENE WAYPOINTS
         // =========================================================================
 
-        // =========================================================================
-        // MOTION PATHS & IN-SCENE EDIT MODE WAYPOINT MARKERS
-        // =========================================================================
+        public static bool IsWaypointMarker(GameObject go, out GameObject ownerObj, out bool isPointB)
+        {
+            ownerObj = null;
+            isPointB = false;
+            if (go == null) return false;
 
-        private static readonly Dictionary<GameObject, GameObject> _waypointMarkersA = new Dictionary<GameObject, GameObject>();
-        private static readonly Dictionary<GameObject, GameObject> _waypointMarkersB = new Dictionary<GameObject, GameObject>();
-        private static readonly Dictionary<GameObject, LineRenderer> _waypointLines = new Dictionary<GameObject, LineRenderer>();
+            foreach (var kvp in WaypointMarkersB)
+            {
+                if (kvp.Value == go)
+                {
+                    ownerObj = kvp.Key;
+                    isPointB = true;
+                    return true;
+                }
+            }
+
+            foreach (var kvp in WaypointMarkersA)
+            {
+                if (kvp.Value == go)
+                {
+                    ownerObj = kvp.Key;
+                    isPointB = false;
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        private static bool IsChildOfAnyWaypoint(GameObject hitGo, out GameObject markerRoot)
+        {
+            markerRoot = null;
+            if (hitGo == null) return false;
+
+            foreach (var kvp in WaypointMarkersB)
+            {
+                if (kvp.Value != null && (hitGo == kvp.Value || hitGo.transform.IsChildOf(kvp.Value.transform)))
+                {
+                    markerRoot = kvp.Value;
+                    return true;
+                }
+            }
+
+            foreach (var kvp in WaypointMarkersA)
+            {
+                if (kvp.Value != null && (hitGo == kvp.Value || hitGo.transform.IsChildOf(kvp.Value.transform)))
+                {
+                    markerRoot = kvp.Value;
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        public static void DestroyWaypointVisuals(GameObject obj)
+        {
+            if (obj == null) return;
+
+            if (WaypointMarkersA.TryGetValue(obj, out GameObject a) && a != null)
+            {
+                GameObject.DestroyImmediate(a);
+            }
+            WaypointMarkersA.Remove(obj);
+
+            if (WaypointMarkersB.TryGetValue(obj, out GameObject b) && b != null)
+            {
+                GameObject.DestroyImmediate(b);
+            }
+            WaypointMarkersB.Remove(obj);
+
+            if (WaypointLines.TryGetValue(obj, out LineRenderer l) && l != null)
+            {
+                GameObject.DestroyImmediate(l.gameObject);
+            }
+            WaypointLines.Remove(obj);
+        }
+
+        public static void DestroyAllWaypointVisuals()
+        {
+            foreach (var kvp in WaypointMarkersA) if (kvp.Value != null) GameObject.DestroyImmediate(kvp.Value);
+            WaypointMarkersA.Clear();
+
+            foreach (var kvp in WaypointMarkersB) if (kvp.Value != null) GameObject.DestroyImmediate(kvp.Value);
+            WaypointMarkersB.Clear();
+
+            foreach (var kvp in WaypointLines) if (kvp.Value != null) GameObject.DestroyImmediate(kvp.Value.gameObject);
+            WaypointLines.Clear();
+        }
+
+        private static void HideAllWaypointMarkers()
+        {
+            foreach (var kvp in WaypointMarkersA) if (kvp.Value != null) kvp.Value.SetActive(false);
+            foreach (var kvp in WaypointMarkersB) if (kvp.Value != null) kvp.Value.SetActive(false);
+            foreach (var kvp in WaypointLines) if (kvp.Value != null) kvp.Value.gameObject.SetActive(false);
+        }
 
         private static void UpdateObjectMotionPaths(GameObject player, CharacterController cc)
         {
@@ -1683,15 +1746,42 @@ namespace DeadCoreEditor
                 ObjectMotionPath path = kvp.Value;
                 if (obj == null || !obj.activeSelf || !path.IsActive) continue;
 
-                // IN EDIT MODE: Keep object anchored at Point A and show visual 3D Waypoints
+                // IN EDIT MODE: Keep object positioned at Point A and manage live Waypoint syncing
                 if (IsEditModeActive)
                 {
-                    obj.transform.position = path.PointA;
+                    // If Waypoint B is selected and moved with the gizmo, update PointB
+                    if (SelectedObject != null && IsWaypointMarker(SelectedObject, out GameObject ownerB, out bool isB) && ownerB == obj)
+                    {
+                        if (isB)
+                        {
+                            path.PointB = SelectedObject.transform.position;
+                        }
+                        else
+                        {
+                            path.PointA = SelectedObject.transform.position;
+                            obj.transform.position = path.PointA;
+                        }
+                    }
+                    // If the moving object itself was moved with the gizmo, shift both Point A and Point B together
+                    else if (SelectedObject == obj)
+                    {
+                        if (obj.transform.position != path.PointA)
+                        {
+                            Vector3 delta = obj.transform.position - path.PointA;
+                            path.PointA = obj.transform.position;
+                            path.PointB += delta;
+                        }
+                    }
+                    else
+                    {
+                        obj.transform.position = path.PointA;
+                    }
+
                     UpdateWaypointVisuals(obj, path);
                     continue;
                 }
 
-                // IN PLAYTEST MODE: Hide markers and animate smoothly
+                // IN PLAYTEST MODE: Hide markers and calculate smooth kinematic ping-pong motion
                 HideWaypointVisual(obj);
 
                 float dist = path.TotalDistance;
@@ -1701,11 +1791,11 @@ namespace DeadCoreEditor
                 float duration = dist / speed;
                 float t = Mathf.PingPong(Time.time / duration, 1.0f);
                 Vector3 targetPos = path.EvaluatePosition(t);
-                Vector3 delta = targetPos - obj.transform.position;
+                Vector3 deltaPos = targetPos - obj.transform.position;
 
                 obj.transform.position = targetPos;
 
-                if (canPushPlayer && delta.sqrMagnitude > 0.00001f)
+                if (canPushPlayer && deltaPos.sqrMagnitude > 0.00001f)
                 {
                     if (path.CachedColliders == null || path.CachedColliders.Length == 0)
                         path.CachedColliders = obj.GetComponentsInChildren<Collider>(true);
@@ -1715,7 +1805,7 @@ namespace DeadCoreEditor
                         Collider col = path.CachedColliders[c];
                         if (col != null && col.bounds.Contains(playerFeetPos + Vector3.down * 0.15f))
                         {
-                            cc.Move(delta);
+                            cc.Move(deltaPos);
                             break;
                         }
                     }
@@ -1723,45 +1813,65 @@ namespace DeadCoreEditor
             }
         }
 
-        private static void UpdateWaypointVisuals(GameObject obj, ObjectMotionPath path)
+        public static void UpdateWaypointVisuals(GameObject obj, ObjectMotionPath path)
         {
-            if (!_waypointMarkersA.TryGetValue(obj, out GameObject markerA) || markerA == null)
+            if (obj == null || path == null) return;
+
+            // Point A Marker (Green)
+            if (!WaypointMarkersA.TryGetValue(obj, out GameObject markerA) || markerA == null)
             {
                 markerA = GameObject.CreatePrimitive(PrimitiveType.Sphere);
                 markerA.name = "Waypoint_A_" + obj.name;
-                Collider ca = markerA.GetComponent<Collider>();
-                if (ca != null) ca.isTrigger = true;
-                markerA.transform.localScale = Vector3.one * 0.75f;
+                markerA.layer = 0; // Selectable
+
+                SphereCollider sc = markerA.GetComponent<SphereCollider>();
+                if (sc != null) { sc.isTrigger = false; sc.radius = 0.55f; }
+
+                markerA.transform.localScale = Vector3.one * 0.95f;
                 Material ma = new Material(Shader.Find("Unlit/Color") ?? Shader.Find("Sprites/Default"));
-                ma.color = new Color(0.2f, 1f, 0.4f, 0.9f);
+                ma.color = new Color(0.2f, 1f, 0.4f, 1f);
+                if (ma.HasProperty("_EmissionColor")) { ma.SetColor("_EmissionColor", new Color(0.2f, 1f, 0.4f) * 2f); ma.EnableKeyword("_EMISSION"); }
                 markerA.GetComponent<Renderer>().material = ma;
-                _waypointMarkersA[obj] = markerA;
+                markerA.GetComponent<Renderer>().shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
+
+                WaypointMarkersA[obj] = markerA;
             }
 
-            if (!_waypointMarkersB.TryGetValue(obj, out GameObject markerB) || markerB == null)
+            // Point B Marker (Amber / Orange)
+            if (!WaypointMarkersB.TryGetValue(obj, out GameObject markerB) || markerB == null)
             {
                 markerB = GameObject.CreatePrimitive(PrimitiveType.Sphere);
                 markerB.name = "Waypoint_B_" + obj.name;
-                Collider cb = markerB.GetComponent<Collider>();
-                if (cb != null) cb.isTrigger = true;
-                markerB.transform.localScale = Vector3.one * 0.75f;
+                markerB.layer = 0; // Selectable
+
+                SphereCollider sc = markerB.GetComponent<SphereCollider>();
+                if (sc != null) { sc.isTrigger = false; sc.radius = 0.55f; }
+
+                markerB.transform.localScale = Vector3.one * 0.95f;
                 Material mb = new Material(Shader.Find("Unlit/Color") ?? Shader.Find("Sprites/Default"));
-                mb.color = new Color(1f, 0.6f, 0.1f, 0.9f);
+                mb.color = new Color(1f, 0.65f, 0.1f, 1f);
+                if (mb.HasProperty("_EmissionColor")) { mb.SetColor("_EmissionColor", new Color(1f, 0.65f, 0.1f) * 2f); mb.EnableKeyword("_EMISSION"); }
                 markerB.GetComponent<Renderer>().material = mb;
-                _waypointMarkersB[obj] = markerB;
+                markerB.GetComponent<Renderer>().shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
+
+                WaypointMarkersB[obj] = markerB;
             }
 
-            if (!_waypointLines.TryGetValue(obj, out LineRenderer lr) || lr == null)
+            // 3D Connecting Trajectory Line
+            if (!WaypointLines.TryGetValue(obj, out LineRenderer lr) || lr == null)
             {
                 GameObject lineObj = new GameObject("Waypoint_Line_" + obj.name);
+                lineObj.layer = 2; // Ignore Raycast
                 lr = lineObj.AddComponent<LineRenderer>();
                 lr.positionCount = 2;
-                lr.startWidth = 0.12f;
-                lr.endWidth = 0.12f;
+                lr.startWidth = 0.15f;
+                lr.endWidth = 0.15f;
                 Material ml = new Material(Shader.Find("Unlit/Color") ?? Shader.Find("Sprites/Default"));
-                ml.color = new Color(0.3f, 0.8f, 1f, 0.7f);
+                ml.color = new Color(0.3f, 0.85f, 1f, 0.8f);
                 lr.material = ml;
-                _waypointLines[obj] = lr;
+                lr.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
+
+                WaypointLines[obj] = lr;
             }
 
             markerA.SetActive(true);
@@ -1777,16 +1887,9 @@ namespace DeadCoreEditor
 
         private static void HideWaypointVisual(GameObject obj)
         {
-            if (_waypointMarkersA.TryGetValue(obj, out GameObject a) && a != null) a.SetActive(false);
-            if (_waypointMarkersB.TryGetValue(obj, out GameObject b) && b != null) b.SetActive(false);
-            if (_waypointLines.TryGetValue(obj, out LineRenderer l) && l != null) l.gameObject.SetActive(false);
-        }
-
-        private static void HideAllWaypointMarkers()
-        {
-            foreach (var kvp in _waypointMarkersA) if (kvp.Value != null) kvp.Value.SetActive(false);
-            foreach (var kvp in _waypointMarkersB) if (kvp.Value != null) kvp.Value.SetActive(false);
-            foreach (var kvp in _waypointLines) if (kvp.Value != null) kvp.Value.gameObject.SetActive(false);
+            if (WaypointMarkersA.TryGetValue(obj, out GameObject a) && a != null) a.SetActive(false);
+            if (WaypointMarkersB.TryGetValue(obj, out GameObject b) && b != null) b.SetActive(false);
+            if (WaypointLines.TryGetValue(obj, out LineRenderer l) && l != null) l.gameObject.SetActive(false);
         }
 
         private static void CheckGoalTriggerArrival(GameObject player)
@@ -2140,18 +2243,51 @@ namespace DeadCoreEditor
                 : EditorViewportCamera.ViewportCamera.ScreenPointToRay(Input.mousePosition);
 
             int mask = ~LayerMask.GetMask("Ignore Raycast");
-            if (Physics.Raycast(ray, out RaycastHit hit, 2000f, mask, QueryTriggerInteraction.Collide))
+            RaycastHit[] hits = Physics.RaycastAll(ray, 2000f, mask, QueryTriggerInteraction.Collide);
+
+            // 1. Prioritize clicking in-scene Waypoint Markers directly
+            float closestWpDist = float.MaxValue;
+            GameObject closestWp = null;
+
+            for (int h = 0; h < hits.Length; h++)
             {
-                GameObject hitObj = hit.collider.gameObject;
+                GameObject hitGo = hits[h].collider.gameObject;
+                if (IsWaypointMarker(hitGo, out _, out _) || IsChildOfAnyWaypoint(hitGo, out hitGo))
+                {
+                    if (hits[h].distance < closestWpDist)
+                    {
+                        closestWpDist = hits[h].distance;
+                        closestWp = hitGo;
+                    }
+                }
+            }
+
+            if (closestWp != null) return closestWp;
+
+            // 2. Otherwise detect placed scene geometry
+            float closestDist = float.MaxValue;
+            GameObject bestObj = null;
+
+            for (int h = 0; h < hits.Length; h++)
+            {
+                GameObject hitObj = hits[h].collider.gameObject;
                 for (int i = 0; i < PlacedObjects.Count; i++)
                 {
                     GameObject obj = PlacedObjects[i];
                     if (obj == null) continue;
                     if (hitObj == obj || hitObj.transform.IsChildOf(obj.transform))
-                        return obj;
+                    {
+                        if (hits[h].distance < closestDist)
+                        {
+                            closestDist = hits[h].distance;
+                            bestObj = obj;
+                        }
+                        break;
+                    }
                 }
             }
-            return null;
+
+            return bestObj;
         }
 
         public static Quaternion GetCurrentCombinedRotation(CatalogAsset asset)
@@ -2447,6 +2583,11 @@ namespace DeadCoreEditor
                         if (p.Length >= 13) cfg.VolumetricIntensity = ParseFloat(p[12]);
 
                         EditorSessionManager.ApplyLightConfig(obj, cfg);
+
+                        if (cfg.IsDirectional)
+                        {
+                            EditorSessionManager.AttachSunVisualWidget(obj);
+                        }
                     }
 
                     int pathTagIdx = trimmed.IndexOf(";PATH:");
@@ -2466,7 +2607,8 @@ namespace DeadCoreEditor
                             {
                                 PointA = pA,
                                 PointB = pB,
-                                Speed = spd > 0.1f ? spd : 3.5f
+                                Speed = spd > 0.1f ? spd : 3.5f,
+                                IsActive = true
                             };
                         }
                     }
