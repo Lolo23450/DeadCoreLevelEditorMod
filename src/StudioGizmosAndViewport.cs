@@ -1014,6 +1014,7 @@ namespace DeadCoreEditor
             int best = -1;
             float bestDist = float.MaxValue;
 
+            // Check direct hits against gizmo handles (X, Y, Z arrows and rotate/scale rings)
             for (int i = 0; i < hitCount; i++)
             {
                 Collider col = _gizmoHitBuffer[i].collider;
@@ -1025,7 +1026,7 @@ namespace DeadCoreEditor
                 if (IsChildOfSafe(t, _arrowX) || IsChildOfSafe(t, _rotSphereX) || IsChildOfSafe(t, _scaleX)) axis = 0;
                 else if (IsChildOfSafe(t, _arrowY) || IsChildOfSafe(t, _rotSphereY) || IsChildOfSafe(t, _scaleY)) axis = 1;
                 else if (IsChildOfSafe(t, _arrowZ) || IsChildOfSafe(t, _rotSphereZ) || IsChildOfSafe(t, _scaleZ)) axis = 2;
-                else if (IsChildOfSafe(t, _centerSphere) || IsChildOfSafe(t, _centerScaleBox)) axis = 3;
+                else if (IsChildOfSafe(t, _centerScaleBox)) axis = 3;
 
                 if (axis != -1 && _gizmoHitBuffer[i].distance < bestDist)
                 {
@@ -1034,27 +1035,9 @@ namespace DeadCoreEditor
                 }
             }
 
-            // Occlusion check: If a scene object is closer than the gizmo handle, the handle is occluded
-            if (best != -1)
-            {
-                for (int i = 0; i < hitCount; i++)
-                {
-                    Collider col = _gizmoHitBuffer[i].collider;
-                    if (col == null) continue;
-                    Transform t = col.transform;
-                    if (IsChildOfSafe(t, _gizmoRoot)) continue;
-                    if (col.gameObject.name.Contains("Highlight") || col.gameObject.name.Contains("Beacon")) continue;
-
-                    if (_gizmoHitBuffer[i].distance < bestDist - 0.05f)
-                    {
-                        return -1; // Occluded by placed scene geometry
-                    }
-                }
-            }
-
+            // Return the handle immediately. Scene geometry and 60m turret triggers will NEVER occlude the gizmo handles.
             return best;
         }
-
         private static bool IsChildOfSafe(Transform t, GameObject target)
         {
             return (target != null && t != null && t.IsChildOf(target.transform));
@@ -1094,19 +1077,11 @@ namespace DeadCoreEditor
 
                 if (mode == EditorGizmoMode.Translate)
                 {
-                    Vector3 deltaPos;
-                    if (_activeDragAxis == 3)
-                    {
-                        deltaPos = cam.transform.right * (mouseDelta.x * 0.02f) + cam.transform.up * (mouseDelta.y * 0.02f);
-                    }
-                    else
-                    {
-                        Vector3 screenAxis = cam.WorldToScreenPoint(_dragStartCenterPos + axis3D) - cam.WorldToScreenPoint(_dragStartCenterPos);
-                        screenAxis.z = 0f;
-                        float proj = Vector2.Dot(mouseDelta, ((Vector2)screenAxis).normalized);
-                        float distFactor = Vector3.Distance(cam.transform.position, _dragStartCenterPos) * 0.0018f;
-                        deltaPos = axis3D * (proj * distFactor);
-                    }
+                    Vector3 screenAxis = cam.WorldToScreenPoint(_dragStartCenterPos + axis3D) - cam.WorldToScreenPoint(_dragStartCenterPos);
+                    screenAxis.z = 0f;
+                    float proj = Vector2.Dot(mouseDelta, ((Vector2)screenAxis).normalized);
+                    float distFactor = Vector3.Distance(cam.transform.position, _dragStartCenterPos) * 0.0022f;
+                    Vector3 deltaPos = axis3D * (proj * distFactor);
 
                     float grid = EditorSessionManager.CurrentGridSnap;
                     if (grid > 0.01f)
@@ -1118,11 +1093,32 @@ namespace DeadCoreEditor
                         );
                     }
 
+                    // Move target objects
                     for (int i = 0; i < targets.Count; i++)
                     {
                         GameObject go = targets[i];
                         if (go != null && _dragStartPositions.ContainsKey(go))
+                        {
                             go.transform.position = _dragStartPositions[go] + deltaPos;
+
+                            // Sync child rigidbodies so physics doesn't fight the transform update
+                            Rigidbody[] rbs = go.GetComponentsInChildren<Rigidbody>(true);
+                            for (int r = 0; r < rbs.Length; r++)
+                            {
+                                if (rbs[r] != null)
+                                {
+                                    rbs[r].position = go.transform.position;
+                                    rbs[r].velocity = Vector3.zero;
+                                    rbs[r].angularVelocity = Vector3.zero;
+                                }
+                            }
+                        }
+                    }
+
+                    // Gizmo follows the movement in real time
+                    if (_gizmoRoot != null)
+                    {
+                        _gizmoRoot.transform.position = _dragStartCenterPos + deltaPos;
                     }
                 }
                 else if (mode == EditorGizmoMode.Rotate)
@@ -1177,6 +1173,7 @@ namespace DeadCoreEditor
                     GameObject go = targets[i];
                     if (go != null && _dragStartPositions.ContainsKey(go))
                     {
+                        InvalidateCachedCenter(go);
                         EditorSessionManager.UndoHistory.Push(new HistoryRecord
                         {
                             ActionType = HistoryActionType.Reposition,
@@ -1194,7 +1191,6 @@ namespace DeadCoreEditor
                 _activeDragAxis = -1;
             }
         }
-
         public static void DestroyGizmo()
         {
             if (_gizmoRoot != null)

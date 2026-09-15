@@ -147,6 +147,8 @@ namespace DeadCoreEditor
                 if (obj == null) continue;
 
                 TurretScript[] ts = obj.GetComponentsInChildren<TurretScript>(true);
+                if (ts == null || ts.Length == 0) continue;
+
                 for (int s = 0; s < ts.Length; s++)
                 {
                     if (ts[s] != null) ts[s].enabled = active;
