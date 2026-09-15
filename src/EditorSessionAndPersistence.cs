@@ -532,7 +532,12 @@ namespace DeadCoreEditor
             obj.transform.localScale = Vector3.one * scale;
             obj.SetActive(true);
 
-            // Restoring hitboxes: enforce all colliders to be non-trigger solid geometry
+            bool isHazard = asset.IsLaser || asset.IsRotatingLaser;
+            bool isGate = asset.IsCheckPoint || asset.IsSpawnGate || asset.IsGoalGate;
+            bool isLight = asset.IsSpotlight || asset.IsSunlight;
+            bool isHelix = asset.IsHelix;
+
+            // Configure colliders: solid geometry for platforms vs triggers for hazards/wind
             Collider[] existingCols = obj.GetComponentsInChildren<Collider>(true);
             bool hasSolidCollider = false;
 
@@ -541,16 +546,33 @@ namespace DeadCoreEditor
                 Collider c = existingCols[i];
                 if (c == null || c.gameObject.name == "Editor_Snapping_Proxy") continue;
 
-                if (!asset.IsCheckPoint && !asset.IsSpawnGate && !asset.IsGoalGate)
+                c.enabled = true;
+
+                if (isHazard || isGate)
                 {
-                    c.enabled = true;
+                    // Lasers and Checkpoint Gates must ALWAYS be triggers so players pass into them!
+                    c.isTrigger = true;
+                }
+                else if (isHelix)
+                {
+                    // Wind pushing zones and turbine interiors must be triggers so the player can fly through the wind stream
+                    c.isTrigger = true;
+                }
+                else if (isLight)
+                {
+                    // Lights are non-blocking visual fixtures
+                    c.isTrigger = true;
+                }
+                else
+                {
+                    // Standard building blocks (platforms, walls, pillars, crates) must be solid!
                     c.isTrigger = false;
                     hasSolidCollider = true;
                 }
             }
 
-            // Fallback generation: if geometry lacks colliders, generate solid MeshCollider or BoxCollider
-            if (!hasSolidCollider && !asset.IsSpotlight && !asset.IsSunlight)
+            // Fallback generation: ONLY generate solid Mesh/Box colliders for standard building blocks
+            if (!hasSolidCollider && !isHazard && !isGate && !isLight && !isHelix && !asset.IsTurret)
             {
                 MeshFilter[] mfs = obj.GetComponentsInChildren<MeshFilter>(true);
                 for (int m = 0; m < mfs.Length; m++)
@@ -577,7 +599,7 @@ namespace DeadCoreEditor
                 }
             }
 
-            // Gates & Spawnpoints Configuration
+            // Gates & Spawnpoints setup
             if (asset.IsSpawnGate)
             {
                 obj.name = "Custom_Spawn_Gate";

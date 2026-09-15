@@ -356,7 +356,7 @@ namespace DeadCoreEditor
                 cam.farClipPlane = 4000f;
 
                 float maxDim = Mathf.Max(combinedBounds.size.x, combinedBounds.size.y, combinedBounds.size.z);
-                float cameraDistance = Mathf.Max(28f, maxDim * 1.55f);
+                float cameraDistance = Mathf.Max(20f, maxDim);
 
                 // 3/4 diagonal semi-overhead isometric vector (Elevated angle from corner)
                 Vector3 directionalOffset = new Vector3(-cameraDistance * 0.85f, cameraDistance * 0.65f, -cameraDistance * 0.85f);
