@@ -469,6 +469,10 @@ namespace DeadCoreEditor
         // EXPANDABLE INSPECTOR PANEL
         // =========================================================================
 
+        // =========================================================================
+        // EXPANDABLE INSPECTOR PANEL (CRASH-PROOF & ZERO OVERLAPS)
+        // =========================================================================
+
         private static void BuildInspectorPanel()
         {
             _isInspectorExpanded = false;
@@ -478,6 +482,7 @@ namespace DeadCoreEditor
                 new Color(0.12f, 0.13f, 0.15f, 0.98f));
             _inspectorPanelRt = _inspectorPanel.GetComponent<RectTransform>();
 
+            // Title bar with Expand button
             GameObject titleBar = new GameObject("TitleBar");
             titleBar.transform.SetParent(_inspectorPanel.transform, false);
             RectTransform tbrt = titleBar.AddComponent<RectTransform>();
@@ -514,8 +519,7 @@ namespace DeadCoreEditor
             CreateVector3Row(transCard.transform, "Rotation", out _rotXInput, out _rotYInput, out _rotZInput, OnTransformInputChanged);
 
             GameObject rotBtnRow = CreateRowContainer(transCard.transform, "Row_RotButtons", 26f);
-            HorizontalLayoutGroup rhlg = rotBtnRow.AddComponent<HorizontalLayoutGroup>();
-            rhlg.spacing = 6f; rhlg.childControlWidth = true; rhlg.childForceExpandWidth = true;
+            SetupRowHorizontalLayout(rotBtnRow, 6f);
 
             CreateButton(rotBtnRow.transform, "Btn_Snap90", "Snap 90°", 120f, () =>
             {
@@ -542,7 +546,7 @@ namespace DeadCoreEditor
 
             CreateSingleFloatRow(transCard.transform, "Scale", out _scaleInput, OnTransformInputChanged);
 
-            // 2. Gameplay Cards
+            // 2. Specialized Gameplay Cards
             _jumperSection = CreateSectionCard(_inspectorContent, "Jumper", "Jumper Launch Pad");
             CreateInspectorSliderRow(_jumperSection.transform, "Launch Force", out _jumperSlider, out _jumperValueText, 5f, 75f, (val) =>
             {
@@ -630,8 +634,8 @@ namespace DeadCoreEditor
             _lightColorPreviewSwatch.color = Color.cyan;
 
             GameObject colorPresetsRow = CreateRowContainer(_lightSection.transform, "Row_ColorPresets", 26f);
-            HorizontalLayoutGroup chlg = colorPresetsRow.AddComponent<HorizontalLayoutGroup>();
-            chlg.spacing = 4f; chlg.childControlWidth = true; chlg.childForceExpandWidth = true;
+            SetupRowHorizontalLayout(colorPresetsRow, 4f);
+
             CreateButton(colorPresetsRow.transform, "Btn_Cyan", "Cyan", 40f, () => ApplyPresetColor(Color.cyan), Color.cyan);
             CreateButton(colorPresetsRow.transform, "Btn_Sun", "Gold", 40f, () => ApplyPresetColor(new Color(1f, 0.8f, 0.35f)), new Color(1f, 0.8f, 0.35f));
             CreateButton(colorPresetsRow.transform, "Btn_Green", "Acid", 40f, () => ApplyPresetColor(new Color(0.2f, 1f, 0.4f)), new Color(0.2f, 1f, 0.4f));
@@ -639,11 +643,13 @@ namespace DeadCoreEditor
             CreateButton(colorPresetsRow.transform, "Btn_White", "White", 40f, () => ApplyPresetColor(Color.white), Color.white);
             CreateButton(colorPresetsRow.transform, "Btn_Violet", "Violet", 40f, () => ApplyPresetColor(new Color(0.7f, 0.3f, 1f)), new Color(0.7f, 0.3f, 1f));
 
-            // 4. Overhauled Motion Path Card with Live Speed Control & In-Scene Waypoint Selector
+            // 4. Overhauled Motion Path Card with Live Speed Control
             _motionPathSection = CreateSectionCard(_inspectorContent, "MotionPath", "Kinematic Motion Path");
 
             // Creation Button Container (Shown if object has NO path)
             _motionPathCreateBtnObj = CreateRowContainer(_motionPathSection.transform, "Row_CreatePath", 28f);
+            SetupRowHorizontalLayout(_motionPathCreateBtnObj, 0f);
+
             CreateButton(_motionPathCreateBtnObj.transform, "Btn_CreateMotionPath", "[+ Create Motion Path]", 240f, () =>
             {
                 if (EditorSessionManager.SelectedObject == null) return;
@@ -668,6 +674,7 @@ namespace DeadCoreEditor
             _motionPathActiveControlsObj.transform.SetParent(_motionPathSection.transform, false);
 
             VerticalLayoutGroup mpcVlg = _motionPathActiveControlsObj.AddComponent<VerticalLayoutGroup>();
+            mpcVlg.padding = new RectOffset(2, 2, 2, 2);
             mpcVlg.spacing = 4f;
             mpcVlg.childControlWidth = true;
             mpcVlg.childControlHeight = true;
@@ -696,8 +703,7 @@ namespace DeadCoreEditor
             });
 
             GameObject motionBtnRow1 = CreateRowContainer(_motionPathActiveControlsObj.transform, "Row_MotionButtons1", 26f);
-            HorizontalLayoutGroup mhlg1 = motionBtnRow1.AddComponent<HorizontalLayoutGroup>();
-            mhlg1.spacing = 6f; mhlg1.childControlWidth = true; mhlg1.childForceExpandWidth = true;
+            SetupRowHorizontalLayout(motionBtnRow1, 6f);
 
             CreateButton(motionBtnRow1.transform, "Btn_SetA", "Lock Point A", 120f, () =>
             {
@@ -724,8 +730,7 @@ namespace DeadCoreEditor
             });
 
             GameObject motionBtnRow2 = CreateRowContainer(_motionPathActiveControlsObj.transform, "Row_MotionButtons2", 26f);
-            HorizontalLayoutGroup mhlg2 = motionBtnRow2.AddComponent<HorizontalLayoutGroup>();
-            mhlg2.spacing = 6f; mhlg2.childControlWidth = true; mhlg2.childForceExpandWidth = true;
+            SetupRowHorizontalLayout(motionBtnRow2, 6f);
 
             CreateButton(motionBtnRow2.transform, "Btn_RemovePath", "[- Remove Path]", 120f, () =>
             {
@@ -739,8 +744,7 @@ namespace DeadCoreEditor
             // 5. Parenting Card
             _parentingSection = CreateSectionCard(_inspectorContent, "Parenting", "Assembly Parenting");
             GameObject parentBtnRow = CreateRowContainer(_parentingSection.transform, "Row_ParentButtons", 26f);
-            HorizontalLayoutGroup phlg = parentBtnRow.AddComponent<HorizontalLayoutGroup>();
-            phlg.spacing = 6f; phlg.childControlWidth = true; phlg.childForceExpandWidth = true;
+            SetupRowHorizontalLayout(parentBtnRow, 6f);
 
             CreateButton(parentBtnRow.transform, "Btn_PickParent", "Pick Parent", 120f, () =>
             {
@@ -762,6 +766,38 @@ namespace DeadCoreEditor
                     EditorSessionManager.ShowNotification("Object unparented to root.");
                 }
             });
+        }
+
+        private static GameObject CreateRowContainer(Transform parent, string name, float height)
+        {
+            GameObject row = new GameObject(name);
+            row.transform.SetParent(parent, false);
+
+            RectTransform rt = row.AddComponent<RectTransform>();
+            rt.anchorMin = new Vector2(0f, 0f);
+            rt.anchorMax = new Vector2(1f, 0f);
+            rt.pivot = new Vector2(0.5f, 0.5f);
+            rt.sizeDelta = new Vector2(0f, height);
+
+            LayoutElement le = row.AddComponent<LayoutElement>();
+            le.preferredHeight = height;
+            le.minHeight = height;
+            le.flexibleWidth = 1f;
+
+            return row;
+        }
+
+        private static HorizontalLayoutGroup SetupRowHorizontalLayout(GameObject row, float spacing = 6f)
+        {
+            HorizontalLayoutGroup hlg = row.GetComponent<HorizontalLayoutGroup>();
+            if (hlg == null) hlg = row.AddComponent<HorizontalLayoutGroup>();
+            hlg.padding = new RectOffset(2, 2, 2, 2);
+            hlg.spacing = spacing;
+            hlg.childControlWidth = true;
+            hlg.childControlHeight = true;
+            hlg.childForceExpandWidth = true;
+            hlg.childForceExpandHeight = true;
+            return hlg;
         }
 
         private static void ToggleInspectorExpansion()
@@ -1516,34 +1552,6 @@ namespace DeadCoreEditor
             CreateText(header.transform, title, Vector2.zero, Vector2.one, new Vector2(6f, 0f), new Vector2(-6f, 0f), 11f, FontStyles.Bold, new Color(0.25f, 0.85f, 1f), TextAlignmentOptions.MidlineLeft);
 
             return card;
-        }
-
-        private static GameObject CreateRowContainer(Transform parent, string name, float height)
-        {
-            GameObject row = new GameObject(name);
-            row.transform.SetParent(parent, false);
-
-            RectTransform rt = row.AddComponent<RectTransform>();
-            rt.anchorMin = new Vector2(0f, 0f);
-            rt.anchorMax = new Vector2(1f, 0f);
-            rt.pivot = new Vector2(0.5f, 0.5f);
-            rt.sizeDelta = new Vector2(0f, height);
-
-            // Enforce automatic horizontal/vertical boundary clamping on all children
-            HorizontalLayoutGroup hlg = row.AddComponent<HorizontalLayoutGroup>();
-            hlg.padding = new RectOffset(2, 2, 2, 2);
-            hlg.spacing = 4f;
-            hlg.childControlWidth = true;
-            hlg.childControlHeight = true;
-            hlg.childForceExpandWidth = true;
-            hlg.childForceExpandHeight = true;
-
-            LayoutElement le = row.AddComponent<LayoutElement>();
-            le.preferredHeight = height;
-            le.minHeight = height;
-            le.flexibleWidth = 1f;
-
-            return row;
         }
 
         private static void CreateVector3Row(Transform parent, string label, out TMP_InputField xIn, out TMP_InputField yIn, out TMP_InputField zIn, Action<string> onChange)
