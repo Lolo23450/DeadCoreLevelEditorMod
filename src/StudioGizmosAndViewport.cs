@@ -569,7 +569,7 @@ namespace DeadCoreEditor
     }
 
     // =========================================================================
-    // SECTION 3: 3D GIZMO SYSTEM & COMPACT DIRECTIONAL SUN WIDGET
+    // SECTION 3: 3D GIZMO CONTROLLER (OPAQUE MATERIALS & SCREEN-SPACE INTERACTION)
     // =========================================================================
 
     public static class StudioGizmoController
@@ -581,11 +581,8 @@ namespace DeadCoreEditor
 
         // Handles
         private static GameObject _arrowX = null, _arrowY = null, _arrowZ = null;
-        private static GameObject _centerSphere = null;
-
         private static GameObject _ringX = null, _ringY = null, _ringZ = null;
         private static GameObject _rotSphereX = null, _rotSphereY = null, _rotSphereZ = null;
-
         private static GameObject _scaleX = null, _scaleY = null, _scaleZ = null;
         private static GameObject _centerScaleBox = null;
 
@@ -593,7 +590,6 @@ namespace DeadCoreEditor
         private static Material _matGreen = null;
         private static Material _matBlue = null;
         private static Material _matYellow = null;
-        private static Material _matWhite = null;
 
         private static int _activeDragAxis = -1; // 0=X, 1=Y, 2=Z, 3=Center
         public static bool IsDraggingGizmo => _activeDragAxis != -1;
@@ -602,16 +598,14 @@ namespace DeadCoreEditor
         private static Vector3 _dragStartCenterPos = Vector3.zero;
         private static Vector2 _dragStartMousePos = Vector2.zero;
 
-        private static readonly RaycastHit[] _gizmoHitBuffer = new RaycastHit[64];
         private static readonly Dictionary<GameObject, Vector3> _cachedLocalCentroids = new Dictionary<GameObject, Vector3>();
         private static readonly Dictionary<GameObject, Vector3> _dragStartPositions = new Dictionary<GameObject, Vector3>();
         private static readonly Dictionary<GameObject, Quaternion> _dragStartRotations = new Dictionary<GameObject, Quaternion>();
         private static readonly Dictionary<GameObject, Vector3> _dragStartScales = new Dictionary<GameObject, Vector3>();
 
-        // =========================================================================
-        // MINIMAL COMPACT SUNLIGHT GIZMO WIDGET (SMALL BALL + DIRECTION ARROW ONLY)
-        // =========================================================================
-
+        // ---------------------------------------------------------------------
+        // COMPACT DIRECTIONAL SUNLIGHT WIDGET
+        // ---------------------------------------------------------------------
         public static void AttachSunVisualWidget(GameObject sunObj)
         {
             if (sunObj == null) return;
@@ -629,45 +623,29 @@ namespace DeadCoreEditor
                 sunColor = cfg.Color;
             }
 
-            Material sunMat = new Material(Shader.Find("Unlit/Color") ?? Shader.Find("Sprites/Default"));
-            sunMat.color = sunColor;
-            if (sunMat.HasProperty("_Color")) sunMat.SetColor("_Color", sunColor);
-            if (sunMat.HasProperty("_EmissionColor"))
-            {
-                sunMat.SetColor("_EmissionColor", sunColor * 1.8f);
-                sunMat.EnableKeyword("_EMISSION");
-            }
+            Material sunMat = CreateSolidMaterial(sunColor);
 
-            // 1. Small glowing center sphere (0.75m)
             GameObject orb = GameObject.CreatePrimitive(PrimitiveType.Sphere);
             orb.name = "Sun_Orb";
             orb.transform.SetParent(widget.transform, false);
             orb.transform.localScale = Vector3.one * 0.75f;
-            Renderer rOrb = orb.GetComponent<Renderer>();
-            rOrb.sharedMaterial = sunMat;
-            rOrb.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
+            orb.GetComponent<Renderer>().sharedMaterial = sunMat;
 
-            // 2. Compact single direction arrow pointing along sunlight vector (+Z forward)
             GameObject ray = GameObject.CreatePrimitive(PrimitiveType.Cylinder);
             ray.name = "Sun_Ray_Shaft";
             ray.transform.SetParent(widget.transform, false);
             ray.transform.localRotation = Quaternion.Euler(90f, 0f, 0f);
             ray.transform.localPosition = new Vector3(0f, 0f, 0.9f);
             ray.transform.localScale = new Vector3(0.12f, 0.65f, 0.12f);
-            Renderer rRay = ray.GetComponent<Renderer>();
-            rRay.sharedMaterial = sunMat;
-            rRay.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
+            ray.GetComponent<Renderer>().sharedMaterial = sunMat;
 
             GameObject tip = GameObject.CreatePrimitive(PrimitiveType.Sphere);
             tip.name = "Sun_Ray_Tip";
             tip.transform.SetParent(widget.transform, false);
             tip.transform.localPosition = new Vector3(0f, 0f, 1.6f);
             tip.transform.localScale = Vector3.one * 0.28f;
-            Renderer rTip = tip.GetComponent<Renderer>();
-            rTip.sharedMaterial = sunMat;
-            rTip.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
+            tip.GetComponent<Renderer>().sharedMaterial = sunMat;
 
-            // 3. Compact pick collider
             SphereCollider sc = widget.AddComponent<SphereCollider>();
             sc.radius = 0.9f;
             sc.isTrigger = false;
@@ -690,23 +668,11 @@ namespace DeadCoreEditor
                 string n = r.gameObject.name;
                 if (n.Contains("Proxy") || n.Contains("Gizmo") || n.Contains("Highlight") || n.Contains("Beacon")) continue;
 
-                if (!hasBounds)
-                {
-                    b = r.bounds;
-                    hasBounds = true;
-                }
-                else
-                {
-                    b.Encapsulate(r.bounds);
-                }
+                if (!hasBounds) { b = r.bounds; hasBounds = true; }
+                else { b.Encapsulate(r.bounds); }
             }
 
-            if (!hasBounds)
-            {
-                return new Bounds(obj.transform.position, Vector3.one);
-            }
-
-            return b;
+            return hasBounds ? b : new Bounds(obj.transform.position, Vector3.one);
         }
 
         public static Vector3 GetObjectCenter(GameObject obj)
@@ -726,9 +692,7 @@ namespace DeadCoreEditor
         public static void InvalidateCachedCenter(GameObject obj)
         {
             if (obj != null && _cachedLocalCentroids.ContainsKey(obj))
-            {
                 _cachedLocalCentroids.Remove(obj);
-            }
         }
 
         public static void ClearAllCachedCentroids()
@@ -736,30 +700,45 @@ namespace DeadCoreEditor
             _cachedLocalCentroids.Clear();
         }
 
+        // =========================================================================
+        // SOLID OPAQUE GIZMO MATERIALS (NO ALPHA BLEND, DEPTH-WRITTEN OPAQUE PASS)
+        // =========================================================================
         private static Material CreateSolidMaterial(Color col)
         {
-            Shader s = Shader.Find("Unlit/Color");
-            if (s == null) s = Shader.Find("Particles/Standard Unlit");
-            if (s == null) s = Shader.Find("Sprites/Default");
-            if (s == null) s = Shader.Find("GUI/Text Shader");
+            // Acquire the native HDRP or scene-supported unlit/lit shader
+            Shader s = Shader.Find("HDRP/Unlit")
+                ?? Shader.Find("HDRP/Lit")
+                ?? Shader.Find("Unlit/Color")
+                ?? Shader.Find("Standard");
 
-            Material m = (s != null) ? new Material(s) : new Material(Shader.Find("Hidden/InternalErrorShader") ?? s);
+            if (s == null)
+            {
+                GameObject temp = GameObject.CreatePrimitive(PrimitiveType.Cube);
+                Renderer rend = temp.GetComponent<Renderer>();
+                if (rend != null && rend.sharedMaterial != null)
+                {
+                    s = rend.sharedMaterial.shader;
+                }
+                GameObject.DestroyImmediate(temp);
+            }
 
-            m.name = "Gizmo_SolidMat_" + col.ToString();
+            Material m = (s != null) ? new Material(s) : new Material(Shader.Find("Hidden/InternalErrorShader"));
+            m.name = "Gizmo_Opaque_" + col.ToString();
+
+            // Set all common color channels for HDRP and Standard pipelines
             m.color = col;
             if (m.HasProperty("_Color")) m.SetColor("_Color", col);
-            if (m.HasProperty("_TintColor")) m.SetColor("_TintColor", col);
-
+            if (m.HasProperty("_BaseColor")) m.SetColor("_BaseColor", col);
+            if (m.HasProperty("_UnlitColor")) m.SetColor("_UnlitColor", col);
+            if (m.HasProperty("_EmissiveColor")) m.SetColor("_EmissiveColor", col * 1.5f);
             if (m.HasProperty("_EmissionColor"))
             {
                 m.SetColor("_EmissionColor", col * 1.5f);
                 m.EnableKeyword("_EMISSION");
             }
 
-            m.mainTexture = Texture2D.whiteTexture;
-            if (m.HasProperty("_MainTex")) m.SetTexture("_MainTex", Texture2D.whiteTexture);
-
-            m.renderQueue = 3000;
+            // Render in Opaque Geometry pass with full depth writing. NEVER 3000+ transparent.
+            m.renderQueue = 2450;
             return m;
         }
 
@@ -767,14 +746,12 @@ namespace DeadCoreEditor
         {
             if (_gizmoRoot != null) return;
 
-            _matRed = CreateSolidMaterial(new Color(1f, 0.22f, 0.22f, 1f));
-            _matGreen = CreateSolidMaterial(new Color(0.2f, 0.95f, 0.35f, 1f));
-            _matBlue = CreateSolidMaterial(new Color(0.25f, 0.6f, 1f, 1f));
-            _matYellow = CreateSolidMaterial(new Color(1f, 0.95f, 0.15f, 1f));
-            _matWhite = CreateSolidMaterial(new Color(1f, 1f, 1f, 0.95f));
+            _matRed = CreateSolidMaterial(new Color(1f, 0.15f, 0.15f, 1f));
+            _matGreen = CreateSolidMaterial(new Color(0.15f, 0.95f, 0.25f, 1f));
+            _matBlue = CreateSolidMaterial(new Color(0.2f, 0.55f, 1f, 1f));
+            _matYellow = CreateSolidMaterial(new Color(1f, 0.92f, 0.12f, 1f));
 
             _gizmoRoot = new GameObject("Studio_3D_Gizmo_Root");
-            _gizmoRoot.layer = 0;
 
             // 1. TRANSLATE
             _groupTranslate = new GameObject("Group_Translate");
@@ -783,7 +760,6 @@ namespace DeadCoreEditor
             _arrowX = Create3DArrow(_groupTranslate.transform, "Arrow_X", Vector3.right, _matRed);
             _arrowY = Create3DArrow(_groupTranslate.transform, "Arrow_Y", Vector3.up, _matGreen);
             _arrowZ = Create3DArrow(_groupTranslate.transform, "Arrow_Z", Vector3.forward, _matBlue);
-            _centerSphere = CreatePrimitiveObj(PrimitiveType.Sphere, _groupTranslate.transform, "Center_Sphere", Vector3.zero, Vector3.one * 0.22f, _matWhite);
 
             // 2. ROTATE
             _groupRotate = new GameObject("Group_Rotate");
@@ -794,9 +770,9 @@ namespace DeadCoreEditor
             _ringY = Create3DLineRing(_groupRotate.transform, "Ring_Y", Vector3.up, r, _matGreen);
             _ringZ = Create3DLineRing(_groupRotate.transform, "Ring_Z", Vector3.forward, r, _matBlue);
 
-            _rotSphereX = CreatePrimitiveObj(PrimitiveType.Sphere, _groupRotate.transform, "RotHandle_X", new Vector3(0f, 0f, r), Vector3.one * 0.5f, _matRed);
-            _rotSphereY = CreatePrimitiveObj(PrimitiveType.Sphere, _groupRotate.transform, "RotHandle_Y", new Vector3(r, 0f, 0f), Vector3.one * 0.5f, _matGreen);
-            _rotSphereZ = CreatePrimitiveObj(PrimitiveType.Sphere, _groupRotate.transform, "RotHandle_Z", new Vector3(0f, r, 0f), Vector3.one * 0.5f, _matBlue);
+            _rotSphereX = CreatePrimitiveObj(PrimitiveType.Sphere, _groupRotate.transform, "RotHandle_X", new Vector3(0f, 0f, r), Vector3.one * 0.55f, _matRed);
+            _rotSphereY = CreatePrimitiveObj(PrimitiveType.Sphere, _groupRotate.transform, "RotHandle_Y", new Vector3(r, 0f, 0f), Vector3.one * 0.55f, _matGreen);
+            _rotSphereZ = CreatePrimitiveObj(PrimitiveType.Sphere, _groupRotate.transform, "RotHandle_Z", new Vector3(0f, r, 0f), Vector3.one * 0.55f, _matBlue);
 
             // 3. SCALE
             _groupScale = new GameObject("Group_Scale");
@@ -805,7 +781,7 @@ namespace DeadCoreEditor
             _scaleX = Create3DScaleStem(_groupScale.transform, "Scale_X", Vector3.right, _matRed);
             _scaleY = Create3DScaleStem(_groupScale.transform, "Scale_Y", Vector3.up, _matGreen);
             _scaleZ = Create3DScaleStem(_groupScale.transform, "Scale_Z", Vector3.forward, _matBlue);
-            _centerScaleBox = CreatePrimitiveObj(PrimitiveType.Cube, _groupScale.transform, "Center_ScaleBox", Vector3.zero, Vector3.one * 0.5f, _matYellow);
+            _centerScaleBox = CreatePrimitiveObj(PrimitiveType.Cube, _groupScale.transform, "Center_ScaleBox", Vector3.zero, Vector3.one * 0.45f, _matYellow);
         }
 
         private static GameObject Create3DArrow(Transform parent, string name, Vector3 dir, Material mat)
@@ -816,25 +792,17 @@ namespace DeadCoreEditor
             GameObject shaft = GameObject.CreatePrimitive(PrimitiveType.Cylinder);
             shaft.name = "Shaft";
             shaft.transform.SetParent(root.transform, false);
-            shaft.transform.localScale = new Vector3(0.14f, 0.9f, 0.14f);
+            shaft.transform.localScale = new Vector3(0.18f, 0.9f, 0.18f);
             shaft.transform.localPosition = dir * 0.9f;
             shaft.transform.localRotation = Quaternion.FromToRotation(Vector3.up, dir);
-
-            Renderer sr = shaft.GetComponent<Renderer>();
-            sr.sharedMaterial = mat;
-            sr.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
-            sr.receiveShadows = false;
+            shaft.GetComponent<Renderer>().sharedMaterial = mat;
 
             GameObject tip = GameObject.CreatePrimitive(PrimitiveType.Sphere);
             tip.name = "Tip";
             tip.transform.SetParent(root.transform, false);
-            tip.transform.localScale = new Vector3(0.42f, 0.42f, 0.42f);
+            tip.transform.localScale = new Vector3(0.52f, 0.52f, 0.52f);
             tip.transform.localPosition = dir * 1.85f;
-
-            Renderer tr = tip.GetComponent<Renderer>();
-            tr.sharedMaterial = mat;
-            tr.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
-            tr.receiveShadows = false;
+            tip.GetComponent<Renderer>().sharedMaterial = mat;
 
             return root;
         }
@@ -847,25 +815,17 @@ namespace DeadCoreEditor
             GameObject shaft = GameObject.CreatePrimitive(PrimitiveType.Cylinder);
             shaft.name = "Shaft";
             shaft.transform.SetParent(root.transform, false);
-            shaft.transform.localScale = new Vector3(0.14f, 0.9f, 0.14f);
+            shaft.transform.localScale = new Vector3(0.18f, 0.9f, 0.18f);
             shaft.transform.localPosition = dir * 0.9f;
             shaft.transform.localRotation = Quaternion.FromToRotation(Vector3.up, dir);
-
-            Renderer sr = shaft.GetComponent<Renderer>();
-            sr.sharedMaterial = mat;
-            sr.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
-            sr.receiveShadows = false;
+            shaft.GetComponent<Renderer>().sharedMaterial = mat;
 
             GameObject cube = GameObject.CreatePrimitive(PrimitiveType.Cube);
             cube.name = "TipCube";
             cube.transform.SetParent(root.transform, false);
-            cube.transform.localScale = new Vector3(0.46f, 0.46f, 0.46f);
+            cube.transform.localScale = new Vector3(0.52f, 0.52f, 0.52f);
             cube.transform.localPosition = dir * 1.85f;
-
-            Renderer cr = cube.GetComponent<Renderer>();
-            cr.sharedMaterial = mat;
-            cr.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
-            cr.receiveShadows = false;
+            cube.GetComponent<Renderer>().sharedMaterial = mat;
 
             return root;
         }
@@ -879,11 +839,9 @@ namespace DeadCoreEditor
             lr.useWorldSpace = false;
             lr.loop = true;
             lr.positionCount = 36;
-            lr.startWidth = 0.09f;
-            lr.endWidth = 0.09f;
+            lr.startWidth = 0.12f;
+            lr.endWidth = 0.12f;
             lr.sharedMaterial = mat;
-            lr.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
-            lr.receiveShadows = false;
 
             Quaternion rot = Quaternion.FromToRotation(Vector3.up, normalAxis);
             for (int i = 0; i < 36; i++)
@@ -903,12 +861,7 @@ namespace DeadCoreEditor
             go.transform.SetParent(parent, false);
             go.transform.localPosition = localPos;
             go.transform.localScale = scale;
-
-            Renderer r = go.GetComponent<Renderer>();
-            r.sharedMaterial = mat;
-            r.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
-            r.receiveShadows = false;
-
+            go.GetComponent<Renderer>().sharedMaterial = mat;
             return go;
         }
 
@@ -972,18 +925,10 @@ namespace DeadCoreEditor
                 _gizmoRoot.transform.position = center3D;
             }
 
-            // Adaptive footprint scaling
+            // Screen-relative sizing for effortless grabbing at any distance
             float dist = Vector3.Distance(cam.transform.position, center3D);
-            float zoomFactor = Mathf.Lerp(2.2f, 0.85f, Mathf.InverseLerp(2f, 45f, dist));
-            float distanceScale = dist * 0.075f * zoomFactor;
-
-            GameObject primary = activeList[0];
-            Vector3 sVec = primary.transform.lossyScale;
-            float baseDim = Mathf.Max(sVec.x, sVec.y, sVec.z);
-            float propFactor = Mathf.Clamp(Mathf.Sqrt(baseDim) * 0.55f, 0.8f, 2.4f);
-
-            float placementScaleMult = Mathf.Clamp(EditorSessionManager.ActivePlacementScale, 0.5f, 2.5f);
-            float finalScale = Mathf.Max(0.65f, distanceScale * propFactor * placementScaleMult);
+            float zoomFactor = Mathf.Lerp(1.8f, 0.9f, Mathf.InverseLerp(2f, 45f, dist));
+            float finalScale = Mathf.Max(0.75f, dist * 0.08f * zoomFactor);
 
             _gizmoRoot.transform.localScale = Vector3.one * finalScale;
 
@@ -995,7 +940,7 @@ namespace DeadCoreEditor
             _groupScale.SetActive(mode == EditorGizmoMode.Scale);
             _gizmoRoot.SetActive(true);
 
-            int hovered = Check3DHover(cam);
+            int hovered = Check3DHover(cam, center3D, finalScale, mode);
             IsHoveringHandle = (hovered != -1 || _activeDragAxis != -1);
 
             if (!isPlacing)
@@ -1004,45 +949,73 @@ namespace DeadCoreEditor
             }
         }
 
-        private static int Check3DHover(Camera cam)
+        // =========================================================================
+        // MATHEMATICAL SCREEN-SPACE HOVER DETECTION (100% RELIABLE, ZERO BLOCKS)
+        // =========================================================================
+        private static int Check3DHover(Camera cam, Vector3 center3D, float gizmoScale, EditorGizmoMode mode)
         {
             if (StudioUIManager.IsPointerOverUI()) return -1;
 
-            Ray ray = cam.ScreenPointToRay(Input.mousePosition);
-            int hitCount = Physics.RaycastNonAlloc(ray, _gizmoHitBuffer, 2000f, ~0, QueryTriggerInteraction.Collide);
+            Vector3 sCenter = cam.WorldToScreenPoint(center3D);
+            if (sCenter.z <= 0.1f) return -1; // Behind camera
 
-            int best = -1;
-            float bestDist = float.MaxValue;
+            Vector2 mousePos = Input.mousePosition;
+            float arrowLen = 1.85f * gizmoScale;
 
-            // Check direct hits against gizmo handles (X, Y, Z arrows and rotate/scale rings)
-            for (int i = 0; i < hitCount; i++)
+            if (mode == EditorGizmoMode.Translate || mode == EditorGizmoMode.Scale)
             {
-                Collider col = _gizmoHitBuffer[i].collider;
-                if (col == null) continue;
+                Vector3 sX = cam.WorldToScreenPoint(center3D + Vector3.right * arrowLen);
+                Vector3 sY = cam.WorldToScreenPoint(center3D + Vector3.up * arrowLen);
+                Vector3 sZ = cam.WorldToScreenPoint(center3D + Vector3.forward * arrowLen);
 
-                Transform t = col.transform;
-                int axis = -1;
+                float dX = (sX.z > 0.1f) ? DistanceToSegment2D(mousePos, sCenter, sX) : 9999f;
+                float dY = (sY.z > 0.1f) ? DistanceToSegment2D(mousePos, sCenter, sY) : 9999f;
+                float dZ = (sZ.z > 0.1f) ? DistanceToSegment2D(mousePos, sCenter, sZ) : 9999f;
 
-                if (IsChildOfSafe(t, _arrowX) || IsChildOfSafe(t, _rotSphereX) || IsChildOfSafe(t, _scaleX)) axis = 0;
-                else if (IsChildOfSafe(t, _arrowY) || IsChildOfSafe(t, _rotSphereY) || IsChildOfSafe(t, _scaleY)) axis = 1;
-                else if (IsChildOfSafe(t, _arrowZ) || IsChildOfSafe(t, _rotSphereZ) || IsChildOfSafe(t, _scaleZ)) axis = 2;
-                else if (IsChildOfSafe(t, _centerScaleBox)) axis = 3;
-
-                if (axis != -1 && _gizmoHitBuffer[i].distance < bestDist)
+                float minD = Mathf.Min(dX, Mathf.Min(dY, dZ));
+                if (minD < 22f) // Within 22 pixels of any handle
                 {
-                    bestDist = _gizmoHitBuffer[i].distance;
-                    best = axis;
+                    if (minD == dX) return 0; // X
+                    if (minD == dY) return 1; // Y
+                    if (minD == dZ) return 2; // Z
+                }
+            }
+            else if (mode == EditorGizmoMode.Rotate)
+            {
+                float r = 2.2f * gizmoScale;
+                Vector3 sRotX = cam.WorldToScreenPoint(center3D + Vector3.forward * r);
+                Vector3 sRotY = cam.WorldToScreenPoint(center3D + Vector3.right * r);
+                Vector3 sRotZ = cam.WorldToScreenPoint(center3D + Vector3.up * r);
+
+                float dX = (sRotX.z > 0.1f) ? Vector2.Distance(mousePos, sRotX) : 9999f;
+                float dY = (sRotY.z > 0.1f) ? Vector2.Distance(mousePos, sRotY) : 9999f;
+                float dZ = (sRotZ.z > 0.1f) ? Vector2.Distance(mousePos, sRotZ) : 9999f;
+
+                float minD = Mathf.Min(dX, Mathf.Min(dY, dZ));
+                if (minD < 24f)
+                {
+                    if (minD == dX) return 0; // Pitch
+                    if (minD == dY) return 1; // Yaw
+                    if (minD == dZ) return 2; // Roll
                 }
             }
 
-            // Return the handle immediately. Scene geometry and 60m turret triggers will NEVER occlude the gizmo handles.
-            return best;
-        }
-        private static bool IsChildOfSafe(Transform t, GameObject target)
-        {
-            return (target != null && t != null && t.IsChildOf(target.transform));
+            return -1;
         }
 
+        private static float DistanceToSegment2D(Vector2 p, Vector2 a, Vector2 b)
+        {
+            Vector2 pa = p - a;
+            Vector2 ba = b - a;
+            float l2 = Vector2.Dot(ba, ba);
+            if (l2 < 0.0001f) return Vector2.Distance(p, a);
+            float t = Mathf.Clamp01(Vector2.Dot(pa, ba) / l2);
+            return Vector2.Distance(p, a + ba * t);
+        }
+
+        // =========================================================================
+        // 1:1 PLANE-PROJECTION DRAGGING (MATHEMATICALLY EXACT)
+        // =========================================================================
         private static void Handle3DDragging(List<GameObject> targets, Camera cam, Vector3 center3D, int hovered, EditorGizmoMode mode)
         {
             if (Input.GetMouseButtonDown(0) && !Input.GetMouseButton(1) && !StudioUIManager.IsPointerOverUI())
@@ -1072,81 +1045,92 @@ namespace DeadCoreEditor
 
             if (Input.GetMouseButton(0) && _activeDragAxis != -1)
             {
-                Vector2 mouseDelta = (Vector2)Input.mousePosition - _dragStartMousePos;
                 Vector3 axis3D = (_activeDragAxis == 0) ? Vector3.right : (_activeDragAxis == 1 ? Vector3.up : Vector3.forward);
+                float grid = EditorSessionManager.CurrentGridSnap;
 
                 if (mode == EditorGizmoMode.Translate)
                 {
-                    Vector3 screenAxis = cam.WorldToScreenPoint(_dragStartCenterPos + axis3D) - cam.WorldToScreenPoint(_dragStartCenterPos);
-                    screenAxis.z = 0f;
-                    float proj = Vector2.Dot(mouseDelta, ((Vector2)screenAxis).normalized);
-                    float distFactor = Vector3.Distance(cam.transform.position, _dragStartCenterPos) * 0.0022f;
-                    Vector3 deltaPos = axis3D * (proj * distFactor);
+                    Vector3 camFwd = cam.transform.forward;
+                    Vector3 planeNormal = Vector3.Cross(axis3D, Vector3.Cross(camFwd, axis3D)).normalized;
+                    if (planeNormal.sqrMagnitude < 0.001f) planeNormal = -camFwd;
 
-                    float grid = EditorSessionManager.CurrentGridSnap;
-                    if (grid > 0.01f)
-                    {
-                        deltaPos = new Vector3(
-                            Mathf.Round(deltaPos.x / grid) * grid,
-                            Mathf.Round(deltaPos.y / grid) * grid,
-                            Mathf.Round(deltaPos.z / grid) * grid
-                        );
-                    }
+                    Plane plane = new Plane(planeNormal, _dragStartCenterPos);
+                    Ray curRay = cam.ScreenPointToRay(Input.mousePosition);
+                    Ray startRay = cam.ScreenPointToRay(_dragStartMousePos);
 
-                    // Move target objects
-                    for (int i = 0; i < targets.Count; i++)
+                    if (plane.Raycast(curRay, out float enter) && plane.Raycast(startRay, out float startEnter))
                     {
-                        GameObject go = targets[i];
-                        if (go != null && _dragStartPositions.ContainsKey(go))
+                        Vector3 curPoint = curRay.GetPoint(enter);
+                        Vector3 startPoint = startRay.GetPoint(startEnter);
+                        float proj = Vector3.Dot(curPoint - startPoint, axis3D);
+
+                        if (grid > 0.01f)
                         {
-                            go.transform.position = _dragStartPositions[go] + deltaPos;
+                            proj = Mathf.Round(proj / grid) * grid;
+                        }
 
-                            // Sync child rigidbodies so physics doesn't fight the transform update
-                            Rigidbody[] rbs = go.GetComponentsInChildren<Rigidbody>(true);
-                            for (int r = 0; r < rbs.Length; r++)
+                        Vector3 deltaPos = axis3D * proj;
+
+                        for (int i = 0; i < targets.Count; i++)
+                        {
+                            GameObject go = targets[i];
+                            if (go != null && _dragStartPositions.ContainsKey(go))
                             {
-                                if (rbs[r] != null)
+                                go.transform.position = _dragStartPositions[go] + deltaPos;
+
+                                Rigidbody[] rbs = go.GetComponentsInChildren<Rigidbody>(true);
+                                for (int r = 0; r < rbs.Length; r++)
                                 {
-                                    rbs[r].position = go.transform.position;
-                                    rbs[r].velocity = Vector3.zero;
-                                    rbs[r].angularVelocity = Vector3.zero;
+                                    if (rbs[r] != null)
+                                    {
+                                        rbs[r].position = go.transform.position;
+                                        rbs[r].velocity = Vector3.zero;
+                                    }
                                 }
                             }
                         }
-                    }
 
-                    // Gizmo follows the movement in real time
-                    if (_gizmoRoot != null)
-                    {
-                        _gizmoRoot.transform.position = _dragStartCenterPos + deltaPos;
+                        if (_gizmoRoot != null)
+                        {
+                            _gizmoRoot.transform.position = _dragStartCenterPos + deltaPos;
+                        }
                     }
                 }
                 else if (mode == EditorGizmoMode.Rotate)
                 {
-                    float angle = (_activeDragAxis == 1) ? -mouseDelta.x * 0.65f : (mouseDelta.y * 0.65f);
-                    float grid = EditorSessionManager.CurrentGridSnap;
-                    if (grid > 0.01f)
-                    {
-                        float step = (grid >= 2.0f) ? 45f : 15f;
-                        angle = Mathf.Round(angle / step) * step;
-                    }
+                    Plane rotPlane = new Plane(axis3D, _dragStartCenterPos);
+                    Ray curRay = cam.ScreenPointToRay(Input.mousePosition);
+                    Ray startRay = cam.ScreenPointToRay(_dragStartMousePos);
 
-                    Quaternion rot = Quaternion.AngleAxis(angle, axis3D);
-                    for (int i = 0; i < targets.Count; i++)
+                    if (rotPlane.Raycast(curRay, out float enter) && rotPlane.Raycast(startRay, out float startEnter))
                     {
-                        GameObject go = targets[i];
-                        if (go != null && _dragStartPositions.ContainsKey(go))
+                        Vector3 vStart = (startRay.GetPoint(startEnter) - _dragStartCenterPos).normalized;
+                        Vector3 vCur = (curRay.GetPoint(enter) - _dragStartCenterPos).normalized;
+
+                        float angle = Vector3.SignedAngle(vStart, vCur, axis3D);
+                        if (grid > 0.01f)
                         {
-                            Vector3 offset = _dragStartPositions[go] - _dragStartCenterPos;
-                            go.transform.position = _dragStartCenterPos + (rot * offset);
-                            go.transform.rotation = rot * _dragStartRotations[go];
+                            float step = (grid >= 2.0f) ? 45f : 15f;
+                            angle = Mathf.Round(angle / step) * step;
+                        }
+
+                        Quaternion rot = Quaternion.AngleAxis(angle, axis3D);
+                        for (int i = 0; i < targets.Count; i++)
+                        {
+                            GameObject go = targets[i];
+                            if (go != null && _dragStartPositions.ContainsKey(go))
+                            {
+                                Vector3 offset = _dragStartPositions[go] - _dragStartCenterPos;
+                                go.transform.position = _dragStartCenterPos + (rot * offset);
+                                go.transform.rotation = rot * _dragStartRotations[go];
+                            }
                         }
                     }
                 }
                 else if (mode == EditorGizmoMode.Scale)
                 {
+                    Vector2 mouseDelta = (Vector2)Input.mousePosition - _dragStartMousePos;
                     float factor = 1.0f + ((mouseDelta.x + mouseDelta.y) * 0.008f);
-                    float grid = EditorSessionManager.CurrentGridSnap;
                     if (grid > 0.01f) factor = Mathf.Round(factor / 0.1f) * 0.1f;
                     factor = Mathf.Max(0.05f, factor);
 
@@ -1191,6 +1175,7 @@ namespace DeadCoreEditor
                 _activeDragAxis = -1;
             }
         }
+
         public static void DestroyGizmo()
         {
             if (_gizmoRoot != null)

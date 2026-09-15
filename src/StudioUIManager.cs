@@ -40,6 +40,7 @@ namespace DeadCoreEditor
         // Scene Hierarchy (Left Panel: 260px Interactive Tree View)
         private static GameObject _hierarchyPanel = null;
         private static RectTransform _hierarchyContent = null;
+        private static ScrollRect _hierarchyScrollRect = null;
         private static TMP_InputField _hierarchySearchInput = null;
         private static readonly List<GameObject> _hierarchyRows = new List<GameObject>();
         private static readonly HashSet<GameObject> _collapsedParents = new HashSet<GameObject>();
@@ -265,7 +266,7 @@ namespace DeadCoreEditor
                 _studioKeyLight = keyObj.AddComponent<Light>();
                 _studioKeyLight.type = LightType.Directional;
                 _studioKeyLight.color = new Color(1f, 0.95f, 0.88f);
-                _studioKeyLight.intensity = 0.35f;
+                _studioKeyLight.intensity = 0.15f;
                 _studioKeyLight.cullingMask = 1 << 2;
                 keyObj.transform.rotation = Quaternion.Euler(38f, -42f, 0f);
 
@@ -274,7 +275,7 @@ namespace DeadCoreEditor
                 _studioFillLight = fillObj.AddComponent<Light>();
                 _studioFillLight.type = LightType.Directional;
                 _studioFillLight.color = new Color(0.45f, 0.75f, 1f);
-                _studioFillLight.intensity = 0.15f;
+                _studioFillLight.intensity = 0.05f;
                 _studioFillLight.cullingMask = 1 << 2;
                 fillObj.transform.rotation = Quaternion.Euler(60f, 135f, 0f);
             }
@@ -460,6 +461,7 @@ namespace DeadCoreEditor
                 new Vector2(0f, 0f), new Vector2(1f, 1f),
                 new Vector2(6f, 24f), new Vector2(-12f, -112f),
                 out _hierarchyContent);
+            _hierarchyScrollRect = scrollObj.GetComponent<ScrollRect>();
 
             GameObject bottomBar = CreatePanel(_hierarchyPanel.transform, "Hierarchy_BottomBar",
                 new Vector2(0f, 0f), new Vector2(1f, 0f),
@@ -987,11 +989,17 @@ namespace DeadCoreEditor
         }
 
         // =========================================================================
-        // OVERHAULED INTERACTIVE HIERARCHY REFRESH (CLEAN ASCII LABELS)
+        // HIERARCHY DRAG & DROP PARENTING STATE
         // =========================================================================
-
-        // Reference mapping: Maps the exact placed GameObject instance directly to its UI row
         private static readonly Dictionary<GameObject, GameObject> _targetToRowMap = new Dictionary<GameObject, GameObject>();
+        private static readonly Dictionary<GameObject, GameObject> _rowToTargetMap = new Dictionary<GameObject, GameObject>();
+
+        private static GameObject _dragCandidateNode = null;
+        private static Vector2 _dragStartMousePos = Vector2.zero;
+        private static bool _isDraggingHierarchyNode = false;
+
+        private static GameObject _dragGhostObj = null;
+        private static TMP_Text _dragGhostText = null;
 
         public static void RefreshHierarchy()
         {
@@ -1000,6 +1008,7 @@ namespace DeadCoreEditor
             if (_hierarchyContent == null) return;
 
             _targetToRowMap.Clear();
+            _rowToTargetMap.Clear();
 
             for (int i = 0; i < _hierarchyRows.Count; i++)
             {
@@ -1069,25 +1078,21 @@ namespace DeadCoreEditor
             le.flexibleHeight = 0f;
             le.flexibleWidth = 1f;
 
-            // Map the exact object reference to its row
+            // Dual reference mapping
             _targetToRowMap[node] = row;
+            _rowToTargetMap[row] = node;
 
-            // Exact reference check (not name check)
             bool isDirectlySelected = (EditorSessionManager.SelectedObjects != null && EditorSessionManager.SelectedObjects.Contains(node)) ||
                                       (EditorSessionManager.SelectedObject == node);
 
-            // Sibling check: Different instance/position, but identical asset name
             bool isSameTypeSibling = !isDirectlySelected &&
                                      EditorSessionManager.SelectedObject != null &&
                                      node.name == EditorSessionManager.SelectedObject.name;
 
-            bool isPendingChild = (EditorSessionManager.ParentingChildTarget == node);
-
             Image bg = row.AddComponent<Image>();
-            bg.color = isPendingChild ? new Color(0.95f, 0.65f, 0.15f, 0.95f) :
-                       (isDirectlySelected ? new Color(0.18f, 0.52f, 0.88f, 0.95f) :  // Bright Blue: exact object
-                       (isSameTypeSibling ? new Color(0.06f, 0.22f, 0.44f, 0.90f) :   // Darker Blue: same-name sibling
-                       (hasChildren ? new Color(0.16f, 0.18f, 0.22f, 0.80f) : new Color(0.11f, 0.12f, 0.14f, 0.60f))));
+            bg.color = isDirectlySelected ? new Color(0.18f, 0.52f, 0.88f, 0.95f) :
+                       (isSameTypeSibling ? new Color(0.06f, 0.22f, 0.44f, 0.90f) :
+                       (hasChildren ? new Color(0.16f, 0.18f, 0.22f, 0.80f) : new Color(0.11f, 0.12f, 0.14f, 0.60f)));
 
             float leftPadding = 6f + (depth * 14f);
 
@@ -1126,16 +1131,7 @@ namespace DeadCoreEditor
             GameObject captured = node;
             b.onClick.AddListener((Action)(() =>
             {
-                if (EditorSessionManager.ParentingChildTarget != null && EditorSessionManager.ParentingChildTarget != captured)
-                {
-                    GameObject child = EditorSessionManager.ParentingChildTarget;
-                    child.transform.SetParent(captured.transform, true);
-                    EditorSessionManager.RecalculateParentChildCount(captured);
-                    EditorSessionManager.ShowNotification($"Parented '{child.name}' under '{captured.name}'");
-                    EditorSessionManager.ParentingChildTarget = null;
-                    RefreshHierarchy();
-                }
-                else
+                if (!_isDraggingHierarchyNode)
                 {
                     bool isCtrl = Input.GetKey(KeyCode.LeftControl) || Input.GetKey(KeyCode.RightControl);
                     EditorSessionManager.SelectObject(captured, isAdditive: isCtrl);
@@ -1149,21 +1145,23 @@ namespace DeadCoreEditor
 
             TMP_Text rowText = CreateText(row.transform, displayName,
                 new Vector2(0f, 0f), new Vector2(1f, 1f),
-                new Vector2(leftPadding, 0f), new Vector2(-65f, 0f),
+                new Vector2(leftPadding, 0f), new Vector2(-45f, 0f),
                 11f, hasChildren ? FontStyles.Bold : FontStyles.Normal,
                 hasChildren ? new Color(0.9f, 0.95f, 1f) : Color.white,
                 TextAlignmentOptions.MidlineLeft);
             rowText.enableWordWrapping = false;
             rowText.overflowMode = TextOverflowModes.Ellipsis;
 
-            // Inline Focus Button [F]
+            bool isChild = (node.transform.parent != null && EditorSessionManager.PlacedObjects.Contains(node.transform.parent.gameObject));
+
+            // Inline Focus Button [F] (Always available)
             GameObject focusBtnObj = new GameObject("Btn_Focus");
             focusBtnObj.transform.SetParent(row.transform, false);
             RectTransform fcrt = focusBtnObj.AddComponent<RectTransform>();
             fcrt.anchorMin = new Vector2(1f, 0.5f);
             fcrt.anchorMax = new Vector2(1f, 0.5f);
             fcrt.pivot = new Vector2(1f, 0.5f);
-            fcrt.anchoredPosition = new Vector2(-42f, 0f);
+            fcrt.anchoredPosition = isChild ? new Vector2(-22f, 0f) : new Vector2(-2f, 0f);
             fcrt.sizeDelta = new Vector2(18f, 18f);
 
             focusBtnObj.AddComponent<Image>().color = new Color(0.15f, 0.18f, 0.24f, 0.9f);
@@ -1175,36 +1173,8 @@ namespace DeadCoreEditor
                 EditorViewportCamera.FocusOnObject(captured);
             }));
 
-            // Inline Parent/Link Button [P]
-            GameObject linkBtnObj = new GameObject("Btn_Link");
-            linkBtnObj.transform.SetParent(row.transform, false);
-            RectTransform lkrt = linkBtnObj.AddComponent<RectTransform>();
-            lkrt.anchorMin = new Vector2(1f, 0.5f);
-            lkrt.anchorMax = new Vector2(1f, 0.5f);
-            lkrt.pivot = new Vector2(1f, 0.5f);
-            lkrt.anchoredPosition = new Vector2(-22f, 0f);
-            lkrt.sizeDelta = new Vector2(18f, 18f);
-
-            linkBtnObj.AddComponent<Image>().color = isPendingChild ? new Color(0.95f, 0.65f, 0.15f, 0.95f) : new Color(0.15f, 0.18f, 0.24f, 0.9f);
-            Button lkBtn = linkBtnObj.AddComponent<Button>();
-            TMP_Text lkTxt = CreateText(linkBtnObj.transform, "P", Vector2.zero, Vector2.one, Vector2.zero, Vector2.zero, 10f, FontStyles.Bold, isPendingChild ? Color.black : Color.cyan, TextAlignmentOptions.Center);
-            lkBtn.onClick.AddListener((Action)(() =>
-            {
-                if (EditorSessionManager.ParentingChildTarget == captured)
-                {
-                    EditorSessionManager.ParentingChildTarget = null;
-                    EditorSessionManager.ShowNotification("Cancelled reparenting.");
-                }
-                else
-                {
-                    EditorSessionManager.ParentingChildTarget = captured;
-                    EditorSessionManager.ShowNotification($"Selected '{captured.name}' to reparent. Click new parent in hierarchy.");
-                }
-                RefreshHierarchy();
-            }));
-
-            // Inline Unparent Button [X]
-            if (node.transform.parent != null && EditorSessionManager.PlacedObjects.Contains(node.transform.parent.gameObject))
+            // Inline Quick-Unparent Button [X] (Only displayed for child entities)
+            if (isChild)
             {
                 GameObject unpBtnObj = new GameObject("Btn_Unparent");
                 unpBtnObj.transform.SetParent(row.transform, false);
@@ -1239,22 +1209,260 @@ namespace DeadCoreEditor
             }
         }
 
-        public static void NotifyObjectSelected(GameObject obj)
+        // =========================================================================
+        // DRAG & DROP PARENTING: SCROLL LOCK & EDGE AUTO-SCROLL
+        // =========================================================================
+        public static void UpdateHierarchyDragDrop()
         {
-            if (_inspectorTitleText != null)
+            if (_hierarchyPanel == null || !_hierarchyPanel.activeInHierarchy || _hierarchyScrollRect == null) return;
+
+            // 1. Mouse Button Down: Lock ScrollRect immediately if clicked on a row
+            if (Input.GetMouseButtonDown(0))
             {
-                if (EditorSessionManager.SelectedObjects != null && EditorSessionManager.SelectedObjects.Count > 1)
+                GameObject hovered = GetHoveredHierarchyNode();
+                if (hovered != null)
                 {
-                    _inspectorTitleText.text = $"Selection ({EditorSessionManager.SelectedObjects.Count} Objects)";
-                }
-                else
-                {
-                    _inspectorTitleText.text = (obj != null) ? obj.name : "Inspector (None Selected)";
+                    _dragCandidateNode = hovered;
+                    _dragStartMousePos = Input.mousePosition;
+                    _isDraggingHierarchyNode = false;
+
+                    // Instantly freeze ScrollRect movement so it doesn't move while dragging
+                    _hierarchyScrollRect.StopMovement();
+                    _hierarchyScrollRect.vertical = false;
                 }
             }
 
-            UpdateHierarchyHighlightOnly();
-            RefreshInspectorValues();
+            // 2. Mouse Held Down: Detect drag threshold (>8 pixels)
+            if (Input.GetMouseButton(0) && _dragCandidateNode != null)
+            {
+                // Ensure vertical drag scrolling stays locked while holding a row
+                if (_hierarchyScrollRect.vertical)
+                {
+                    _hierarchyScrollRect.StopMovement();
+                    _hierarchyScrollRect.vertical = false;
+                }
+
+                if (!_isDraggingHierarchyNode)
+                {
+                    if (Vector2.Distance(Input.mousePosition, _dragStartMousePos) > 8f)
+                    {
+                        _isDraggingHierarchyNode = true;
+                        CreateDragGhost(_dragCandidateNode);
+                    }
+                }
+
+                if (_isDraggingHierarchyNode)
+                {
+                    UpdateDragGhostPosition();
+                    UpdateHierarchyDragVisuals();
+                    HandleHierarchyAutoScroll(); // Smoothly scrolls only when hovering top/bottom edges
+                }
+            }
+
+            // 3. Mouse Button Released: Re-enable ScrollRect and complete drop
+            if (Input.GetMouseButtonUp(0))
+            {
+                // Restore normal scrolling (mouse wheel)
+                if (_hierarchyScrollRect != null)
+                {
+                    _hierarchyScrollRect.vertical = true;
+                }
+
+                if (_isDraggingHierarchyNode && _dragCandidateNode != null)
+                {
+                    GameObject dropTarget = GetHoveredHierarchyNode();
+
+                    if (dropTarget != null)
+                    {
+                        // Valid drop target: cannot parent to self or into own child
+                        if (dropTarget != _dragCandidateNode && !IsDescendantOf(_dragCandidateNode, dropTarget))
+                        {
+                            GameObject prevParent = _dragCandidateNode.transform.parent != null
+                                ? _dragCandidateNode.transform.parent.gameObject : null;
+
+                            _dragCandidateNode.transform.SetParent(dropTarget.transform, true);
+
+                            if (prevParent != null) EditorSessionManager.RecalculateParentChildCount(prevParent);
+                            EditorSessionManager.RecalculateParentChildCount(dropTarget);
+
+                            EditorSessionManager.ShowNotification($"Parented '{_dragCandidateNode.name}' under '{dropTarget.name}'");
+                            RefreshHierarchy();
+                        }
+                    }
+                    else
+                    {
+                        // Dropped on empty space inside hierarchy panel: Unparent to root
+                        if (IsMouseOverHierarchyPanel() && _dragCandidateNode.transform.parent != null)
+                        {
+                            GameObject oldParent = _dragCandidateNode.transform.parent.gameObject;
+                            _dragCandidateNode.transform.SetParent(null, true);
+
+                            EditorSessionManager.RecalculateParentChildCount(oldParent);
+                            EditorSessionManager.ShowNotification($"Unparented '{_dragCandidateNode.name}' to root.");
+                            RefreshHierarchy();
+                        }
+                    }
+
+                    CleanupDragGhost();
+                    UpdateHierarchyHighlightOnly();
+                }
+
+                _dragCandidateNode = null;
+                _isDraggingHierarchyNode = false;
+            }
+        }
+
+        // Smoothly auto-scrolls only if you drag an item against the extreme top or bottom edge
+        private static void HandleHierarchyAutoScroll()
+        {
+            if (_hierarchyScrollRect == null || _hierarchyScrollRect.viewport == null) return;
+
+            RectTransform vp = _hierarchyScrollRect.viewport;
+            Vector2 localPoint;
+            if (RectTransformUtility.ScreenPointToLocalPointInRectangle(vp, Input.mousePosition, null, out localPoint))
+            {
+                float halfH = vp.rect.height * 0.5f;
+                float topThreshold = halfH - 25f;
+                float bottomThreshold = -halfH + 25f;
+
+                if (localPoint.y > topThreshold)
+                {
+                    float factor = Mathf.InverseLerp(topThreshold, halfH, localPoint.y);
+                    _hierarchyScrollRect.verticalNormalizedPosition += factor * 2.2f * Time.deltaTime;
+                    _hierarchyScrollRect.verticalNormalizedPosition = Mathf.Clamp01(_hierarchyScrollRect.verticalNormalizedPosition);
+                }
+                else if (localPoint.y < bottomThreshold)
+                {
+                    float factor = Mathf.InverseLerp(bottomThreshold, -halfH, localPoint.y);
+                    _hierarchyScrollRect.verticalNormalizedPosition -= factor * 2.2f * Time.deltaTime;
+                    _hierarchyScrollRect.verticalNormalizedPosition = Mathf.Clamp01(_hierarchyScrollRect.verticalNormalizedPosition);
+                }
+            }
+        }
+
+        private static GameObject GetHoveredHierarchyNode()
+        {
+            if (_rowToTargetMap == null || _rowToTargetMap.Count == 0) return null;
+            Vector2 mousePos = Input.mousePosition;
+
+            foreach (var kvp in _rowToTargetMap)
+            {
+                GameObject row = kvp.Key;
+                GameObject target = kvp.Value;
+                if (row == null || target == null || !row.activeInHierarchy) continue;
+
+                RectTransform rt = row.GetComponent<RectTransform>();
+                if (rt != null && RectTransformUtility.RectangleContainsScreenPoint(rt, mousePos, null))
+                {
+                    return target;
+                }
+            }
+
+            return null;
+        }
+
+        private static bool IsMouseOverHierarchyPanel()
+        {
+            if (_hierarchyPanel == null) return false;
+            RectTransform rt = _hierarchyPanel.GetComponent<RectTransform>();
+            return rt != null && RectTransformUtility.RectangleContainsScreenPoint(rt, Input.mousePosition, null);
+        }
+
+        private static bool IsDescendantOf(GameObject parentNode, GameObject potentialChild)
+        {
+            if (parentNode == null || potentialChild == null) return false;
+            Transform curr = potentialChild.transform;
+            while (curr != null)
+            {
+                if (curr.gameObject == parentNode) return true;
+                curr = curr.parent;
+            }
+            return false;
+        }
+
+        private static void CreateDragGhost(GameObject node)
+        {
+            CleanupDragGhost();
+            if (node == null || _canvasRoot == null) return;
+
+            _dragGhostObj = new GameObject("Hierarchy_Drag_Ghost");
+            _dragGhostObj.transform.SetParent(_canvasRoot.transform, false);
+
+            RectTransform rt = _dragGhostObj.AddComponent<RectTransform>();
+            rt.sizeDelta = new Vector2(190f, 24f);
+            rt.pivot = new Vector2(0f, 1f);
+
+            Image bg = _dragGhostObj.AddComponent<Image>();
+            bg.color = new Color(0.95f, 0.65f, 0.15f, 0.90f); // Amber / Gold indicator
+            bg.raycastTarget = false;
+
+            _dragGhostText = CreateText(_dragGhostObj.transform, "[Moving] " + node.name,
+                Vector2.zero, Vector2.one, new Vector2(8f, 0f), new Vector2(-8f, 0f),
+                10f, FontStyles.Bold, Color.black, TextAlignmentOptions.MidlineLeft);
+            _dragGhostText.raycastTarget = false;
+
+            UpdateDragGhostPosition();
+        }
+
+        private static void UpdateDragGhostPosition()
+        {
+            if (_dragGhostObj == null) return;
+            RectTransform rt = _dragGhostObj.GetComponent<RectTransform>();
+            Vector2 mousePos = Input.mousePosition;
+            rt.position = new Vector3(mousePos.x + 14f, mousePos.y - 10f, 0f);
+        }
+
+        private static void CleanupDragGhost()
+        {
+            if (_dragGhostObj != null)
+            {
+                GameObject.DestroyImmediate(_dragGhostObj);
+                _dragGhostObj = null;
+                _dragGhostText = null;
+            }
+        }
+
+        private static void UpdateHierarchyDragVisuals()
+        {
+            if (_targetToRowMap == null || _targetToRowMap.Count == 0) return;
+
+            GameObject dropTarget = GetHoveredHierarchyNode();
+
+            foreach (var kvp in _targetToRowMap)
+            {
+                GameObject target = kvp.Key;
+                GameObject row = kvp.Value;
+                if (target == null || row == null) continue;
+
+                Image bg = row.GetComponent<Image>();
+                if (bg == null) continue;
+
+                if (target == dropTarget)
+                {
+                    if (dropTarget == _dragCandidateNode || IsDescendantOf(_dragCandidateNode, dropTarget))
+                    {
+                        bg.color = new Color(0.75f, 0.2f, 0.2f, 0.90f); // Red: Invalid drop target
+                        if (_dragGhostText != null) _dragGhostText.text = "[Invalid] Child Loop";
+                    }
+                    else
+                    {
+                        bg.color = new Color(0.95f, 0.65f, 0.15f, 0.95f); // Gold: Valid drop target
+                        if (_dragGhostText != null) _dragGhostText.text = $"[⬇ Parent] {dropTarget.name}";
+                    }
+                }
+                else
+                {
+                    bool isDirectlySelected = (EditorSessionManager.SelectedObjects != null && EditorSessionManager.SelectedObjects.Contains(target));
+                    bg.color = isDirectlySelected
+                        ? new Color(0.18f, 0.52f, 0.88f, 0.95f)
+                        : new Color(0.11f, 0.12f, 0.14f, 0.60f);
+                }
+            }
+
+            if (dropTarget == null && IsMouseOverHierarchyPanel() && _dragGhostText != null)
+            {
+                _dragGhostText.text = "[Release to Unparent] (Root)";
+            }
         }
 
         private static void UpdateHierarchyHighlightOnly()
@@ -1273,20 +1481,18 @@ namespace DeadCoreEditor
                 Image bg = row.GetComponent<Image>();
                 if (bg == null) continue;
 
-                // Exact reference equality
                 bool isDirectlySelected = (EditorSessionManager.SelectedObjects != null && EditorSessionManager.SelectedObjects.Contains(target)) ||
                                           (target == primary);
 
-                // Same name but different GameObject reference / position
                 bool isSameTypeSibling = !isDirectlySelected && primaryName != null && target.name == primaryName;
 
                 if (isDirectlySelected)
                 {
-                    bg.color = new Color(0.18f, 0.52f, 0.88f, 0.95f); // Bright Blue
+                    bg.color = new Color(0.18f, 0.52f, 0.88f, 0.95f); // Bright Blue: Active selection
                 }
                 else if (isSameTypeSibling)
                 {
-                    bg.color = new Color(0.06f, 0.22f, 0.44f, 0.90f); // Darker Blue
+                    bg.color = new Color(0.06f, 0.22f, 0.44f, 0.90f); // Darker Blue: Same-name duplicate
                 }
                 else
                 {
@@ -1295,6 +1501,24 @@ namespace DeadCoreEditor
                     bg.color = (childCount > 0) ? new Color(0.16f, 0.18f, 0.22f, 0.80f) : new Color(0.11f, 0.12f, 0.14f, 0.60f);
                 }
             }
+        }
+
+        public static void NotifyObjectSelected(GameObject obj)
+        {
+            if (_inspectorTitleText != null)
+            {
+                if (EditorSessionManager.SelectedObjects != null && EditorSessionManager.SelectedObjects.Count > 1)
+                {
+                    _inspectorTitleText.text = $"Selection ({EditorSessionManager.SelectedObjects.Count} Objects)";
+                }
+                else
+                {
+                    _inspectorTitleText.text = (obj != null) ? obj.name : "Inspector (None Selected)";
+                }
+            }
+
+            UpdateHierarchyHighlightOnly();
+            RefreshInspectorValues();
         }
 
         // =========================================================================

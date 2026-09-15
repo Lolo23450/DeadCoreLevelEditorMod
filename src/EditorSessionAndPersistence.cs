@@ -278,6 +278,9 @@ namespace DeadCoreEditor
             return _cachedSiblingHighlightMat;
         }
 
+        // =========================================================================
+        // PURE 12-LINE HOLLOW WIREFRAME (ZERO SOLID FACES, ZERO COLLIDERS)
+        // =========================================================================
         public static void UpdateSelectionHighlight()
         {
             CleanHighlightPool();
@@ -288,71 +291,105 @@ namespace DeadCoreEditor
             }
 
             Material primaryMat = GetHighlightMaterial();
-            Material siblingMat = GetSiblingHighlightMaterial();
 
-            // 1. Highlight strictly selected object(s) with bright wireframe + apex beacon
             for (int i = 0; i < SelectedObjects.Count; i++)
             {
                 GameObject obj = SelectedObjects[i];
                 if (obj == null || !obj.activeSelf) continue;
                 if (IsWaypointMarker(obj, out _, out _)) continue;
 
-                GameObject box = GameObject.CreatePrimitive(PrimitiveType.Cube);
-                box.name = "Studio_Selection_Highlight_Wire";
-                box.layer = 2;
-                Collider c = box.GetComponent<Collider>();
-                if (c != null) GameObject.DestroyImmediate(c);
-                if (primaryMat != null) box.GetComponent<Renderer>().sharedMaterial = primaryMat;
-
-                GameObject beacon = GameObject.CreatePrimitive(PrimitiveType.Sphere);
-                beacon.name = "Studio_Selection_Apex_Beacon";
-                beacon.layer = 2;
-                Collider bc = beacon.GetComponent<Collider>();
-                if (bc != null) GameObject.DestroyImmediate(bc);
-                if (primaryMat != null) beacon.GetComponent<Renderer>().sharedMaterial = primaryMat;
-
                 Bounds b = PlacementHologramController.CalculateOptimizedProxyBounds(obj);
                 Vector3 worldCenter = obj.transform.TransformPoint(b.center);
 
-                box.transform.position = worldCenter;
-                box.transform.rotation = obj.transform.rotation;
-                box.transform.localScale = Vector3.Scale(b.size * 1.02f, obj.transform.lossyScale);
-
-                beacon.transform.position = worldCenter + Vector3.up * (b.extents.y * obj.transform.lossyScale.y + 0.5f);
-                beacon.transform.localScale = Vector3.one * 0.35f;
-
-                _highlightBoxes.Add(box);
-                _selectionBeacons.Add(beacon);
+                // Creates a clean, hollow, 12-line wireframe box with no solid faces or colliders
+                GameObject wireBox = CreateHollowWireframeBox(worldCenter, obj.transform.rotation, Vector3.Scale(b.size * 1.02f, obj.transform.lossyScale), primaryMat);
+                _highlightBoxes.Add(wireBox);
             }
+        }
 
-            // 2. Highlight every other object with the SAME NAME in Darker Blue
-            if (SelectedObject != null)
+        // =========================================================================
+        // THICK VOLUMETRIC 3D WIREFRAME (12 SEAMLESS BEAMS, ZERO COLLIDERS)
+        // =========================================================================
+        private static GameObject CreateHollowWireframeBox(Vector3 pos, Quaternion rot, Vector3 size, Material mat)
+        {
+            GameObject wireObj = new GameObject("Studio_Selection_Wireframe");
+            wireObj.transform.position = pos;
+            wireObj.transform.rotation = rot;
+            wireObj.layer = 2; // Ignore Raycast
+
+            MeshFilter mf = wireObj.AddComponent<MeshFilter>();
+            MeshRenderer mr = wireObj.AddComponent<MeshRenderer>();
+            mr.sharedMaterial = mat;
+            mr.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
+            mr.receiveShadows = false;
+
+            // Dynamically scale beam thickness: at least 0.10m thick on small props, up to 0.40m on large platforms
+            float maxDim = Mathf.Max(size.x, Mathf.Max(size.y, size.z));
+            float t = Mathf.Clamp(maxDim * 0.025f, 0.10f, 0.40f);
+
+            Vector3 h = size * 0.5f;
+
+            List<Vector3> verts = new List<Vector3>(96);
+            List<int> tris = new List<int>(144);
+
+            // 4 Beams along X
+            AddBeam(new Vector3(0f, -h.y, -h.z), new Vector3(size.x + t, t, t), verts, tris);
+            AddBeam(new Vector3(0f, h.y, -h.z), new Vector3(size.x + t, t, t), verts, tris);
+            AddBeam(new Vector3(0f, -h.y, h.z), new Vector3(size.x + t, t, t), verts, tris);
+            AddBeam(new Vector3(0f, h.y, h.z), new Vector3(size.x + t, t, t), verts, tris);
+
+            // 4 Beams along Y (Vertical pillars)
+            AddBeam(new Vector3(-h.x, 0f, -h.z), new Vector3(t, size.y + t, t), verts, tris);
+            AddBeam(new Vector3(h.x, 0f, -h.z), new Vector3(t, size.y + t, t), verts, tris);
+            AddBeam(new Vector3(-h.x, 0f, h.z), new Vector3(t, size.y + t, t), verts, tris);
+            AddBeam(new Vector3(h.x, 0f, h.z), new Vector3(t, size.y + t, t), verts, tris);
+
+            // 4 Beams along Z
+            AddBeam(new Vector3(-h.x, -h.y, 0f), new Vector3(t, t, size.z + t), verts, tris);
+            AddBeam(new Vector3(h.x, -h.y, 0f), new Vector3(t, t, size.z + t), verts, tris);
+            AddBeam(new Vector3(-h.x, h.y, 0f), new Vector3(t, t, size.z + t), verts, tris);
+            AddBeam(new Vector3(h.x, h.y, 0f), new Vector3(t, t, size.z + t), verts, tris);
+
+            Mesh m = new Mesh();
+            m.name = "Thick_Wireframe_Box_Mesh";
+            m.vertices = verts.ToArray();
+            m.triangles = tris.ToArray();
+            m.RecalculateNormals();
+            m.RecalculateBounds();
+            mf.sharedMesh = m;
+
+            return wireObj;
+        }
+
+        private static void AddBeam(Vector3 center, Vector3 beamSize, List<Vector3> verts, List<int> tris)
+        {
+            int baseIdx = verts.Count;
+            Vector3 bh = beamSize * 0.5f;
+
+            // 8 vertices per beam
+            verts.Add(center + new Vector3(-bh.x, -bh.y, -bh.z));
+            verts.Add(center + new Vector3(bh.x, -bh.y, -bh.z));
+            verts.Add(center + new Vector3(bh.x, bh.y, -bh.z));
+            verts.Add(center + new Vector3(-bh.x, bh.y, -bh.z));
+            verts.Add(center + new Vector3(-bh.x, -bh.y, bh.z));
+            verts.Add(center + new Vector3(bh.x, -bh.y, bh.z));
+            verts.Add(center + new Vector3(bh.x, bh.y, bh.z));
+            verts.Add(center + new Vector3(-bh.x, bh.y, bh.z));
+
+            // 12 triangles (6 faces)
+            int[] f = new int[]
             {
-                string targetName = SelectedObject.name;
+                0, 2, 1, 0, 3, 2, // Front
+                5, 6, 4, 4, 6, 7, // Back
+                0, 7, 3, 0, 4, 7, // Left
+                1, 2, 6, 1, 6, 5, // Right
+                3, 6, 2, 3, 7, 6, // Top
+                0, 1, 5, 0, 5, 4  // Bottom
+            };
 
-                for (int i = 0; i < PlacedObjects.Count; i++)
-                {
-                    GameObject other = PlacedObjects[i];
-                    if (other == null || !other.activeSelf) continue;
-                    if (other == SelectedObject || SelectedObjects.Contains(other)) continue;
-                    if (other.name != targetName) continue;
-
-                    GameObject siblingBox = GameObject.CreatePrimitive(PrimitiveType.Cube);
-                    siblingBox.name = "Studio_Sibling_Highlight_Wire";
-                    siblingBox.layer = 2;
-                    Collider sc = siblingBox.GetComponent<Collider>();
-                    if (sc != null) GameObject.DestroyImmediate(sc);
-                    if (siblingMat != null) siblingBox.GetComponent<Renderer>().sharedMaterial = siblingMat;
-
-                    Bounds sb = PlacementHologramController.CalculateOptimizedProxyBounds(other);
-                    Vector3 worldCenter = other.transform.TransformPoint(sb.center);
-
-                    siblingBox.transform.position = worldCenter;
-                    siblingBox.transform.rotation = other.transform.rotation;
-                    siblingBox.transform.localScale = Vector3.Scale(sb.size * 1.01f, other.transform.lossyScale);
-
-                    _highlightBoxes.Add(siblingBox);
-                }
+            for (int i = 0; i < f.Length; i++)
+            {
+                tris.Add(baseIdx + f[i]);
             }
         }
 
@@ -798,6 +835,7 @@ namespace DeadCoreEditor
             {
                 FreezePlayerEntity(player, cc);
                 EditorViewportCamera.UpdateCamera();
+                StudioUIManager.UpdateHierarchyDragDrop();
 
                 bool isCtrl = Input.GetKey(KeyCode.LeftControl) || Input.GetKey(KeyCode.RightControl);
 

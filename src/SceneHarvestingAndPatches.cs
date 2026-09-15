@@ -648,7 +648,8 @@ namespace DeadCoreEditor
 
                     if (!isBullet) continue;
 
-                    // Ignore collisions against the turret body and detection trigger
+                    // Only ignore collisions between the bullet and the turret body.
+                    // DO NOT TOUCH velocity, position, or rotation: DeadCore's native AI aims automatically!
                     Collider[] bulletCols = hitCol.transform.root.GetComponentsInChildren<Collider>(true);
                     for (int b = 0; b < bulletCols.Length; b++)
                     {
@@ -666,18 +667,6 @@ namespace DeadCoreEditor
                         {
                             Physics.IgnoreCollision(bulletCols[b], triggerSphere, true);
                         }
-                    }
-
-                    // Preserve the bullet's intended aim trajectory towards the player
-                    Rigidbody rb = hitGo.GetComponent<Rigidbody>() ?? hitCol.transform.root.GetComponent<Rigidbody>();
-                    if (rb != null)
-                    {
-                        Vector3 aimDir = (rb.velocity.sqrMagnitude > 0.1f)
-                            ? rb.velocity.normalized
-                            : hitGo.transform.forward;
-
-                        float speed = Mathf.Max(rb.velocity.magnitude, 35f);
-                        rb.velocity = aimDir * speed;
                     }
                 }
             }
