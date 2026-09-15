@@ -139,6 +139,53 @@ namespace DeadCoreEditor
         private static readonly List<GameObject> _highlightBoxes = new List<GameObject>();
         private static readonly List<GameObject> _selectionBeacons = new List<GameObject>();
 
+        public static void SetTurretSimulationActive(bool active)
+        {
+            for (int i = 0; i < PlacedObjects.Count; i++)
+            {
+                GameObject obj = PlacedObjects[i];
+                if (obj == null) continue;
+
+                if (PlacedObjectTypes.TryGetValue(obj, out var type) && type == PlacedObjectType.Turret)
+                {
+                    // Disable native AI script so aiming code doesn't override rotation
+                    TurretScript[] ts = obj.GetComponentsInChildren<TurretScript>(true);
+                    for (int s = 0; s < ts.Length; s++)
+                    {
+                        if (ts[s] != null) ts[s].enabled = active;
+                    }
+
+                    // Disable Animator/Animation so root-motion doesn't lock position
+                    Animator[] animators = obj.GetComponentsInChildren<Animator>(true);
+                    for (int a = 0; a < animators.Length; a++)
+                    {
+                        if (animators[a] != null) animators[a].enabled = active;
+                    }
+
+                    Animation[] animations = obj.GetComponentsInChildren<Animation>(true);
+                    for (int a = 0; a < animations.Length; a++)
+                    {
+                        if (animations[a] != null) animations[a].enabled = active;
+                    }
+
+                    // Freeze physics in edit mode
+                    Rigidbody[] rbs = obj.GetComponentsInChildren<Rigidbody>(true);
+                    for (int r = 0; r < rbs.Length; r++)
+                    {
+                        if (rbs[r] != null)
+                        {
+                            rbs[r].isKinematic = !active;
+                            if (!active)
+                            {
+                                rbs[r].velocity = Vector3.zero;
+                                rbs[r].angularVelocity = Vector3.zero;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         // =========================================================================
         // MODE TOGGLING & MULTI-SELECTION WORKFLOW
         // =========================================================================
@@ -475,6 +522,7 @@ namespace DeadCoreEditor
             SetSpotlightMeshesVisible(IsEditModeActive);
 
             GameObject player = FindPlayerEntity();
+            SetTurretSimulationActive(!IsEditModeActive);
 
             if (IsEditModeActive)
             {
@@ -1304,7 +1352,7 @@ namespace DeadCoreEditor
                 if (ts == null) continue;
 
                 ts.gameObject.SetActive(true);
-                ts.enabled = true;
+                ts.enabled = !IsEditModeActive;
                 ts._fireDelay = Mathf.Max(0.05f, fireDelay);
                 ts._firePower = firePower;
 
