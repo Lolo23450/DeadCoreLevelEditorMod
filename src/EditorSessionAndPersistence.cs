@@ -126,7 +126,7 @@ namespace DeadCoreEditor
         public static float CachedVoidDeathY = -140f;
         private static float _lightRefreshTimer = 0f;
 
-        // Player Entity Caches (Fixed)
+        // Player Entity Caches
         private static GameObject _cachedPlayer = null;
         private static CharacterController _cachedCharacterController = null;
         public static Camera PlayerCameraInstance = null;
@@ -134,9 +134,6 @@ namespace DeadCoreEditor
         public static Vector3 FrozenPlayerPosition = Vector3.zero;
         public static Quaternion FrozenPlayerRotation = Quaternion.identity;
         public static Vector3 LevelSpawnPosition = new Vector3(-241f, -95f, -6f);
-
-        // Preallocated Buffer for Non-Alloc Raycasts
-        private static readonly RaycastHit[] _aimHitBuffer = new RaycastHit[128];
 
         // Visual Selection Highlight Pool
         private static readonly List<GameObject> _highlightBoxes = new List<GameObject>();
@@ -149,37 +146,34 @@ namespace DeadCoreEditor
                 GameObject obj = PlacedObjects[i];
                 if (obj == null) continue;
 
-                if (PlacedObjectTypes.TryGetValue(obj, out var type) && type == PlacedObjectType.Turret)
+                TurretScript[] ts = obj.GetComponentsInChildren<TurretScript>(true);
+                for (int s = 0; s < ts.Length; s++)
                 {
-                    TurretScript[] ts = obj.GetComponentsInChildren<TurretScript>(true);
-                    for (int s = 0; s < ts.Length; s++)
-                    {
-                        if (ts[s] != null) ts[s].enabled = active;
-                    }
+                    if (ts[s] != null) ts[s].enabled = active;
+                }
 
-                    Animator[] animators = obj.GetComponentsInChildren<Animator>(true);
-                    for (int a = 0; a < animators.Length; a++)
-                    {
-                        if (animators[a] != null) animators[a].enabled = active;
-                    }
+                Animator[] animators = obj.GetComponentsInChildren<Animator>(true);
+                for (int a = 0; a < animators.Length; a++)
+                {
+                    if (animators[a] != null) animators[a].enabled = active;
+                }
 
-                    Animation[] animations = obj.GetComponentsInChildren<Animation>(true);
-                    for (int a = 0; a < animations.Length; a++)
-                    {
-                        if (animations[a] != null) animations[a].enabled = active;
-                    }
+                Animation[] animations = obj.GetComponentsInChildren<Animation>(true);
+                for (int a = 0; a < animations.Length; a++)
+                {
+                    if (animations[a] != null) animations[a].enabled = active;
+                }
 
-                    Rigidbody[] rbs = obj.GetComponentsInChildren<Rigidbody>(true);
-                    for (int r = 0; r < rbs.Length; r++)
+                Rigidbody[] rbs = obj.GetComponentsInChildren<Rigidbody>(true);
+                for (int r = 0; r < rbs.Length; r++)
+                {
+                    if (rbs[r] != null)
                     {
-                        if (rbs[r] != null)
+                        rbs[r].isKinematic = !active;
+                        if (!active)
                         {
-                            rbs[r].isKinematic = !active;
-                            if (!active)
-                            {
-                                rbs[r].velocity = Vector3.zero;
-                                rbs[r].angularVelocity = Vector3.zero;
-                            }
+                            rbs[r].velocity = Vector3.zero;
+                            rbs[r].angularVelocity = Vector3.zero;
                         }
                     }
                 }
@@ -224,23 +218,14 @@ namespace DeadCoreEditor
             {
                 if (obj != null)
                 {
-                    if (SelectedObjects.Contains(obj))
-                    {
-                        SelectedObjects.Remove(obj);
-                    }
-                    else
-                    {
-                        SelectedObjects.Add(obj);
-                    }
+                    if (SelectedObjects.Contains(obj)) SelectedObjects.Remove(obj);
+                    else SelectedObjects.Add(obj);
                 }
             }
             else
             {
                 SelectedObjects.Clear();
-                if (obj != null)
-                {
-                    SelectedObjects.Add(obj);
-                }
+                if (obj != null) SelectedObjects.Add(obj);
             }
 
             SelectedObject = SelectedObjects.Count > 0 ? SelectedObjects[SelectedObjects.Count - 1] : null;
@@ -255,7 +240,6 @@ namespace DeadCoreEditor
 
             UpdateSelectionHighlight();
             StudioUIManager.NotifyObjectSelected(SelectedObject);
-            StudioUIManager.RefreshHierarchy();
         }
 
         public static void EquipAsset(CatalogAsset asset)
@@ -268,6 +252,30 @@ namespace DeadCoreEditor
             ShowNotification($"Equipped: {asset.DisplayName} (Scale: {ActivePlacementScale:F2}x)");
         }
 
+        private static Material _cachedHighlightMat = null;
+        private static Material GetHighlightMaterial()
+        {
+            if (_cachedHighlightMat == null)
+            {
+                Shader s = Shader.Find("Unlit/Color") ?? Shader.Find("Particles/Standard Unlit") ?? Shader.Find("Sprites/Default");
+                _cachedHighlightMat = new Material(s);
+                _cachedHighlightMat.color = new Color(0.1f, 0.85f, 1f, 0.45f);
+            }
+            return _cachedHighlightMat;
+        }
+
+        private static Material _cachedSiblingHighlightMat = null;
+        private static Material GetSiblingHighlightMaterial()
+        {
+            if (_cachedSiblingHighlightMat == null)
+            {
+                Shader s = Shader.Find("Unlit/Color") ?? Shader.Find("Particles/Standard Unlit") ?? Shader.Find("Sprites/Default");
+                _cachedSiblingHighlightMat = new Material(s);
+                _cachedSiblingHighlightMat.color = new Color(0.04f, 0.22f, 0.48f, 0.35f);
+            }
+            return _cachedSiblingHighlightMat;
+        }
+
         public static void UpdateSelectionHighlight()
         {
             CleanHighlightPool();
@@ -277,13 +285,14 @@ namespace DeadCoreEditor
                 return;
             }
 
-            Material highlightMat = GetHighlightMaterial();
+            Material primaryMat = GetHighlightMaterial();
+            Material siblingMat = GetSiblingHighlightMaterial();
 
+            // 1. Highlight strictly selected object(s) with bright wireframe + apex beacon
             for (int i = 0; i < SelectedObjects.Count; i++)
             {
                 GameObject obj = SelectedObjects[i];
                 if (obj == null || !obj.activeSelf) continue;
-
                 if (IsWaypointMarker(obj, out _, out _)) continue;
 
                 GameObject box = GameObject.CreatePrimitive(PrimitiveType.Cube);
@@ -291,14 +300,14 @@ namespace DeadCoreEditor
                 box.layer = 2;
                 Collider c = box.GetComponent<Collider>();
                 if (c != null) GameObject.DestroyImmediate(c);
-                if (highlightMat != null) box.GetComponent<Renderer>().sharedMaterial = highlightMat;
+                if (primaryMat != null) box.GetComponent<Renderer>().sharedMaterial = primaryMat;
 
                 GameObject beacon = GameObject.CreatePrimitive(PrimitiveType.Sphere);
                 beacon.name = "Studio_Selection_Apex_Beacon";
                 beacon.layer = 2;
                 Collider bc = beacon.GetComponent<Collider>();
                 if (bc != null) GameObject.DestroyImmediate(bc);
-                if (highlightMat != null) beacon.GetComponent<Renderer>().sharedMaterial = highlightMat;
+                if (primaryMat != null) beacon.GetComponent<Renderer>().sharedMaterial = primaryMat;
 
                 Bounds b = PlacementHologramController.CalculateOptimizedProxyBounds(obj);
                 Vector3 worldCenter = obj.transform.TransformPoint(b.center);
@@ -313,18 +322,36 @@ namespace DeadCoreEditor
                 _highlightBoxes.Add(box);
                 _selectionBeacons.Add(beacon);
             }
-        }
 
-        private static Material _cachedHighlightMat = null;
-        private static Material GetHighlightMaterial()
-        {
-            if (_cachedHighlightMat == null)
+            // 2. Highlight every other object with the SAME NAME in Darker Blue
+            if (SelectedObject != null)
             {
-                Shader s = Shader.Find("Unlit/Color") ?? Shader.Find("Particles/Standard Unlit") ?? Shader.Find("Sprites/Default");
-                _cachedHighlightMat = new Material(s);
-                _cachedHighlightMat.color = new Color(0.1f, 0.85f, 1f, 0.45f);
+                string targetName = SelectedObject.name;
+
+                for (int i = 0; i < PlacedObjects.Count; i++)
+                {
+                    GameObject other = PlacedObjects[i];
+                    if (other == null || !other.activeSelf) continue;
+                    if (other == SelectedObject || SelectedObjects.Contains(other)) continue;
+                    if (other.name != targetName) continue;
+
+                    GameObject siblingBox = GameObject.CreatePrimitive(PrimitiveType.Cube);
+                    siblingBox.name = "Studio_Sibling_Highlight_Wire";
+                    siblingBox.layer = 2;
+                    Collider sc = siblingBox.GetComponent<Collider>();
+                    if (sc != null) GameObject.DestroyImmediate(sc);
+                    if (siblingMat != null) siblingBox.GetComponent<Renderer>().sharedMaterial = siblingMat;
+
+                    Bounds sb = PlacementHologramController.CalculateOptimizedProxyBounds(other);
+                    Vector3 worldCenter = other.transform.TransformPoint(sb.center);
+
+                    siblingBox.transform.position = worldCenter;
+                    siblingBox.transform.rotation = other.transform.rotation;
+                    siblingBox.transform.localScale = Vector3.Scale(sb.size * 1.01f, other.transform.lossyScale);
+
+                    _highlightBoxes.Add(siblingBox);
+                }
             }
-            return _cachedHighlightMat;
         }
 
         private static void CleanHighlightPool()
@@ -595,7 +622,6 @@ namespace DeadCoreEditor
         public static void ToggleEditMode()
         {
             IsEditModeActive = !IsEditModeActive;
-            MelonLogger.Msg($">> Viewport State: {(IsEditModeActive ? "[STUDIO EDIT MODE]" : "[PLAYTEST MODE]")}");
             SetSpotlightMeshesVisible(IsEditModeActive);
 
             GameObject player = FindPlayerEntity();
@@ -641,7 +667,6 @@ namespace DeadCoreEditor
                     Cursor.lockState = CursorLockMode.Locked;
                     Cursor.visible = false;
                 }
-                MelonLogger.Msg(">> Restored Playtest Mode.");
             }
         }
 
@@ -751,7 +776,6 @@ namespace DeadCoreEditor
                                 if (ActiveCustomCheckpoint != cp)
                                 {
                                     ActiveCustomCheckpoint = cp;
-                                    MelonLogger.Msg($">> [Checkpoint] Tagged checkpoint at {cp.transform.position}!");
                                 }
                             }
                         }
@@ -833,7 +857,7 @@ namespace DeadCoreEditor
         }
 
         // =========================================================================
-        // SOLID OBJECT SPAWNING & HITBOX ENFORCEMENT
+        // SOLID OBJECT SPAWNING: PRESERVES MESH COLLIDERS & NATIVE GAMEPLAY HITBOXES
         // =========================================================================
 
         public static GameObject SpawnAssetByName(string partialName, Vector3 position, float scale, Quaternion? customRotation = null)
@@ -891,6 +915,8 @@ namespace DeadCoreEditor
             bool isGate = asset.IsCheckPoint || asset.IsSpawnGate || asset.IsGoalGate;
             bool isLight = asset.IsSpotlight || asset.IsSunlight;
             bool isHelix = asset.IsHelix;
+            bool isTurret = asset.IsTurret;
+            bool isJumper = asset.IsJumper;
 
             Collider[] existingCols = obj.GetComponentsInChildren<Collider>(true);
             bool hasSolidCollider = false;
@@ -902,11 +928,7 @@ namespace DeadCoreEditor
 
                 c.enabled = true;
 
-                if (isHazard || isLight)
-                {
-                    c.isTrigger = true;
-                }
-                else if (isGate)
+                if (isHazard || isLight || isGate)
                 {
                     c.isTrigger = true;
                 }
@@ -924,6 +946,11 @@ namespace DeadCoreEditor
                         hasSolidCollider = true;
                     }
                 }
+                else if (isJumper || isTurret)
+                {
+                    // Leave native trigger zones and solid base switches untouched
+                    if (!c.isTrigger) hasSolidCollider = true;
+                }
                 else
                 {
                     c.isTrigger = false;
@@ -931,14 +958,16 @@ namespace DeadCoreEditor
                 }
             }
 
-            if (!hasSolidCollider && !isHazard && !isGate && !isLight && !isHelix && !asset.IsTurret)
+            // ACCURATE GAMEPLAY MESH COLLIDERS FOR PLATFORMS/ARCHITECTURE
+            if (!hasSolidCollider && !isHazard && !isGate && !isLight && !isHelix && !isTurret && !isJumper)
             {
                 MeshFilter[] mfs = obj.GetComponentsInChildren<MeshFilter>(true);
                 for (int m = 0; m < mfs.Length; m++)
                 {
-                    if (mfs[m].sharedMesh != null)
+                    if (mfs[m] != null && mfs[m].sharedMesh != null)
                     {
-                        MeshCollider mc = mfs[m].gameObject.AddComponent<MeshCollider>();
+                        MeshCollider mc = mfs[m].gameObject.GetComponent<MeshCollider>();
+                        if (mc == null) mc = mfs[m].gameObject.AddComponent<MeshCollider>();
                         mc.sharedMesh = mfs[m].sharedMesh;
                         mc.convex = false;
                         mc.isTrigger = false;
@@ -1039,7 +1068,7 @@ namespace DeadCoreEditor
             proxyObj.transform.localPosition = Vector3.zero;
             proxyObj.transform.localRotation = Quaternion.identity;
             proxyObj.transform.localScale = Vector3.one;
-            proxyObj.layer = 2;
+            proxyObj.layer = 2; // Layer 2: Ignore Raycast so it never intercepts bullets or gameplay
 
             Bounds proxyB = PlacementHologramController.CalculateOptimizedProxyBounds(obj);
             BoxCollider bc = proxyObj.AddComponent<BoxCollider>();
@@ -1076,7 +1105,7 @@ namespace DeadCoreEditor
                 Helix h = obj.GetComponentInChildren<Helix>();
                 if (h != null) _cachedHelixScripts[obj] = h;
             }
-            else if (low.Contains("turret"))
+            else if (low.Contains("turret") || obj.GetComponentInChildren<TurretScript>() != null)
             {
                 identifiedType = PlacedObjectType.Turret;
             }
@@ -1978,7 +2007,6 @@ namespace DeadCoreEditor
                 IsLevelCompleted = true;
                 Cursor.lockState = CursorLockMode.None;
                 Cursor.visible = true;
-                MelonLogger.Msg($">> [VICTORY] Course finished cleanly in {LevelTimer:F2} seconds!");
             }
         }
 
@@ -2082,7 +2110,6 @@ namespace DeadCoreEditor
 
                 if (dx <= limitX && dy <= limitY && dz <= limitZ)
                 {
-                    MelonLogger.Msg(">> [LASER] Hazard collision detected! Respawning...");
                     RespawnPlayer(player);
                     break;
                 }
@@ -2158,7 +2185,6 @@ namespace DeadCoreEditor
             Cursor.visible = false;
 
             UnfreezePlayerControls();
-            MelonLogger.Msg(">> [Restart] Restarted run cleanly from Entry Gate!");
         }
 
         public static void RespawnPlayer(GameObject player)
@@ -2174,8 +2200,6 @@ namespace DeadCoreEditor
 
                 player.transform.position = targetPos;
                 player.transform.rotation = targetRot;
-
-                MelonLogger.Msg(">> [Respawn] Returned to active Checkpoint!");
             }
             else
             {
@@ -2221,7 +2245,6 @@ namespace DeadCoreEditor
             string curScene = SceneManager.GetActiveScene().name.ToLower();
             if (curScene.Contains("load") || curScene.Contains("menu") || curScene.Contains("boot"))
             {
-                MelonLogger.Warning($">> [Abort] Attempted to initialize custom level in non-gameplay scene: '{curScene}'.");
                 return;
             }
 
@@ -2240,7 +2263,6 @@ namespace DeadCoreEditor
 
             if (!string.IsNullOrEmpty(MapBrowserService.SelectedMapPath) && File.Exists(MapBrowserService.SelectedMapPath))
             {
-                MelonLogger.Msg($">> Auto-loading selected map: '{MapBrowserService.SelectedMapName}'...");
                 LevelPersistenceService.LoadLevelByFullPath(MapBrowserService.SelectedMapPath);
             }
 
@@ -2302,7 +2324,6 @@ namespace DeadCoreEditor
 
             UnfreezePlayerControls();
             IsLevelInitialized = true;
-            MelonLogger.Msg(">> Custom Level Initialized & Ready!");
         }
 
         // =========================================================================
@@ -2317,39 +2338,28 @@ namespace DeadCoreEditor
                 ? EditorViewportCamera.ViewportCamera.ViewportPointToRay(new Vector3(0.5f, 0.5f, 0f))
                 : EditorViewportCamera.ViewportCamera.ScreenPointToRay(Input.mousePosition);
 
-            // Cast against all layers so submeshes, triggers, and proxies are never missed
-            int hitCount = Physics.RaycastNonAlloc(ray, _aimHitBuffer, 2000f, ~0, QueryTriggerInteraction.Collide);
-            if (hitCount <= 0) return null;
+            RaycastHit[] hits = Physics.RaycastAll(ray, 2000f, ~0, QueryTriggerInteraction.Collide);
+            if (hits == null || hits.Length == 0) return null;
+
+            Array.Sort(hits, (a, b) => a.distance.CompareTo(b.distance));
 
             // 1. Waypoint Markers Priority
-            float closestWpDist = float.MaxValue;
-            GameObject closestWp = null;
-
-            for (int h = 0; h < hitCount; h++)
+            for (int h = 0; h < hits.Length; h++)
             {
-                Collider col = _aimHitBuffer[h].collider;
+                Collider col = hits[h].collider;
                 if (col == null) continue;
                 GameObject hitGo = col.gameObject;
 
                 if (IsWaypointMarker(hitGo, out _, out _) || IsChildOfAnyWaypoint(hitGo, out hitGo))
                 {
-                    if (_aimHitBuffer[h].distance < closestWpDist)
-                    {
-                        closestWpDist = _aimHitBuffer[h].distance;
-                        closestWp = hitGo;
-                    }
+                    return hitGo;
                 }
             }
 
-            if (closestWp != null) return closestWp;
-
-            // 2. Placed Scene Objects: Walk up parents to identify exact target
-            float closestDist = float.MaxValue;
-            GameObject bestObj = null;
-
-            for (int h = 0; h < hitCount; h++)
+            // 2. Placed Scene Objects: Find closest registered object
+            for (int h = 0; h < hits.Length; h++)
             {
-                Collider col = _aimHitBuffer[h].collider;
+                Collider col = hits[h].collider;
                 if (col == null) continue;
                 GameObject hitGo = col.gameObject;
 
@@ -2358,31 +2368,18 @@ namespace DeadCoreEditor
                 if (hitGo.name.StartsWith("Studio_3D_Gizmo") || (hitGo.transform.root != null && hitGo.transform.root.name == "Studio_3D_Gizmo_Root")) continue;
                 if (_cachedPlayer != null && (hitGo == _cachedPlayer || hitGo.transform.root.gameObject == _cachedPlayer)) continue;
 
-                // Walk up transform tree to find first matching registered placed object
                 Transform curr = hitGo.transform;
-                GameObject matchedPlacedObj = null;
-
                 while (curr != null)
                 {
                     if (PlacedObjects.Contains(curr.gameObject))
                     {
-                        matchedPlacedObj = curr.gameObject;
-                        break;
+                        return curr.gameObject;
                     }
                     curr = curr.parent;
                 }
-
-                if (matchedPlacedObj != null)
-                {
-                    if (_aimHitBuffer[h].distance < closestDist)
-                    {
-                        closestDist = _aimHitBuffer[h].distance;
-                        bestObj = matchedPlacedObj;
-                    }
-                }
             }
 
-            return bestObj;
+            return null;
         }
 
         public static Quaternion GetCurrentCombinedRotation(CatalogAsset asset)
@@ -2608,7 +2605,6 @@ namespace DeadCoreEditor
             ThumbnailCaptureService.CaptureLevelThumbnail(path, EditorSessionManager.PlacedObjects, EditorSessionManager.LevelSpawnPosition);
 
             EditorSessionManager.ShowNotification($"Saved {lines.Count - 5} objects to {cleanName}.txt!");
-            MelonLogger.Msg($">> Saved {lines.Count - 5} objects to {path}!");
 
             MapBrowserService.SelectedMapPath = path;
             MapBrowserService.SelectedMapName = cleanName;
@@ -2759,7 +2755,6 @@ namespace DeadCoreEditor
 
             string fName = Path.GetFileNameWithoutExtension(fullPath);
             EditorSessionManager.ShowNotification($"Loaded {count} objects from {fName}.txt!");
-            MelonLogger.Msg($">> Loaded {count} objects from {fullPath}!");
             StudioUIManager.RefreshHierarchy();
         }
     }
@@ -2829,7 +2824,6 @@ namespace DeadCoreEditor
                 targetScene = requested;
             }
 
-            MelonLogger.Msg($">> [Map Browser] Launching: '{SelectedMapName}' via Scene: ['{targetScene}']");
             SceneLoader.LoadLevel(targetScene, false, true);
         }
     }

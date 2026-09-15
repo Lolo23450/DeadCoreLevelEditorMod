@@ -990,11 +990,16 @@ namespace DeadCoreEditor
         // OVERHAULED INTERACTIVE HIERARCHY REFRESH (CLEAN ASCII LABELS)
         // =========================================================================
 
+        // Reference mapping: Maps the exact placed GameObject instance directly to its UI row
+        private static readonly Dictionary<GameObject, GameObject> _targetToRowMap = new Dictionary<GameObject, GameObject>();
+
         public static void RefreshHierarchy()
         {
             EnsureSelectableColliders();
 
             if (_hierarchyContent == null) return;
+
+            _targetToRowMap.Clear();
 
             for (int i = 0; i < _hierarchyRows.Count; i++)
             {
@@ -1064,19 +1069,29 @@ namespace DeadCoreEditor
             le.flexibleHeight = 0f;
             le.flexibleWidth = 1f;
 
-            bool isSelected = (EditorSessionManager.SelectedObjects != null && EditorSessionManager.SelectedObjects.Contains(node)) ||
-                              (EditorSessionManager.SelectedObject == node);
+            // Map the exact object reference to its row
+            _targetToRowMap[node] = row;
+
+            // Exact reference check (not name check)
+            bool isDirectlySelected = (EditorSessionManager.SelectedObjects != null && EditorSessionManager.SelectedObjects.Contains(node)) ||
+                                      (EditorSessionManager.SelectedObject == node);
+
+            // Sibling check: Different instance/position, but identical asset name
+            bool isSameTypeSibling = !isDirectlySelected &&
+                                     EditorSessionManager.SelectedObject != null &&
+                                     node.name == EditorSessionManager.SelectedObject.name;
 
             bool isPendingChild = (EditorSessionManager.ParentingChildTarget == node);
 
             Image bg = row.AddComponent<Image>();
             bg.color = isPendingChild ? new Color(0.95f, 0.65f, 0.15f, 0.95f) :
-                       (isSelected ? new Color(0.18f, 0.52f, 0.88f, 0.95f) :
-                       (hasChildren ? new Color(0.16f, 0.18f, 0.22f, 0.80f) : new Color(0.11f, 0.12f, 0.14f, 0.60f)));
+                       (isDirectlySelected ? new Color(0.18f, 0.52f, 0.88f, 0.95f) :  // Bright Blue: exact object
+                       (isSameTypeSibling ? new Color(0.06f, 0.22f, 0.44f, 0.90f) :   // Darker Blue: same-name sibling
+                       (hasChildren ? new Color(0.16f, 0.18f, 0.22f, 0.80f) : new Color(0.11f, 0.12f, 0.14f, 0.60f))));
 
             float leftPadding = 6f + (depth * 14f);
 
-            // Foldout Arrow (Clean ASCII '>' / 'v')
+            // Foldout Arrow
             if (hasChildren)
             {
                 GameObject foldoutBtn = new GameObject("Foldout");
@@ -1127,7 +1142,7 @@ namespace DeadCoreEditor
                 }
             }));
 
-            // Hierarchy Row Label (Clean ASCII tree branches)
+            // Hierarchy Row Label
             string treeBranch = (depth > 0) ? "|-- " : "";
             string parentBadge = hasChildren ? $" ({childrenMap[node].Count})" : "";
             string displayName = treeBranch + captured.name + parentBadge;
@@ -1238,8 +1253,48 @@ namespace DeadCoreEditor
                 }
             }
 
-            RefreshHierarchy();
+            UpdateHierarchyHighlightOnly();
             RefreshInspectorValues();
+        }
+
+        private static void UpdateHierarchyHighlightOnly()
+        {
+            if (_targetToRowMap == null || _targetToRowMap.Count == 0) return;
+
+            GameObject primary = EditorSessionManager.SelectedObject;
+            string primaryName = (primary != null) ? primary.name : null;
+
+            foreach (var kvp in _targetToRowMap)
+            {
+                GameObject target = kvp.Key;
+                GameObject row = kvp.Value;
+                if (target == null || row == null) continue;
+
+                Image bg = row.GetComponent<Image>();
+                if (bg == null) continue;
+
+                // Exact reference equality
+                bool isDirectlySelected = (EditorSessionManager.SelectedObjects != null && EditorSessionManager.SelectedObjects.Contains(target)) ||
+                                          (target == primary);
+
+                // Same name but different GameObject reference / position
+                bool isSameTypeSibling = !isDirectlySelected && primaryName != null && target.name == primaryName;
+
+                if (isDirectlySelected)
+                {
+                    bg.color = new Color(0.18f, 0.52f, 0.88f, 0.95f); // Bright Blue
+                }
+                else if (isSameTypeSibling)
+                {
+                    bg.color = new Color(0.06f, 0.22f, 0.44f, 0.90f); // Darker Blue
+                }
+                else
+                {
+                    int childCount = 0;
+                    EditorSessionManager.PlacedParentChildCounts.TryGetValue(target, out childCount);
+                    bg.color = (childCount > 0) ? new Color(0.16f, 0.18f, 0.22f, 0.80f) : new Color(0.11f, 0.12f, 0.14f, 0.60f);
+                }
+            }
         }
 
         // =========================================================================

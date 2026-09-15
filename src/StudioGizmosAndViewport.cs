@@ -783,7 +783,7 @@ namespace DeadCoreEditor
             _arrowX = Create3DArrow(_groupTranslate.transform, "Arrow_X", Vector3.right, _matRed);
             _arrowY = Create3DArrow(_groupTranslate.transform, "Arrow_Y", Vector3.up, _matGreen);
             _arrowZ = Create3DArrow(_groupTranslate.transform, "Arrow_Z", Vector3.forward, _matBlue);
-            _centerSphere = CreatePrimitiveObj(PrimitiveType.Sphere, _groupTranslate.transform, "Center_Sphere", Vector3.zero, Vector3.one * 0.45f, _matWhite);
+            _centerSphere = CreatePrimitiveObj(PrimitiveType.Sphere, _groupTranslate.transform, "Center_Sphere", Vector3.zero, Vector3.one * 0.22f, _matWhite);
 
             // 2. ROTATE
             _groupRotate = new GameObject("Group_Rotate");
@@ -978,8 +978,8 @@ namespace DeadCoreEditor
             float distanceScale = dist * 0.075f * zoomFactor;
 
             GameObject primary = activeList[0];
-            Bounds baseB = PlacementHologramController.CalculateOptimizedProxyBounds(primary);
-            float baseDim = Mathf.Max(baseB.size.x, baseB.size.y, baseB.size.z);
+            Vector3 sVec = primary.transform.lossyScale;
+            float baseDim = Mathf.Max(sVec.x, sVec.y, sVec.z);
             float propFactor = Mathf.Clamp(Mathf.Sqrt(baseDim) * 0.55f, 0.8f, 2.4f);
 
             float placementScaleMult = Mathf.Clamp(EditorSessionManager.ActivePlacementScale, 0.5f, 2.5f);

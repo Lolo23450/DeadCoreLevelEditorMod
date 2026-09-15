@@ -16,10 +16,6 @@ namespace DeadCoreEditor
     // SECTION 1: SCENE HARVESTING & GEOMETRY EXTRACTION PIPELINE
     // =========================================================================
 
-    /// <summary>
-    /// Ingests scene geometry, extracts gameplay prefabs (jumpers, turbines, turrets),
-    /// generates procedural hazards/lighting templates, and filters architectural building blocks.
-    /// </summary>
     public static class SceneHarvestingService
     {
         public static Light NativeSceneSun = null;
@@ -27,9 +23,6 @@ namespace DeadCoreEditor
         private static readonly List<Mesh> _proceduralMeshes = new List<Mesh>();
         private static readonly List<Material> _proceduralMaterials = new List<Material>();
 
-        /// <summary>
-        /// Cleans up dynamically generated procedural meshes and materials to prevent memory leaks.
-        /// </summary>
         public static void CleanupProceduralResources()
         {
             for (int i = 0; i < _proceduralMeshes.Count; i++)
@@ -51,9 +44,6 @@ namespace DeadCoreEditor
             _proceduralMaterials.Clear();
         }
 
-        /// <summary>
-        /// Scans active scene lights to hook into the primary directional sun for celestial atmosphere tuning.
-        /// </summary>
         public static void DebugDumpSceneLighting()
         {
             NativeSceneSun = null;
@@ -80,10 +70,6 @@ namespace DeadCoreEditor
             }
         }
 
-        /// <summary>
-        /// Generates an 8-vertex double-sided plane mesh for laser barrier hazards.
-        /// Prevents backface culling issues when viewing beams from opposite directions.
-        /// </summary>
         public static Mesh CreateDoubleSidedPlaneMesh(float width, float height)
         {
             Mesh m = new Mesh();
@@ -95,12 +81,10 @@ namespace DeadCoreEditor
 
             Vector3[] vertices = new Vector3[]
             {
-                // Front face
                 new Vector3(-hw, -hh, zOffset),
                 new Vector3(hw, -hh, zOffset),
                 new Vector3(hw, hh, zOffset),
                 new Vector3(-hw, hh, zOffset),
-                // Back face
                 new Vector3(-hw, -hh, -zOffset),
                 new Vector3(hw, -hh, -zOffset),
                 new Vector3(hw, hh, -zOffset),
@@ -121,9 +105,7 @@ namespace DeadCoreEditor
 
             int[] triangles = new int[]
             {
-                // Front winding
                 0, 2, 1, 0, 3, 2,
-                // Back winding
                 4, 5, 6, 4, 6, 7
             };
 
@@ -137,16 +119,11 @@ namespace DeadCoreEditor
             return m;
         }
 
-        /// <summary>
-        /// Complete asset harvesting pipeline. Gathers scene templates, constructs procedural
-        /// hazards/lighting, and applies intelligent bounding box filters to scene meshes.
-        /// </summary>
         public static void HarvestAllSceneModels()
         {
             EditorSessionManager.AllAssets.Clear();
             HashSet<string> seenMeshes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
-            // Cache standard level surface material for procedural props
             MeshRenderer[] renderers = GameObject.FindObjectsOfType<MeshRenderer>();
             for (int i = 0; i < renderers.Length; i++)
             {
@@ -160,9 +137,7 @@ namespace DeadCoreEditor
 
             GameObject ld = GameObject.Find("_LD") ?? GameObject.Find("L_D") ?? GameObject.Find("l_d");
 
-            // -----------------------------------------------------------------
             // 1. GAMEPLAY: JUMP PADS (LAUNCHERS)
-            // -----------------------------------------------------------------
             try
             {
                 EditorSessionManager.PrefabJumper = GameObject.FindObjectOfType<Jumper>();
@@ -189,9 +164,7 @@ namespace DeadCoreEditor
                 });
             }
 
-            // -----------------------------------------------------------------
             // 2. GAMEPLAY: GATES & CHECKPOINTS
-            // -----------------------------------------------------------------
             try
             {
                 EditorSessionManager.PrefabCheckPoint = GameObject.FindObjectOfType<CheckPointScript>();
@@ -244,9 +217,7 @@ namespace DeadCoreEditor
                 });
             }
 
-            // -----------------------------------------------------------------
-            // 3. LIGHTING: TECH SPOTLIGHT (SUBCATEGORY: "LIGHTING")
-            // -----------------------------------------------------------------
+            // 3. LIGHTING: TECH SPOTLIGHT
             GameObject spotTemplate = new GameObject("Template_Spotlight");
             Light spotLight = spotTemplate.AddComponent<Light>();
             spotLight.type = LightType.Spot;
@@ -292,9 +263,7 @@ namespace DeadCoreEditor
                 BaseRotation = Quaternion.identity
             });
 
-            // -----------------------------------------------------------------
-            // 4. LIGHTING: GLOBAL SUNLIGHT (SUBCATEGORY: "LIGHTING")
-            // -----------------------------------------------------------------
+            // 4. LIGHTING: GLOBAL SUNLIGHT
             GameObject sunTemplate = new GameObject("Template_Sunlight");
             Light sunLight = sunTemplate.AddComponent<Light>();
             sunLight.type = LightType.Directional;
@@ -342,9 +311,7 @@ namespace DeadCoreEditor
                 BaseRotation = Quaternion.Euler(50f, -30f, 0f)
             });
 
-            // -----------------------------------------------------------------
-            // 5. HAZARDS: LASER BARRIERS (SUBCATEGORY: "HAZARDS")
-            // -----------------------------------------------------------------
+            // 5. HAZARDS: LASER BARRIERS
             Material laserMat = null;
             LaserManager lm = GameObject.FindObjectOfType<LaserManager>();
             if (lm != null && lm._sharedMaterial != null)
@@ -457,9 +424,7 @@ namespace DeadCoreEditor
                 BaseRotation = Quaternion.identity
             });
 
-            // -----------------------------------------------------------------
-            // 6. HAZARDS: TURRETS & ENEMIES (NATIVE SCAN + ROBUST PROCEDURAL FALLBACK)
-            // -----------------------------------------------------------------
+            // 6. HAZARDS: TURRETS & ENEMIES
             try
             {
                 TurretScript nativeTurret = GameObject.FindObjectOfType<TurretScript>();
@@ -488,55 +453,6 @@ namespace DeadCoreEditor
             }
             catch { }
 
-            // Procedural fallback if the vanilla level environment doesn't contain a turret
-            if (EditorSessionManager.PrefabTurret == null)
-            {
-                GameObject procTurret = new GameObject("Template_Defense_Turret");
-
-                // Pedestal
-                GameObject tBase = GameObject.CreatePrimitive(PrimitiveType.Cylinder);
-                tBase.name = "Base";
-                tBase.transform.SetParent(procTurret.transform, false);
-                tBase.transform.localScale = new Vector3(1.6f, 0.4f, 1.6f);
-
-                // Turret Head
-                GameObject tHead = GameObject.CreatePrimitive(PrimitiveType.Sphere);
-                tHead.name = "Head";
-                tHead.transform.SetParent(procTurret.transform, false);
-                tHead.transform.localPosition = new Vector3(0f, 0.85f, 0f);
-                tHead.transform.localScale = new Vector3(1.2f, 1.2f, 1.2f);
-
-                // Barrel
-                GameObject tBarrel = GameObject.CreatePrimitive(PrimitiveType.Cylinder);
-                tBarrel.name = "Barrel";
-                tBarrel.transform.SetParent(tHead.transform, false);
-                tBarrel.transform.localPosition = new Vector3(0f, 0f, 0.85f);
-                tBarrel.transform.localRotation = Quaternion.Euler(90f, 0f, 0f);
-                tBarrel.transform.localScale = new Vector3(0.3f, 0.75f, 0.3f);
-
-                if (EditorSessionManager.CachedSceneMaterial != null)
-                {
-                    tBase.GetComponent<Renderer>().material = EditorSessionManager.CachedSceneMaterial;
-                    tHead.GetComponent<Renderer>().material = EditorSessionManager.CachedSceneMaterial;
-                    tBarrel.GetComponent<Renderer>().material = EditorSessionManager.CachedSceneMaterial;
-                }
-
-                try
-                {
-                    TurretScript ts = procTurret.AddComponent<TurretScript>();
-                    ts._fireDelay = 1.0f;
-                    ts._firePower = 1500f;
-                }
-                catch { }
-
-                BoxCollider bc = procTurret.AddComponent<BoxCollider>();
-                bc.center = new Vector3(0f, 0.85f, 0f);
-                bc.size = new Vector3(1.8f, 1.8f, 2.0f);
-
-                procTurret.SetActive(false);
-                EditorSessionManager.PrefabTurret = procTurret;
-            }
-
             if (EditorSessionManager.PrefabTurret != null)
             {
                 EditorSessionManager.AllAssets.Add(new CatalogAsset
@@ -552,9 +468,7 @@ namespace DeadCoreEditor
                 });
             }
 
-            // -----------------------------------------------------------------
             // 7. HAZARDS: HELIX TURBINES & WIND FANS
-            // -----------------------------------------------------------------
             try
             {
                 Helix nativeHelix = GameObject.FindObjectOfType<Helix>();
@@ -586,9 +500,7 @@ namespace DeadCoreEditor
                 });
             }
 
-            // -----------------------------------------------------------------
-            // 8. INTELLIGENT BOUNDS FILTERING & ARCHITECTURAL HARVESTING
-            // -----------------------------------------------------------------
+            // 8. ARCHITECTURAL HARVESTING
             MeshFilter[] allFilters = GameObject.FindObjectsOfType<MeshFilter>();
             for (int f = 0; f < allFilters.Length; f++)
             {
@@ -599,19 +511,14 @@ namespace DeadCoreEditor
                 string goName = mf.gameObject.name.ToLower();
                 string mLow = mName.ToLower();
 
-                // Exclude active game scripts and interactive components
                 if (goName.Contains("helice") || goName.Contains("tourelle") || goName.Contains("laser")) continue;
 
                 Vector3 size = mf.sharedMesh.bounds.size;
                 float maxDim = Mathf.Max(size.x, size.y, size.z);
 
-                // Filter out massive skyboxes, background mountain backdrops, and cloud domes
                 if (maxDim > 60f) continue;
-
-                // Filter out micro-debris, bolts, nuts, screws, and tiny collision shells
                 if (maxDim < 0.8f || mf.sharedMesh.vertexCount < 12) continue;
 
-                // String exclusions for visual noise and LOD proxies
                 if (mLow.Contains("skybox") || mLow.Contains("horizon") || mLow.Contains("fog") ||
                     mLow.Contains("dome") || mLow.Contains("cloud") || mLow.Contains("backdrop")) continue;
                 if (mLow.Contains("impostor") || mLow.Contains("lod1") || mLow.Contains("lod2") ||
@@ -643,14 +550,8 @@ namespace DeadCoreEditor
                     });
                 }
             }
-
-            MelonLogger.Msg($">> [Harvest] Catalog assembled: {EditorSessionManager.AllAssets.Count} verified building & gameplay entities.");
         }
 
-        /// <summary>
-        /// Deactivates vanilla staging environment root containers while keeping the native
-        /// player controller and directional sun intact for clean level generation.
-        /// </summary>
         public static void HideVanillaLevelGeometry()
         {
             var activeScene = SceneManager.GetActiveScene();
@@ -700,9 +601,6 @@ namespace DeadCoreEditor
     // SECTION 2: HARMONY RUNTIME ENGINE PATCHES
     // =========================================================================
 
-    /// <summary>
-    /// Hooks into the game's level sequence start event to trigger custom level generation.
-    /// </summary>
     [HarmonyPatch(typeof(StartLevelManager), nameof(StartLevelManager.StartLevelSequence))]
     public static class StartLevelPatch
     {
@@ -719,14 +617,12 @@ namespace DeadCoreEditor
         }
     }
 
-    /// <summary>
-    /// Prevents defense turrets from colliding with their own fired bullets.
-    /// </summary>
+    // =========================================================================
+    // PREVENTS TURRET BULLETS FROM GETTING STUCK ON TURRET COLLIDERS
+    // =========================================================================
     [HarmonyPatch(typeof(TurretScript), nameof(TurretScript.Shoot))]
     public static class TurretShootPatch
     {
-        private static readonly Collider[] _turretHitsBuffer = new Collider[128];
-
         [HarmonyPostfix]
         public static void Postfix(TurretScript __instance)
         {
@@ -737,20 +633,19 @@ namespace DeadCoreEditor
                 string bulletPrefabName = __instance._bulletPrefab.name;
                 Vector3 turretPos = __instance.transform.position;
 
-                Collider[] turretCols = __instance.GetComponentsInChildren<Collider>(true);
+                Collider[] turretCols = __instance.transform.root.GetComponentsInChildren<Collider>(true);
                 SphereCollider triggerSphere = __instance._triggerAnimation;
 
-                int hitCount = Physics.OverlapSphereNonAlloc(turretPos, 8.0f, _turretHitsBuffer, ~0, QueryTriggerInteraction.Collide);
-                for (int i = 0; i < hitCount; i++)
+                Collider[] nearbyCols = Physics.OverlapSphere(turretPos, 6.0f, ~0, QueryTriggerInteraction.Collide);
+                for (int i = 0; i < nearbyCols.Length; i++)
                 {
-                    Collider hitCol = _turretHitsBuffer[i];
+                    Collider hitCol = nearbyCols[i];
                     if (hitCol == null) continue;
 
                     GameObject hitGo = hitCol.gameObject;
                     bool isBullet = hitGo.name.Contains(bulletPrefabName) ||
-                                    hitCol.transform.root.name.Contains(bulletPrefabName) ||
                                     hitGo.name.ToLower().Contains("bullet") ||
-                                    hitCol.transform.root.name.ToLower().Contains("bullet");
+                                    (hitCol.transform.root != null && hitCol.transform.root.name.ToLower().Contains("bullet"));
 
                     if (!isBullet) continue;
 
@@ -773,12 +668,12 @@ namespace DeadCoreEditor
                         }
                     }
 
-                    Rigidbody rb = hitGo.GetComponent<Rigidbody>();
-                    Vector3 forwardDir = (rb != null && rb.velocity.sqrMagnitude > 0.1f)
-                        ? rb.velocity.normalized
-                        : __instance.transform.forward;
-
-                    hitGo.transform.position += forwardDir * 0.95f;
+                    Rigidbody rb = hitGo.GetComponent<Rigidbody>() ?? hitCol.transform.root.GetComponent<Rigidbody>();
+                    if (rb != null)
+                    {
+                        Vector3 forwardDir = __instance.transform.forward;
+                        rb.velocity = forwardDir * (__instance._firePower > 100f ? __instance._firePower * 0.05f : 35f);
+                    }
                 }
             }
             catch { }
