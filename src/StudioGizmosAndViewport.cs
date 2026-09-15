@@ -2,6 +2,7 @@
 using System.Collections.Generic;
 using MelonLoader;
 using UnityEngine;
+using UnityEngine.UI;
 using UnityEngine.EventSystems;
 using Il2Cpp;
 using Il2CppDeadCore;
@@ -25,9 +26,6 @@ namespace DeadCoreEditor
         private static float _pitch = 0f;
         private static float _baseSpeed = 24f;
 
-        /// <summary>
-        /// Spawns or re-binds the dedicated viewport camera from the player's active camera.
-        /// </summary>
         public static void InitializeCamera(Camera sourceCam)
         {
             if (_camInstance != null)
@@ -63,23 +61,18 @@ namespace DeadCoreEditor
             EnsureCameraConfiguration();
         }
 
-        /// <summary>
-        /// Forces all layers to render and disables overlay cameras that could occlude gizmos.
-        /// </summary>
         public static void EnsureCameraConfiguration()
         {
             if (ViewportCamera != null)
             {
-                ViewportCamera.cullingMask = ~0; // Render ALL layers
+                ViewportCamera.cullingMask = ~0;
                 ViewportCamera.enabled = true;
 
-                // Clear any target texture copied from native post-process cameras
                 if (ViewportCamera.targetTexture != null)
                 {
                     ViewportCamera.targetTexture = null;
                 }
 
-                // Disable any other cameras in scene that might draw over the viewport
                 Camera[] cams = Camera.allCameras;
                 for (int i = 0; i < cams.Length; i++)
                 {
@@ -91,9 +84,6 @@ namespace DeadCoreEditor
             }
         }
 
-        /// <summary>
-        /// Processes freelook orientation, speed modifiers, and 6-axis camera translation.
-        /// </summary>
         public static void UpdateCamera()
         {
             if (_camInstance == null || ViewportCamera == null) return;
@@ -124,7 +114,6 @@ namespace DeadCoreEditor
                     Cursor.visible = true;
                 }
 
-                // W/E/R Hotkey shortcuts for transformation tools
                 if (!StudioUIManager.IsPointerOverUI() && GUIUtility.keyboardControl == 0)
                 {
                     if (Input.GetKeyDown(KeyCode.W))
@@ -172,9 +161,6 @@ namespace DeadCoreEditor
             }
         }
 
-        /// <summary>
-        /// Safely destroys the viewport camera upon returning to playtest mode.
-        /// </summary>
         public static void DestroyCamera()
         {
             if (_camInstance != null)
@@ -207,7 +193,7 @@ namespace DeadCoreEditor
 
             _ghostInstance = GameObject.Instantiate(asset.SourceTemplate);
             _ghostInstance.name = "Holographic_Ghost_Preview";
-            _ghostInstance.layer = 2; // Layer 2 = Ignore Raycast
+            _ghostInstance.layer = 2;
 
             foreach (var tr in _ghostInstance.GetComponentsInChildren<Transform>(true))
             {
@@ -531,45 +517,44 @@ namespace DeadCoreEditor
     }
 
     // =========================================================================
-    // SECTION 3: 3D INTERACTIVE TRANSFORMATION GIZMO CONTROLLER
+    // SECTION 3: REVOLUTIONARY SCREEN-SPACE PERSPECTIVE GIZMO SYSTEM
     // =========================================================================
 
     /// <summary>
-    /// Renders and manages interactive 3D handles for Move, Rotate, and Scale in Select Mode.
-    /// Uses native scene shaders to guarantee rendering and automatically surfaces above platforms.
+    /// Renders transform gizmos as an un-cullable 2D overlay projected from 3D world space.
+    /// Completely immune to shader stripping, lighting path discrepancies, and depth occlusion.
     /// </summary>
     public static class StudioGizmoController
     {
+        private static GameObject _canvasObj = null;
+        private static Canvas _overlayCanvas = null;
         private static GameObject _gizmoRoot = null;
-        private static GameObject _axisX = null;
-        private static GameObject _axisY = null;
-        private static GameObject _axisZ = null;
 
-        private static Renderer _cylRendX = null;
-        private static Renderer _tipSphereRendX = null;
-        private static Renderer _tipCubeRendX = null;
+        // UI Line Stems
+        private static RectTransform _stemX = null;
+        private static RectTransform _stemY = null;
+        private static RectTransform _stemZ = null;
+        private static Image _imgStemX = null;
+        private static Image _imgStemY = null;
+        private static Image _imgStemZ = null;
 
-        private static Renderer _cylRendY = null;
-        private static Renderer _tipSphereRendY = null;
-        private static Renderer _tipCubeRendY = null;
+        // Interactive UI Knobs
+        private static RectTransform _knobX = null;
+        private static RectTransform _knobY = null;
+        private static RectTransform _knobZ = null;
+        private static Image _imgKnobX = null;
+        private static Image _imgKnobY = null;
+        private static Image _imgKnobZ = null;
+        private static Text _textKnobX = null;
+        private static Text _textKnobY = null;
+        private static Text _textKnobZ = null;
 
-        private static Renderer _cylRendZ = null;
-        private static Renderer _tipSphereRendZ = null;
-        private static Renderer _tipCubeRendZ = null;
+        // Central Anchor
+        private static RectTransform _centerRing = null;
+        private static Image _imgCenterRing = null;
 
-        private static GameObject _tipSphereObjX = null;
-        private static GameObject _tipCubeObjX = null;
-        private static GameObject _tipSphereObjY = null;
-        private static GameObject _tipCubeObjY = null;
-        private static GameObject _tipSphereObjZ = null;
-        private static GameObject _tipCubeObjZ = null;
-
-        private static Material _matBaseX = null;
-        private static Material _matBaseY = null;
-        private static Material _matBaseZ = null;
-        private static Material _matHover = null;
-
-        private static int _activeDragAxis = -1; // 0=X, 1=Y, 2=Z
+        // State Tracking
+        private static int _activeDragAxis = -1; // 0=X, 1=Y, 2=Z, 3=Free/Center
         public static bool IsDraggingGizmo => _activeDragAxis != -1;
         public static bool IsHoveringHandle = false;
 
@@ -577,12 +562,14 @@ namespace DeadCoreEditor
         private static Vector3 _dragStartCenterPos = Vector3.zero;
         private static Quaternion _dragStartObjRot = Quaternion.identity;
         private static Vector3 _dragStartObjScale = Vector3.one;
-        private static Vector3 _dragStartMousePos = Vector3.zero;
+        private static Vector2 _dragStartMousePos = Vector2.zero;
 
-        private static readonly Color ColorX = new Color(1.0f, 0.15f, 0.15f, 1f);
-        private static readonly Color ColorY = new Color(0.15f, 1.0f, 0.25f, 1f);
-        private static readonly Color ColorZ = new Color(0.15f, 0.55f, 1.0f, 1f);
-        private static readonly Color ColorHover = new Color(1.0f, 0.95f, 0.1f, 1f);
+        // Visual Colors
+        private static readonly Color ColorX = new Color(1.0f, 0.22f, 0.22f, 0.95f);
+        private static readonly Color ColorY = new Color(0.22f, 0.95f, 0.35f, 0.95f);
+        private static readonly Color ColorZ = new Color(0.25f, 0.60f, 1.0f, 0.95f);
+        private static readonly Color ColorHover = new Color(1.0f, 0.95f, 0.15f, 1f);
+        private static readonly Color ColorCenter = new Color(1.0f, 1.0f, 1.0f, 0.85f);
 
         /// <summary>
         /// Retrieves the exact world-space bounding box of the target hierarchy using active renderers.
@@ -600,7 +587,7 @@ namespace DeadCoreEditor
                 Renderer r = rends[i];
                 if (r == null || !r.enabled) continue;
                 string n = r.gameObject.name;
-                if (n.Contains("Proxy") || n.Contains("Highlight") || n.Contains("Beacon") || n.Contains("Gizmo")) continue;
+                if (n.Contains("Proxy") || n.Contains("Highlight") || n.Contains("Beacon")) continue;
 
                 if (!hasBounds)
                 {
@@ -622,8 +609,8 @@ namespace DeadCoreEditor
         }
 
         /// <summary>
-        /// Calculates the accurate geometric center of the target GameObject in world space,
-        /// surfacing slightly above flat platforms so X and Z handles are never buried in slabs.
+        /// Calculates the accurate geometric center of the target GameObject in world space.
+        /// Surfaces slightly above floor slabs so gizmos never get buried in concrete.
         /// </summary>
         public static Vector3 GetObjectCenter(GameObject obj)
         {
@@ -632,7 +619,6 @@ namespace DeadCoreEditor
             Bounds b = GetObjectWorldBounds(obj);
             Vector3 center = b.center;
 
-            // If object is flat (like a floor slab), surface handles slightly above top face
             if (b.size.y < 3.0f && (b.size.x > 4.0f || b.size.z > 4.0f))
             {
                 center.y = b.max.y + 0.2f;
@@ -641,83 +627,115 @@ namespace DeadCoreEditor
             return center;
         }
 
-        /// <summary>
-        /// Clones an active material from the scene (e.g. laser hazard or scene geometry)
-        /// to guarantee the shader is compiled, unlit, and rendering in DeadCore's pipeline.
-        /// </summary>
-        private static Material CreateGizmoMaterial(Color col)
+        private static void EnsureCanvasAndElements()
         {
-            Material template = null;
+            if (_canvasObj != null) return;
 
-            try
-            {
-                // 1. Try LaserManager material (unlit, glowing, emissive, highly visible)
-                LaserManager lm = GameObject.FindObjectOfType<LaserManager>();
-                if (lm != null && lm._sharedMaterial != null)
-                {
-                    template = lm._sharedMaterial;
-                }
-            }
-            catch { }
+            _canvasObj = new GameObject("Studio_ScreenSpace_Gizmo_Canvas");
+            _overlayCanvas = _canvasObj.AddComponent<Canvas>();
+            _overlayCanvas.renderMode = RenderMode.ScreenSpaceOverlay;
+            _overlayCanvas.sortingOrder = 950; // Below UI panels, above 3D world
 
-            // 2. Try harvested scene geometry material
-            if (template == null && EditorSessionManager.CachedSceneMaterial != null)
-            {
-                template = EditorSessionManager.CachedSceneMaterial;
-            }
+            _canvasObj.AddComponent<CanvasScaler>();
+            _canvasObj.AddComponent<GraphicRaycaster>();
 
-            // 3. Fallback: borrow from any active MeshRenderer in the scene
-            if (template == null)
-            {
-                MeshRenderer[] rends = GameObject.FindObjectsOfType<MeshRenderer>();
-                for (int i = 0; i < rends.Length; i++)
-                {
-                    if (rends[i] != null && rends[i].sharedMaterial != null)
-                    {
-                        template = rends[i].sharedMaterial;
-                        break;
-                    }
-                }
-            }
+            _gizmoRoot = new GameObject("Gizmo_Overlay_Root");
+            _gizmoRoot.transform.SetParent(_canvasObj.transform, false);
+            RectTransform rootRt = _gizmoRoot.AddComponent<RectTransform>();
+            rootRt.anchorMin = Vector2.zero;
+            rootRt.anchorMax = Vector2.one;
+            rootRt.sizeDelta = Vector2.zero;
 
-            Material m;
-            if (template != null)
-            {
-                m = new Material(template);
-            }
-            else
-            {
-                Shader s = Shader.Find("Diffuse") ?? Shader.Find("Standard") ?? Shader.Find("Sprites/Default");
-                m = new Material(s);
-            }
+            // Stems
+            _stemX = CreateStemUI(_gizmoRoot.transform, "Stem_X", ColorX, out _imgStemX);
+            _stemY = CreateStemUI(_gizmoRoot.transform, "Stem_Y", ColorY, out _imgStemY);
+            _stemZ = CreateStemUI(_gizmoRoot.transform, "Stem_Z", ColorZ, out _imgStemZ);
 
-            m.name = $"Gizmo_Mat_{col.r:F2}_{col.g:F2}_{col.b:F2}";
+            // Knobs
+            _knobX = CreateKnobUI(_gizmoRoot.transform, "Knob_X", "X", ColorX, out _imgKnobX, out _textKnobX);
+            _knobY = CreateKnobUI(_gizmoRoot.transform, "Knob_Y", "Y", ColorY, out _imgKnobY, out _textKnobY);
+            _knobZ = CreateKnobUI(_gizmoRoot.transform, "Knob_Z", "Z", ColorZ, out _imgKnobZ, out _textKnobZ);
 
-            // Ensure solid white texture so shaders that multiply by _MainTex don't sample 0-alpha
-            m.mainTexture = Texture2D.whiteTexture;
-            if (m.HasProperty("_MainTex")) m.SetTexture("_MainTex", Texture2D.whiteTexture);
+            // Center Ring
+            _centerRing = CreateCenterAnchorUI(_gizmoRoot.transform, "Center_Ring", ColorCenter, out _imgCenterRing);
+        }
 
-            m.color = col;
-            if (m.HasProperty("_Color")) m.SetColor("_Color", col);
-            if (m.HasProperty("_TintColor")) m.SetColor("_TintColor", col);
+        private static RectTransform CreateStemUI(Transform parent, string name, Color c, out Image img)
+        {
+            GameObject obj = new GameObject(name);
+            obj.transform.SetParent(parent, false);
 
-            // Enable emission so handles glow vibrantly even in unlit/dark environments
-            if (m.HasProperty("_EmissionColor"))
-            {
-                m.SetColor("_EmissionColor", col * 2.2f);
-                m.EnableKeyword("_EMISSION");
-            }
+            RectTransform rt = obj.AddComponent<RectTransform>();
+            rt.pivot = new Vector2(0f, 0.5f);
+            rt.anchorMin = Vector2.zero;
+            rt.anchorMax = Vector2.zero;
+            rt.sizeDelta = new Vector2(80f, 6f); // 6px thick line
 
-            m.renderQueue = 5000; // Overlay Queue
-            return m;
+            img = obj.AddComponent<Image>();
+            img.color = c;
+            img.raycastTarget = false;
+
+            return rt;
+        }
+
+        private static RectTransform CreateKnobUI(Transform parent, string name, string label, Color c, out Image img, out Text txt)
+        {
+            GameObject obj = new GameObject(name);
+            obj.transform.SetParent(parent, false);
+
+            RectTransform rt = obj.AddComponent<RectTransform>();
+            rt.pivot = new Vector2(0.5f, 0.5f);
+            rt.anchorMin = Vector2.zero;
+            rt.anchorMax = Vector2.zero;
+            rt.sizeDelta = new Vector2(28f, 28f); // 28x28px large target
+
+            img = obj.AddComponent<Image>();
+            img.color = c;
+            img.raycastTarget = false;
+
+            GameObject textObj = new GameObject("Label");
+            textObj.transform.SetParent(obj.transform, false);
+            RectTransform trt = textObj.AddComponent<RectTransform>();
+            trt.anchorMin = Vector2.zero;
+            trt.anchorMax = Vector2.one;
+            trt.sizeDelta = Vector2.zero;
+
+            txt = textObj.AddComponent<Text>();
+            txt.text = label;
+            txt.font = Resources.GetBuiltinResource<Font>("Arial.ttf");
+            txt.fontSize = 15;
+            txt.fontStyle = FontStyle.Bold;
+            txt.alignment = TextAnchor.MiddleCenter;
+            txt.color = Color.white;
+            txt.raycastTarget = false;
+
+            return rt;
+        }
+
+        private static RectTransform CreateCenterAnchorUI(Transform parent, string name, Color c, out Image img)
+        {
+            GameObject obj = new GameObject(name);
+            obj.transform.SetParent(parent, false);
+
+            RectTransform rt = obj.AddComponent<RectTransform>();
+            rt.pivot = new Vector2(0.5f, 0.5f);
+            rt.anchorMin = Vector2.zero;
+            rt.anchorMax = Vector2.zero;
+            rt.sizeDelta = new Vector2(16f, 16f);
+
+            img = obj.AddComponent<Image>();
+            img.color = c;
+            img.raycastTarget = false;
+
+            return rt;
         }
 
         /// <summary>
-        /// Updates gizmo handle transforms, distance/model scaling, and processes drag inputs.
+        /// Updates the 3D-to-2D projected handles, distance-scaling, hover highlights, and drag translations.
         /// </summary>
         public static void UpdateGizmo()
         {
-            // Auto-select starting/placed platform if entering edit mode with nothing selected
+            // Auto-select starting platform if none is selected
             if (EditorSessionManager.SelectedObject == null && EditorSessionManager.PlacedObjects.Count > 0)
             {
                 if (EditorSessionManager.LastPlacedObject != null && EditorSessionManager.LastPlacedObject.activeSelf)
@@ -747,287 +765,224 @@ namespace DeadCoreEditor
                 return;
             }
 
-            // If in SelectMode with Select tool active, auto-promote to Translate so handles show immediately
             if (EditorSessionManager.CurrentGizmoMode == EditorGizmoMode.Select)
             {
                 EditorSessionManager.CurrentGizmoMode = EditorGizmoMode.Translate;
             }
 
-            EnsureGizmoInstances();
+            EnsureCanvasAndElements();
 
             GameObject target = EditorSessionManager.SelectedObject;
+            Camera cam = EditorViewportCamera.ViewportCamera;
 
-            // CENTER GIZMO ON OBJECT'S VISUAL BOUNDS
-            Vector3 centerPos = GetObjectCenter(target);
-            _gizmoRoot.transform.position = centerPos;
+            if (cam == null) return;
 
-            if (EditorSessionManager.CurrentGizmoMode == EditorGizmoMode.Scale)
+            // 1. Calculate 3D center and orientation
+            Vector3 center3D = GetObjectCenter(target);
+            Vector3 screenCenter3D = cam.WorldToScreenPoint(center3D);
+
+            // Hide if behind the camera
+            if (screenCenter3D.z <= 0.1f)
             {
-                _gizmoRoot.transform.rotation = target.transform.rotation;
+                _gizmoRoot.SetActive(false);
+                IsHoveringHandle = false;
+                return;
             }
-            else
-            {
-                _gizmoRoot.transform.rotation = Quaternion.identity;
-            }
-
-            // SCALE GIZMO BASED ON CAMERA DISTANCE, OBJECT BOUNDS, AND PLACEMENT SCALE MULTIPLIER
-            if (EditorViewportCamera.ViewportCamera != null)
-            {
-                Camera cam = EditorViewportCamera.ViewportCamera;
-                float dist = Vector3.Distance(cam.transform.position, centerPos);
-                float screenScale = Mathf.Clamp(dist * 0.11f, 0.9f, 25.0f);
-
-                Bounds b = GetObjectWorldBounds(target);
-                float maxModelDim = Mathf.Max(b.size.x, b.size.y, b.size.z);
-                float boundFactor = 1.0f;
-                if (maxModelDim > 2.0f)
-                {
-                    boundFactor = Mathf.Clamp(maxModelDim * 0.20f, 1.0f, 4.0f);
-                }
-
-                float scaleMult = Mathf.Clamp(EditorSessionManager.ActivePlacementScale, 0.5f, 3.0f);
-
-                float finalScale = screenScale * boundFactor * scaleMult;
-                _gizmoRoot.transform.localScale = Vector3.one * finalScale;
-            }
-
-            // TOGGLE TIPS: SPHERES FOR TRANSLATE/ROTATE VS CUBES FOR SCALE
-            bool isScale = (EditorSessionManager.CurrentGizmoMode == EditorGizmoMode.Scale);
-            if (_tipSphereObjX != null) _tipSphereObjX.SetActive(!isScale);
-            if (_tipCubeObjX != null) _tipCubeObjX.SetActive(isScale);
-            if (_tipSphereObjY != null) _tipSphereObjY.SetActive(!isScale);
-            if (_tipCubeObjY != null) _tipCubeObjY.SetActive(isScale);
-            if (_tipSphereObjZ != null) _tipSphereObjZ.SetActive(!isScale);
-            if (_tipCubeObjZ != null) _tipCubeObjZ.SetActive(isScale);
 
             _gizmoRoot.SetActive(true);
 
-            int hoveredAxis = CheckHandleHover();
-            UpdateHandleColors(hoveredAxis);
-            HandleGizmoDragging(target, hoveredAxis);
-        }
+            Vector2 center2D = new Vector2(screenCenter3D.x, screenCenter3D.y);
+            _centerRing.anchoredPosition = center2D;
 
-        private static void EnsureGizmoInstances()
-        {
-            if (_gizmoRoot != null) return;
-
-            _matBaseX = CreateGizmoMaterial(ColorX);
-            _matBaseY = CreateGizmoMaterial(ColorY);
-            _matBaseZ = CreateGizmoMaterial(ColorZ);
-            _matHover = CreateGizmoMaterial(ColorHover);
-
-            _gizmoRoot = new GameObject("Studio_Transform_Gizmo_Root");
-            _gizmoRoot.layer = 0; // Layer 0 = Default (Never culled by game camera)
-
-            _axisX = CreateAxisHandle(_gizmoRoot.transform, "Gizmo_Handle_X", Vector3.right, _matBaseX,
-                out _cylRendX, out _tipSphereRendX, out _tipCubeRendX, out _tipSphereObjX, out _tipCubeObjX);
-
-            _axisY = CreateAxisHandle(_gizmoRoot.transform, "Gizmo_Handle_Y", Vector3.up, _matBaseY,
-                out _cylRendY, out _tipSphereRendY, out _tipCubeRendY, out _tipSphereObjY, out _tipCubeObjY);
-
-            _axisZ = CreateAxisHandle(_gizmoRoot.transform, "Gizmo_Handle_Z", Vector3.forward, _matBaseZ,
-                out _cylRendZ, out _tipSphereRendZ, out _tipCubeRendZ, out _tipSphereObjZ, out _tipCubeObjZ);
-        }
-
-        private static GameObject CreateAxisHandle(
-            Transform parent,
-            string name,
-            Vector3 dir,
-            Material baseMat,
-            out Renderer cylRend,
-            out Renderer tipSphereRend,
-            out Renderer tipCubeRend,
-            out GameObject tipSphereObj,
-            out GameObject tipCubeObj)
-        {
-            GameObject handle = new GameObject(name);
-            handle.transform.SetParent(parent, false);
-            handle.layer = 0;
-
-            // Thick Shaft Cylinder
-            GameObject cylinder = GameObject.CreatePrimitive(PrimitiveType.Cylinder);
-            cylinder.name = "Shaft";
-            cylinder.layer = 0;
-            cylinder.transform.SetParent(handle.transform, false);
-            cylinder.transform.localScale = new Vector3(0.18f, 1.20f, 0.18f);
-            cylinder.transform.localPosition = dir * 1.20f;
-            cylinder.transform.localRotation = Quaternion.FromToRotation(Vector3.up, dir);
-
-            Collider col = cylinder.GetComponent<Collider>();
-            if (col != null) col.isTrigger = false;
-
-            cylRend = cylinder.GetComponent<Renderer>();
-            cylRend.material = baseMat;
-            cylRend.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
-            cylRend.receiveShadows = false;
-
-            // Bold Translate Tip (Sphere)
-            tipSphereObj = GameObject.CreatePrimitive(PrimitiveType.Sphere);
-            tipSphereObj.name = "Tip_Sphere";
-            tipSphereObj.layer = 0;
-            tipSphereObj.transform.SetParent(handle.transform, false);
-            tipSphereObj.transform.localScale = new Vector3(0.65f, 0.65f, 0.65f);
-            tipSphereObj.transform.localPosition = dir * 2.65f;
-
-            Collider tCol = tipSphereObj.GetComponent<Collider>();
-            if (tCol != null) tCol.isTrigger = false;
-
-            tipSphereRend = tipSphereObj.GetComponent<Renderer>();
-            tipSphereRend.material = baseMat;
-            tipSphereRend.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
-            tipSphereRend.receiveShadows = false;
-
-            // Bold Scale Tip (Cube)
-            tipCubeObj = GameObject.CreatePrimitive(PrimitiveType.Cube);
-            tipCubeObj.name = "Tip_Cube";
-            tipCubeObj.layer = 0;
-            tipCubeObj.transform.SetParent(handle.transform, false);
-            tipCubeObj.transform.localScale = new Vector3(0.55f, 0.55f, 0.55f);
-            tipCubeObj.transform.localPosition = dir * 2.65f;
-            tipCubeObj.transform.localRotation = Quaternion.identity;
-
-            Collider cCol = tipCubeObj.GetComponent<Collider>();
-            if (cCol != null) cCol.isTrigger = false;
-
-            tipCubeRend = tipCubeObj.GetComponent<Renderer>();
-            tipCubeRend.material = baseMat;
-            tipCubeRend.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
-            tipCubeRend.receiveShadows = false;
-
-            tipCubeObj.SetActive(false);
-
-            return handle;
-        }
-
-        /// <summary>
-        /// Raycasts across all layers to cleanly detect hovering over gizmo handles.
-        /// </summary>
-        private static int CheckHandleHover()
-        {
-            if (EditorViewportCamera.ViewportCamera == null || _gizmoRoot == null || !_gizmoRoot.activeSelf)
+            // 2. Determine world directions based on Gizmo Mode
+            Vector3 dirX, dirY, dirZ;
+            if (EditorSessionManager.CurrentGizmoMode == EditorGizmoMode.Scale)
             {
-                IsHoveringHandle = false;
-                return -1;
+                dirX = target.transform.right;
+                dirY = target.transform.up;
+                dirZ = target.transform.forward;
+            }
+            else
+            {
+                dirX = Vector3.right;
+                dirY = Vector3.up;
+                dirZ = Vector3.forward;
             }
 
-            Ray ray = EditorViewportCamera.ViewportCamera.ScreenPointToRay(Input.mousePosition);
-            RaycastHit[] hits = Physics.RaycastAll(ray, 5000f, ~0, QueryTriggerInteraction.Collide);
+            // 3. Scale axis reach based on model bounds and scale multiplier
+            Bounds b = GetObjectWorldBounds(target);
+            float maxDim = Mathf.Max(b.size.x, b.size.y, b.size.z);
+            float boundReach = Mathf.Max(1.6f, maxDim * 0.55f);
+            float scaleMult = Mathf.Clamp(EditorSessionManager.ActivePlacementScale, 0.5f, 3.0f);
+            float worldAxisLength = boundReach * scaleMult;
 
-            int closestAxis = -1;
-            float closestDist = float.MaxValue;
+            // 4. Project 3D tips to 2D screen positions
+            Vector3 tipX3D = cam.WorldToScreenPoint(center3D + dirX * worldAxisLength);
+            Vector3 tipY3D = cam.WorldToScreenPoint(center3D + dirY * worldAxisLength);
+            Vector3 tipZ3D = cam.WorldToScreenPoint(center3D + dirZ * worldAxisLength);
 
-            for (int i = 0; i < hits.Length; i++)
-            {
-                Collider c = hits[i].collider;
-                if (c == null) continue;
+            Vector2 tipX2D = (tipX3D.z > 0.1f) ? new Vector2(tipX3D.x, tipX3D.y) : (center2D + Vector2.right * 70f);
+            Vector2 tipY2D = (tipY3D.z > 0.1f) ? new Vector2(tipY3D.x, tipY3D.y) : (center2D + Vector2.up * 70f);
+            Vector2 tipZ2D = (tipZ3D.z > 0.1f) ? new Vector2(tipZ3D.x, tipZ3D.y) : (center2D + new Vector2(0.7f, 0.7f) * 70f);
 
-                Transform tr = c.transform;
-                int axis = -1;
+            // Clamp screen length so gizmo is never a microscopic dot or flying off the monitor
+            tipX2D = EnforceScreenReach(center2D, tipX2D);
+            tipY2D = EnforceScreenReach(center2D, tipY2D);
+            tipZ2D = EnforceScreenReach(center2D, tipZ2D);
 
-                if (_axisX != null && tr.IsChildOf(_axisX.transform)) axis = 0;
-                else if (_axisY != null && tr.IsChildOf(_axisY.transform)) axis = 1;
-                else if (_axisZ != null && tr.IsChildOf(_axisZ.transform)) axis = 2;
+            // 5. Update UI Stems and Knobs
+            UpdateStemAndKnob(_stemX, _knobX, center2D, tipX2D);
+            UpdateStemAndKnob(_stemY, _knobY, center2D, tipY2D);
+            UpdateStemAndKnob(_stemZ, _knobZ, center2D, tipZ2D);
 
-                if (axis != -1 && hits[i].distance < closestDist)
-                {
-                    closestDist = hits[i].distance;
-                    closestAxis = axis;
-                }
-            }
-
-            IsHoveringHandle = (closestAxis != -1);
-            return closestAxis;
+            // 6. Handle Mouse Hover & Dragging
+            int hovered = CheckScreenHover(center2D, tipX2D, tipY2D, tipZ2D);
+            UpdateHandleColors(hovered);
+            HandleScreenDragging(target, cam, center3D, dirX, dirY, dirZ, center2D, tipX2D, tipY2D, tipZ2D, hovered);
         }
 
-        private static void UpdateHandleColors(int hoveredAxis)
+        private static Vector2 EnforceScreenReach(Vector2 center, Vector2 tip)
         {
-            int targetAxis = (_activeDragAxis != -1) ? _activeDragAxis : hoveredAxis;
-
-            if (_cylRendX != null) _cylRendX.material = (targetAxis == 0) ? _matHover : _matBaseX;
-            if (_tipSphereRendX != null) _tipSphereRendX.material = (targetAxis == 0) ? _matHover : _matBaseX;
-            if (_tipCubeRendX != null) _tipCubeRendX.material = (targetAxis == 0) ? _matHover : _matBaseX;
-
-            if (_cylRendY != null) _cylRendY.material = (targetAxis == 1) ? _matHover : _matBaseY;
-            if (_tipSphereRendY != null) _tipSphereRendY.material = (targetAxis == 1) ? _matHover : _matBaseY;
-            if (_tipCubeRendY != null) _tipCubeRendY.material = (targetAxis == 1) ? _matHover : _matBaseY;
-
-            if (_cylRendZ != null) _cylRendZ.material = (targetAxis == 2) ? _matHover : _matBaseZ;
-            if (_tipSphereRendZ != null) _tipSphereRendZ.material = (targetAxis == 2) ? _matHover : _matBaseZ;
-            if (_tipCubeRendZ != null) _tipCubeRendZ.material = (targetAxis == 2) ? _matHover : _matBaseZ;
+            Vector2 delta = tip - center;
+            float dist = delta.magnitude;
+            float clamped = Mathf.Clamp(dist, 70f, 260f); // Minimum 70px reach, max 260px
+            return center + delta.normalized * clamped;
         }
 
-        private static void HandleGizmoDragging(GameObject target, int hoveredAxis)
+        private static void UpdateStemAndKnob(RectTransform stem, RectTransform knob, Vector2 origin, Vector2 target)
         {
-            if (EditorViewportCamera.ViewportCamera == null) return;
-            Camera cam = EditorViewportCamera.ViewportCamera;
+            Vector2 dir = target - origin;
+            float dist = dir.magnitude;
+            float angle = Mathf.Atan2(dir.y, dir.x) * Mathf.Rad2Deg;
 
-            // Mouse down: Start drag
+            stem.anchoredPosition = origin;
+            stem.sizeDelta = new Vector2(dist, 6f);
+            stem.localRotation = Quaternion.Euler(0f, 0f, angle);
+
+            knob.anchoredPosition = target;
+        }
+
+        private static int CheckScreenHover(Vector2 c, Vector2 x, Vector2 y, Vector2 z)
+        {
+            Vector2 mouse = Input.mousePosition;
+
+            // Distance to knobs (radius 22px)
+            if (Vector2.Distance(mouse, x) < 22f) return 0;
+            if (Vector2.Distance(mouse, y) < 22f) return 1;
+            if (Vector2.Distance(mouse, z) < 22f) return 2;
+
+            // Distance to stems (within 10px of line)
+            if (DistanceToSegment(mouse, c, x) < 10f) return 0;
+            if (DistanceToSegment(mouse, c, y) < 10f) return 1;
+            if (DistanceToSegment(mouse, c, z) < 10f) return 2;
+
+            // Center ring
+            if (Vector2.Distance(mouse, c) < 14f) return 3;
+
+            return -1;
+        }
+
+        private static float DistanceToSegment(Vector2 p, Vector2 a, Vector2 b)
+        {
+            Vector2 ab = b - a;
+            float lenSq = ab.sqrMagnitude;
+            if (lenSq < 0.001f) return Vector2.Distance(p, a);
+
+            float t = Mathf.Clamp01(Vector2.Dot(p - a, ab) / lenSq);
+            Vector2 proj = a + t * ab;
+            return Vector2.Distance(p, proj);
+        }
+
+        private static void UpdateHandleColors(int hovered)
+        {
+            int active = (_activeDragAxis != -1) ? _activeDragAxis : hovered;
+            IsHoveringHandle = (active != -1);
+
+            _imgStemX.color = (active == 0) ? ColorHover : ColorX;
+            _imgKnobX.color = (active == 0) ? ColorHover : ColorX;
+
+            _imgStemY.color = (active == 1) ? ColorHover : ColorY;
+            _imgKnobY.color = (active == 1) ? ColorHover : ColorY;
+
+            _imgStemZ.color = (active == 2) ? ColorHover : ColorZ;
+            _imgKnobZ.color = (active == 2) ? ColorHover : ColorZ;
+
+            _imgCenterRing.color = (active == 3) ? ColorHover : ColorCenter;
+        }
+
+        private static void HandleScreenDragging(
+            GameObject target,
+            Camera cam,
+            Vector3 center3D,
+            Vector3 dirX,
+            Vector3 dirY,
+            Vector3 dirZ,
+            Vector2 center2D,
+            Vector2 tipX2D,
+            Vector2 tipY2D,
+            Vector2 tipZ2D,
+            int hovered)
+        {
+            // Mouse Down: Engage Drag
             if (Input.GetMouseButtonDown(0) && !Input.GetMouseButton(1) && !StudioUIManager.IsPointerOverUI())
             {
-                if (hoveredAxis != -1)
+                if (hovered != -1)
                 {
-                    _activeDragAxis = hoveredAxis;
+                    _activeDragAxis = hovered;
                     _dragStartObjPos = target.transform.position;
-                    _dragStartCenterPos = GetObjectCenter(target);
+                    _dragStartCenterPos = center3D;
                     _dragStartObjRot = target.transform.rotation;
                     _dragStartObjScale = target.transform.localScale;
                     _dragStartMousePos = Input.mousePosition;
                 }
             }
 
-            // Mouse held down: Process transform modification
+            // Mouse Held: Process Real-Time 3D Transformation
             if (Input.GetMouseButton(0) && _activeDragAxis != -1)
             {
-                Vector3 delta = Input.mousePosition - _dragStartMousePos;
-                Vector3 worldAxis = (_activeDragAxis == 0) ? Vector3.right : (_activeDragAxis == 1 ? Vector3.up : Vector3.forward);
+                Vector2 mouseDelta = (Vector2)Input.mousePosition - _dragStartMousePos;
+
+                Vector3 chosenAxis3D = Vector3.right;
+                Vector2 chosenStem2D = Vector2.right;
+
+                if (_activeDragAxis == 0) { chosenAxis3D = dirX; chosenStem2D = (tipX2D - center2D).normalized; }
+                else if (_activeDragAxis == 1) { chosenAxis3D = dirY; chosenStem2D = (tipY2D - center2D).normalized; }
+                else if (_activeDragAxis == 2) { chosenAxis3D = dirZ; chosenStem2D = (tipZ2D - center2D).normalized; }
+
+                float screenProj = Vector2.Dot(mouseDelta, chosenStem2D);
+                float distToCam = Vector3.Distance(cam.transform.position, _dragStartCenterPos);
+                float worldMoveDelta = (screenProj / 140f) * Mathf.Max(0.5f, distToCam * 0.12f);
 
                 if (EditorSessionManager.CurrentGizmoMode == EditorGizmoMode.Translate)
                 {
-                    Vector3 screenAxis = cam.WorldToScreenPoint(_dragStartCenterPos + worldAxis) - cam.WorldToScreenPoint(_dragStartCenterPos);
-                    screenAxis.z = 0f;
-
-                    float proj = Vector3.Dot(delta, screenAxis.normalized);
-                    float distFactor = Vector3.Distance(cam.transform.position, _dragStartCenterPos) * 0.0018f;
-                    Vector3 targetDelta = worldAxis * (proj * distFactor);
+                    Vector3 targetPos = _dragStartObjPos + chosenAxis3D * worldMoveDelta;
 
                     float grid = EditorSessionManager.CurrentGridSnap;
                     if (grid > 0.01f)
                     {
-                        Vector3 potentialPos = _dragStartObjPos + targetDelta;
-                        potentialPos = new Vector3(
-                            Mathf.Round(potentialPos.x / grid) * grid,
-                            Mathf.Round(potentialPos.y / grid) * grid,
-                            Mathf.Round(potentialPos.z / grid) * grid
+                        targetPos = new Vector3(
+                            Mathf.Round(targetPos.x / grid) * grid,
+                            Mathf.Round(targetPos.y / grid) * grid,
+                            Mathf.Round(targetPos.z / grid) * grid
                         );
-                        target.transform.position = potentialPos;
                     }
-                    else
-                    {
-                        target.transform.position = _dragStartObjPos + targetDelta;
-                    }
+                    target.transform.position = targetPos;
                 }
                 else if (EditorSessionManager.CurrentGizmoMode == EditorGizmoMode.Rotate)
                 {
-                    float angle = (delta.x - delta.y) * 0.55f;
+                    float angle = (mouseDelta.x - mouseDelta.y) * 0.65f;
                     float grid = EditorSessionManager.CurrentGridSnap;
                     if (grid > 0.01f)
                     {
                         float step = (grid >= 2.0f) ? 45f : 15f;
                         angle = Mathf.Round(angle / step) * step;
                     }
-                    target.transform.rotation = _dragStartObjRot * Quaternion.AngleAxis(angle, worldAxis);
+                    target.transform.rotation = _dragStartObjRot * Quaternion.AngleAxis(angle, chosenAxis3D);
                 }
                 else if (EditorSessionManager.CurrentGizmoMode == EditorGizmoMode.Scale)
                 {
-                    Vector3 screenAxis = cam.WorldToScreenPoint(_dragStartCenterPos + worldAxis) - cam.WorldToScreenPoint(_dragStartCenterPos);
-                    screenAxis.z = 0f;
-
-                    float proj = Vector3.Dot(delta, screenAxis.normalized);
-                    float distFactor = Vector3.Distance(cam.transform.position, _dragStartCenterPos) * 0.0018f;
-
-                    // Proportional scaling based on object's existing model scale and scale multiplier
-                    float scaleFactor = 1.0f + (proj * distFactor * 1.5f);
-                    float newScale = Mathf.Max(0.02f, _dragStartObjScale.x * scaleFactor);
+                    float factor = 1.0f + (screenProj / 120f);
+                    float newScale = Mathf.Max(0.01f, _dragStartObjScale.x * factor);
 
                     float grid = EditorSessionManager.CurrentGridSnap;
                     if (grid > 0.01f)
@@ -1042,7 +997,7 @@ namespace DeadCoreEditor
                 EditorSessionManager.UpdateSelectionHighlight();
             }
 
-            // Mouse released: Commit to Undo stack
+            // Mouse Up: Commit to Undo Stack
             if (Input.GetMouseButtonUp(0) && _activeDragAxis != -1)
             {
                 EditorSessionManager.UndoHistory.Push(new HistoryRecord
@@ -1061,37 +1016,14 @@ namespace DeadCoreEditor
             }
         }
 
-        /// <summary>
-        /// Cleans up gizmo hierarchy on exit.
-        /// </summary>
         public static void DestroyGizmo()
         {
-            if (_gizmoRoot != null)
+            if (_canvasObj != null)
             {
-                GameObject.Destroy(_gizmoRoot);
+                GameObject.Destroy(_canvasObj);
+                _canvasObj = null;
+                _overlayCanvas = null;
                 _gizmoRoot = null;
-                _axisX = null;
-                _axisY = null;
-                _axisZ = null;
-
-                _cylRendX = null;
-                _tipSphereRendX = null;
-                _tipCubeRendX = null;
-
-                _cylRendY = null;
-                _tipSphereRendY = null;
-                _tipCubeRendY = null;
-
-                _cylRendZ = null;
-                _tipSphereRendZ = null;
-                _tipCubeRendZ = null;
-
-                _tipSphereObjX = null;
-                _tipCubeObjX = null;
-                _tipSphereObjY = null;
-                _tipCubeObjY = null;
-                _tipSphereObjZ = null;
-                _tipCubeObjZ = null;
             }
             _activeDragAxis = -1;
             IsHoveringHandle = false;
