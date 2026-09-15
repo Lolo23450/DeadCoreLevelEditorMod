@@ -616,7 +616,6 @@ namespace DeadCoreEditor
             }
         }
     }
-
     // =========================================================================
     // PREVENTS TURRET BULLETS FROM GETTING STUCK ON TURRET COLLIDERS
     // =========================================================================
@@ -649,6 +648,7 @@ namespace DeadCoreEditor
 
                     if (!isBullet) continue;
 
+                    // Ignore collisions against the turret body and detection trigger
                     Collider[] bulletCols = hitCol.transform.root.GetComponentsInChildren<Collider>(true);
                     for (int b = 0; b < bulletCols.Length; b++)
                     {
@@ -668,11 +668,16 @@ namespace DeadCoreEditor
                         }
                     }
 
+                    // Preserve the bullet's intended aim trajectory towards the player
                     Rigidbody rb = hitGo.GetComponent<Rigidbody>() ?? hitCol.transform.root.GetComponent<Rigidbody>();
                     if (rb != null)
                     {
-                        Vector3 forwardDir = __instance.transform.forward;
-                        rb.velocity = forwardDir * (__instance._firePower > 100f ? __instance._firePower * 0.05f : 35f);
+                        Vector3 aimDir = (rb.velocity.sqrMagnitude > 0.1f)
+                            ? rb.velocity.normalized
+                            : hitGo.transform.forward;
+
+                        float speed = Mathf.Max(rb.velocity.magnitude, 35f);
+                        rb.velocity = aimDir * speed;
                     }
                 }
             }
