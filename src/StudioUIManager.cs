@@ -1414,9 +1414,17 @@ namespace DeadCoreEditor
             }
             else
             {
+                // Fit cleanly inside parent container without 100x100 overflow
+                rt.anchorMin = Vector2.zero;
+                rt.anchorMax = Vector2.one;
+                rt.offsetMin = Vector2.zero;
+                rt.offsetMax = Vector2.zero;
+                rt.sizeDelta = Vector2.zero;
+
                 LayoutElement le = obj.AddComponent<LayoutElement>();
                 le.preferredWidth = width;
-                le.flexibleWidth = 0;
+                le.preferredHeight = 26f;
+                le.flexibleWidth = 1f;
             }
 
             Image img = obj.AddComponent<Image>();
@@ -1520,6 +1528,15 @@ namespace DeadCoreEditor
             rt.anchorMax = new Vector2(1f, 0f);
             rt.pivot = new Vector2(0.5f, 0.5f);
             rt.sizeDelta = new Vector2(0f, height);
+
+            // Enforce automatic horizontal/vertical boundary clamping on all children
+            HorizontalLayoutGroup hlg = row.AddComponent<HorizontalLayoutGroup>();
+            hlg.padding = new RectOffset(2, 2, 2, 2);
+            hlg.spacing = 4f;
+            hlg.childControlWidth = true;
+            hlg.childControlHeight = true;
+            hlg.childForceExpandWidth = true;
+            hlg.childForceExpandHeight = true;
 
             LayoutElement le = row.AddComponent<LayoutElement>();
             le.preferredHeight = height;

@@ -1307,13 +1307,6 @@ namespace DeadCoreEditor
             if (lightObj == null || cfg == null) return;
             PlacedLights[lightObj] = cfg;
 
-            // 1. Purge any legacy cone/cylinder meshes if they still exist
-            Transform legacyBeam = lightObj.transform.Find("Volumetric_Beam");
-            if (legacyBeam != null)
-            {
-                GameObject.DestroyImmediate(legacyBeam.gameObject);
-            }
-
             Light l = lightObj.GetComponentInChildren<Light>();
             if (l != null)
             {
@@ -1329,7 +1322,8 @@ namespace DeadCoreEditor
                         targetSun.type = LightType.Directional;
                         targetSun.color = cfg.Color;
                         targetSun.transform.rotation = lightObj.transform.rotation;
-                        targetSun.intensity = Mathf.Max(0.1f, cfg.Intensity) * 4000f; // HDRP Lux
+                        // HDRP Sunlight: 4,000 to 40,000 Lux
+                        targetSun.intensity = Mathf.Clamp(cfg.Intensity, 0.1f, 10f) * 4000f;
                         RenderSettings.sun = targetSun;
 
                         ApplyHDRPVolumetricSettings(targetSun.gameObject, cfg.VolumetricIntensity);
@@ -1342,7 +1336,8 @@ namespace DeadCoreEditor
                     l.range = 150f;
                     l.spotAngle = Mathf.Clamp(cfg.SpotAngle, 5f, 150f);
                     l.color = cfg.Color;
-                    l.intensity = Mathf.Pow(Mathf.Max(0.1f, cfg.Intensity), 2.2f) * 8000f; // HDRP Lumens
+                    // HDRP Spotlight: 4,000 to 120,000 Lumens (required for visible volumetric fog scattering)
+                    l.intensity = Mathf.Clamp(cfg.Intensity, 0.1f, 30f) * 4000f;
 
                     ApplyHDRPVolumetricSettings(l.gameObject, cfg.VolumetricIntensity);
                 }
@@ -1350,59 +1345,92 @@ namespace DeadCoreEditor
                 l.enabled = true;
             }
 
-            // 2. Also forward color/intensity to any native light lens shaders if present
+            // Forward volumetric parameters to native light shaders/lens materials if present
             Renderer[] rends = lightObj.GetComponentsInChildren<Renderer>(true);
             for (int i = 0; i < rends.Length; i++)
             {
-                if (rends[i] == null) continue;
+                if (rends[i] == null || rends[i].material == null) continue;
                 Material m = rends[i].material;
-                if (m == null) continue;
 
+                float volVal = Mathf.Clamp(cfg.VolumetricIntensity, 0f, 16f);
+
+                if (m.HasProperty("_VolumetricIntensity")) m.SetFloat("_VolumetricIntensity", volVal);
+                if (m.HasProperty("_VolumetricDimmer")) m.SetFloat("_VolumetricDimmer", volVal);
+                if (m.HasProperty("_Volumetric")) m.SetFloat("_Volumetric", volVal);
+                if (m.HasProperty("_Dimmer")) m.SetFloat("_Dimmer", volVal);
                 if (m.HasProperty("_Color")) m.SetColor("_Color", cfg.Color);
                 if (m.HasProperty("_EmissionColor"))
                 {
                     m.SetColor("_EmissionColor", cfg.Color * (cfg.Intensity * 0.5f));
                     m.EnableKeyword("_EMISSION");
                 }
-                if (m.HasProperty("_VolumetricDimmer")) m.SetFloat("_VolumetricDimmer", cfg.VolumetricIntensity);
-                if (m.HasProperty("_VolumetricIntensity")) m.SetFloat("_VolumetricIntensity", cfg.VolumetricIntensity);
             }
         }
 
         /// <summary>
-        /// Directly configures HDRP's native volumetric scattering dimmer on the light.
+        /// Robust HDRP Volumetric Controller: locates HDAdditionalLightData across namespaces
+        /// and applies volumetricDimmer and affectsVolumetric to the light.
         /// </summary>
         private static void ApplyHDRPVolumetricSettings(GameObject lightGo, float volumetricIntensity)
         {
             if (lightGo == null) return;
 
-            // Find Unity HDRP's HDAdditionalLightData component on the light
-            Component hdLight = lightGo.GetComponent("HDAdditionalLightData");
+            Component hdLight = null;
+            Component[] comps = lightGo.GetComponentsInChildren<Component>(true);
+
+            // Full namespace scan for Unity HDRP Additional Light Data
+            for (int i = 0; i < comps.Length; i++)
+            {
+                if (comps[i] == null) continue;
+                string fullName = comps[i].GetIl2CppType().FullName;
+                if (fullName.Contains("HDAdditionalLightData") || fullName.Contains("AdditionalLightData"))
+                {
+                    hdLight = comps[i];
+                    break;
+                }
+            }
+
             if (hdLight != null)
             {
                 try
                 {
-                    var type = hdLight.GetType();
+                    Type type = hdLight.GetType();
+                    float dimmer = Mathf.Clamp(volumetricIntensity, 0f, 16f);
+                    bool enableVol = volumetricIntensity > 0.01f;
 
-                    // volumetricDimmer controls the light's volumetric multiplier in HDRP (0.0 to 16.0)
-                    var dimmerProp = type.GetProperty("volumetricDimmer");
-                    if (dimmerProp != null)
-                    {
-                        dimmerProp.SetValue(hdLight, Mathf.Clamp(volumetricIntensity, 0f, 16f));
-                    }
-
-                    // Ensure volumetric scattering is toggled on for this light
-                    var affectsVolProp = type.GetProperty("affectsVolumetric");
-                    if (affectsVolProp != null)
-                    {
-                        affectsVolProp.SetValue(hdLight, volumetricIntensity > 0.01f);
-                    }
+                    // Set volumetric dimmer and activation properties & backing fields
+                    SetFieldOrProperty(type, hdLight, "volumetricDimmer", dimmer);
+                    SetFieldOrProperty(type, hdLight, "m_VolumetricDimmer", dimmer);
+                    SetFieldOrProperty(type, hdLight, "affectsVolumetric", enableVol);
+                    SetFieldOrProperty(type, hdLight, "m_AffectsVolumetric", enableVol);
+                    SetFieldOrProperty(type, hdLight, "useVolumetric", enableVol);
+                    SetFieldOrProperty(type, hdLight, "m_UseVolumetric", enableVol);
+                    SetFieldOrProperty(type, hdLight, "volumetricShadowDimmer", enableVol ? 1f : 0f);
                 }
                 catch (Exception ex)
                 {
-                    MelonLogger.Warning($"[HDRP Light] Could not set volumetric dimmer: {ex.Message}");
+                    MelonLogger.Warning($"[HDRP Light] Volumetric dimmer hook error: {ex.Message}");
                 }
             }
+        }
+
+        private static void SetFieldOrProperty(Type type, object target, string memberName, object value)
+        {
+            try
+            {
+                var prop = type.GetProperty(memberName, System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+                if (prop != null && prop.CanWrite)
+                {
+                    prop.SetValue(target, value, null);
+                    return;
+                }
+                var field = type.GetField(memberName, System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+                if (field != null)
+                {
+                    field.SetValue(target, value);
+                }
+            }
+            catch { }
         }
 
         public static void ForceRefreshAllLights()
