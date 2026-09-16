@@ -1127,10 +1127,9 @@ namespace DeadCoreEditor
             shlg.childForceExpandHeight = true;
 
             CreateSizeFilterButton(sizeBar.transform, "ALL SIZES", AssetSizeTier.All, 85f);
-            CreateSizeFilterButton(sizeBar.transform, "SMALL <4m", AssetSizeTier.Small, 90f);
-            CreateSizeFilterButton(sizeBar.transform, "MEDIUM 4-15m", AssetSizeTier.Medium, 105f);
-            CreateSizeFilterButton(sizeBar.transform, "LARGE 15-45m", AssetSizeTier.Large, 105f);
-            CreateSizeFilterButton(sizeBar.transform, "GIANT >45m", AssetSizeTier.Giant, 95f);
+            CreateSizeFilterButton(sizeBar.transform, "SMALL 2-5m", AssetSizeTier.Small, 95f);
+            CreateSizeFilterButton(sizeBar.transform, "MEDIUM 5-11m", AssetSizeTier.Medium, 105f);
+            CreateSizeFilterButton(sizeBar.transform, "LARGE 11-50m", AssetSizeTier.Large, 105f);
 
             Button sortBtn = CreateButton(sizeBar.transform, "Btn_ToggleSortOrder", "SIZE: ▲ ASC", 100f, () =>
             {
@@ -1357,10 +1356,9 @@ namespace DeadCoreEditor
                 bdrt.sizeDelta = Vector2.zero;
 
                 Color badgeColor = asset.IsPrefabInstance ? new Color(0.65f, 0.2f, 0.95f, 0.9f) :
-                                  (asset.SizeTier == AssetSizeTier.Small ? new Color(0.2f, 0.85f, 0.4f, 0.85f) :
-                                  (asset.SizeTier == AssetSizeTier.Medium ? new Color(0.1f, 0.7f, 1.0f, 0.85f) :
-                                  (asset.SizeTier == AssetSizeTier.Large ? new Color(1.0f, 0.6f, 0.1f, 0.85f) :
-                                   new Color(0.9f, 0.25f, 0.25f, 0.85f))));
+                  (asset.SizeTier == AssetSizeTier.Small ? new Color(0.2f, 0.85f, 0.4f, 0.85f) :
+                  (asset.SizeTier == AssetSizeTier.Medium ? new Color(0.1f, 0.7f, 1.0f, 0.85f) :
+                   new Color(1.0f, 0.55f, 0.15f, 0.85f)));
 
                 Image badgeImg = badgeObj.AddComponent<Image>();
                 badgeImg.color = badgeColor;

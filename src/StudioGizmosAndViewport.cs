@@ -1144,6 +1144,24 @@ namespace DeadCoreEditor
                 Vector3 axis3D = (_activeDragAxis == 0) ? Vector3.right : (_activeDragAxis == 1 ? Vector3.up : Vector3.forward);
                 float grid = EditorSessionManager.CurrentGridSnap;
 
+                // Filter targets: if both parent and child are selected, only transform the parent
+                List<GameObject> rootTargets = new List<GameObject>();
+                for (int i = 0; i < targets.Count; i++)
+                {
+                    GameObject t = targets[i];
+                    if (t == null) continue;
+                    bool isChildOfOther = false;
+                    for (int j = 0; j < targets.Count; j++)
+                    {
+                        if (i != j && targets[j] != null && t.transform.IsChildOf(targets[j].transform))
+                        {
+                            isChildOfOther = true;
+                            break;
+                        }
+                    }
+                    if (!isChildOfOther) rootTargets.Add(t);
+                }
+
                 if (mode == EditorGizmoMode.Translate)
                 {
                     Vector3 camFwd = cam.transform.forward;
@@ -1167,21 +1185,20 @@ namespace DeadCoreEditor
 
                         Vector3 deltaPos = axis3D * proj;
 
-                        for (int i = 0; i < targets.Count; i++)
+                        for (int i = 0; i < rootTargets.Count; i++)
                         {
-                            GameObject go = targets[i];
+                            GameObject go = rootTargets[i];
                             if (go != null && _dragStartPositions.ContainsKey(go))
                             {
                                 go.transform.position = _dragStartPositions[go] + deltaPos;
 
-                                Rigidbody[] rbs = go.GetComponentsInChildren<Rigidbody>(true);
-                                for (int r = 0; r < rbs.Length; r++)
+                                // Only sync the target's OWN Rigidbody (never force children to parent's position)
+                                Rigidbody rb = go.GetComponent<Rigidbody>();
+                                if (rb != null)
                                 {
-                                    if (rbs[r] != null)
-                                    {
-                                        rbs[r].position = go.transform.position;
-                                        rbs[r].velocity = Vector3.zero;
-                                    }
+                                    rb.position = go.transform.position;
+                                    rb.velocity = Vector3.zero;
+                                    rb.angularVelocity = Vector3.zero;
                                 }
                             }
                         }
@@ -1211,9 +1228,9 @@ namespace DeadCoreEditor
                         }
 
                         Quaternion rot = Quaternion.AngleAxis(angle, axis3D);
-                        for (int i = 0; i < targets.Count; i++)
+                        for (int i = 0; i < rootTargets.Count; i++)
                         {
-                            GameObject go = targets[i];
+                            GameObject go = rootTargets[i];
                             if (go != null && _dragStartPositions.ContainsKey(go))
                             {
                                 Vector3 offset = _dragStartPositions[go] - _dragStartCenterPos;
@@ -1231,9 +1248,9 @@ namespace DeadCoreEditor
                     if (grid > 0.01f) factor = Mathf.Round(factor / 0.1f) * 0.1f;
                     factor = Mathf.Max(0.02f, factor);
 
-                    for (int i = 0; i < targets.Count; i++)
+                    for (int i = 0; i < rootTargets.Count; i++)
                     {
-                        GameObject go = targets[i];
+                        GameObject go = rootTargets[i];
                         if (go == null || !_dragStartScales.ContainsKey(go)) continue;
 
                         Vector3 baseScale = _dragStartScales[go];

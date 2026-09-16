@@ -40,7 +40,7 @@ namespace DeadCoreEditor
         ParameterChange
     }
 
-    public enum AssetSizeTier { All = 0, Small = 1, Medium = 2, Large = 3, Giant = 4 }
+    public enum AssetSizeTier { All = 0, Small = 1, Medium = 2, Large = 3 }
 
     public class CatalogAsset
     {
@@ -94,14 +94,12 @@ namespace DeadCoreEditor
             Dimensions = b.size;
             MaxDimension = Mathf.Max(Dimensions.x, Mathf.Max(Dimensions.y, Dimensions.z));
 
-            if (MaxDimension < 4.0f)
+            if (MaxDimension < 5.0f)
                 SizeTier = AssetSizeTier.Small;
-            else if (MaxDimension < 15.0f)
+            else if (MaxDimension < 11.0f)
                 SizeTier = AssetSizeTier.Medium;
-            else if (MaxDimension < 45.0f)
-                SizeTier = AssetSizeTier.Large;
             else
-                SizeTier = AssetSizeTier.Giant;
+                SizeTier = AssetSizeTier.Large;
         }
 
         public string GetSizeBadgeText()

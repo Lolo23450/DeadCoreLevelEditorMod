@@ -729,8 +729,7 @@ namespace DeadCoreEditor
                     if (ts[s] != null) ts[s].enabled = active;
                 }
 
-                // 2. Freeze all Animators and Animations (Checkpoints, Gates, Platforms)
-                // This prevents Unity animations from locking transform.position in Edit Mode
+                // 2. Freeze Animators and Animations in Edit Mode
                 Animator[] animators = obj.GetComponentsInChildren<Animator>(true);
                 for (int a = 0; a < animators.Length; a++)
                 {
@@ -743,18 +742,15 @@ namespace DeadCoreEditor
                     if (animations[a] != null) animations[a].enabled = active;
                 }
 
-                // 3. Make all rigidbodies kinematic in Edit Mode so they don't fall or resist gizmo moves
+                // 3. Keep placed objects kinematic so parented transforms follow parents
                 Rigidbody[] rbs = obj.GetComponentsInChildren<Rigidbody>(true);
                 for (int r = 0; r < rbs.Length; r++)
                 {
                     if (rbs[r] != null)
                     {
-                        rbs[r].isKinematic = !active;
-                        if (!active)
-                        {
-                            rbs[r].velocity = Vector3.zero;
-                            rbs[r].angularVelocity = Vector3.zero;
-                        }
+                        rbs[r].isKinematic = true;
+                        rbs[r].velocity = Vector3.zero;
+                        rbs[r].angularVelocity = Vector3.zero;
                     }
                 }
             }
