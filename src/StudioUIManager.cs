@@ -453,6 +453,11 @@ namespace DeadCoreEditor
             CreateButton(_toolbarPanel.transform, "Btn_Rotate", "Rotate", 75f, () => SetGizmoMode(EditorGizmoMode.Rotate));
             CreateButton(_toolbarPanel.transform, "Btn_Scale", "Scale", 75f, () => SetGizmoMode(EditorGizmoMode.Scale));
 
+            CreateButton(_toolbarPanel.transform, "Btn_MakeInstance", "[+ Instance]", 95f, () =>
+            {
+                PrefabInstanceManager.CreateInstanceTemplateFromSelection();
+            }, new Color(0.6f, 0.25f, 0.85f, 1f));
+
             Button alignBtn = CreateButton(_toolbarPanel.transform, "Btn_SurfaceAlign", "Align: OFF", 95f, () =>
             {
                 EditorSessionManager.AutoAlignToSurface = !EditorSessionManager.AutoAlignToSurface;
@@ -1087,7 +1092,7 @@ namespace DeadCoreEditor
             thlg.childForceExpandWidth = false;
             thlg.childForceExpandHeight = true;
 
-            string[] categories = new string[] { "Architecture", "Platforms", "Gameplay", "Hazards", "All" };
+            string[] categories = new string[] { "Architecture", "Gameplay", "Hazards", "Instances", "All" };
             for (int i = 0; i < categories.Length; i++)
             {
                 string cat = categories[i];
@@ -1215,36 +1220,45 @@ namespace DeadCoreEditor
                 if (!string.IsNullOrEmpty(search) && !asset.DisplayName.ToLower().Contains(search))
                     continue;
 
+                // 1. Architecture: Includes all building blocks, floors, platforms, walls, and columns
                 if (_activeBrowserCategory == "Architecture")
                 {
                     bool isArch = asset.Category == AssetCategory.Building;
+
+                    // Ensure gameplay entities and hazards never leak into Architecture
                     if (asset.IsJumper || asset.IsCheckPoint || asset.IsSpawnGate || asset.IsGoalGate ||
                         asset.IsLaser || asset.IsRotatingLaser || asset.IsTurret || asset.IsHelix)
                     {
                         isArch = false;
                     }
+
                     if (!isArch) continue;
                 }
-                else if (_activeBrowserCategory == "Platforms")
-                {
-                    bool isPlat = asset.SubCategory.Equals("Platforms", StringComparison.OrdinalIgnoreCase) ||
-                                  asset.DisplayName.ToLower().Contains("platform") ||
-                                  asset.DisplayName.ToLower().Contains("floor") ||
-                                  asset.DisplayName.ToLower().Contains("16x16");
-                    if (!isPlat) continue;
-                }
+                // 2. Gameplay: Launch pads, checkpoints, gates, and lighting
                 else if (_activeBrowserCategory == "Gameplay")
                 {
                     bool isGame = asset.IsJumper || asset.IsCheckPoint || asset.IsSpawnGate || asset.IsGoalGate ||
                                   asset.IsSpotlight || asset.IsSunlight ||
+                                  asset.SubCategory.Equals("Gameplay", StringComparison.OrdinalIgnoreCase) ||
                                   asset.SubCategory.Equals("Lighting", StringComparison.OrdinalIgnoreCase);
+
                     if (!isGame) continue;
                 }
+                // 3. Hazards: Lasers, turrets, and fans
                 else if (_activeBrowserCategory == "Hazards")
                 {
                     bool isHazard = asset.IsLaser || asset.IsRotatingLaser || asset.IsTurret || asset.IsHelix ||
                                     asset.SubCategory.Equals("Hazards", StringComparison.OrdinalIgnoreCase);
+
                     if (!isHazard) continue;
+                }
+                // 4. Instances: Saved custom prefabs
+                else if (_activeBrowserCategory == "Instances")
+                {
+                    bool isInst = asset.SubCategory.Equals("Instances", StringComparison.OrdinalIgnoreCase) ||
+                                  asset.DisplayName.StartsWith("[Prefab]");
+
+                    if (!isInst) continue;
                 }
 
                 if (_activeSizeFilter != AssetSizeTier.All && asset.SizeTier != _activeSizeFilter)
@@ -1272,7 +1286,7 @@ namespace DeadCoreEditor
 
                 Image bg = card.AddComponent<Image>();
                 bg.color = new Color(0.15f, 0.17f, 0.21f, 0.95f);
-                bg.raycastTarget = true; // The button's target graphic receives the click
+                bg.raycastTarget = true; // Button target graphic
 
                 Button btn = card.AddComponent<Button>();
                 btn.targetGraphic = bg;
@@ -1288,7 +1302,7 @@ namespace DeadCoreEditor
                     EditorSessionManager.EquipAsset(capturedAsset);
                 }));
 
-                // 2. Thumbnail (raycastTarget = false so it doesn't block the button)
+                // Thumbnail (raycastTarget = false)
                 GameObject preview = new GameObject("Thumbnail", Il2CppType.Of<RectTransform>());
                 preview.transform.SetParent(card.transform, false);
 
@@ -1310,13 +1324,10 @@ namespace DeadCoreEditor
                 }
                 else
                 {
-                    pImg.color = asset.IsLaser ? new Color(1f, 0.2f, 0.2f) :
-                                 (asset.IsSunlight ? new Color(1f, 0.85f, 0.2f) :
-                                 (asset.IsSpotlight ? Color.cyan :
-                                 (asset.IsJumper ? Color.green : new Color(0.25f, 0.35f, 0.45f))));
+                    pImg.color = asset.IsPrefabInstance ? new Color(0.6f, 0.25f, 0.85f) : new Color(0.25f, 0.35f, 0.45f);
                 }
 
-                // 3. Size Badge (raycastTarget = false)
+                // Size Badge (raycastTarget = false)
                 GameObject badgeObj = new GameObject("SizeBadge", Il2CppType.Of<RectTransform>());
                 badgeObj.transform.SetParent(card.transform, false);
 
@@ -1325,10 +1336,11 @@ namespace DeadCoreEditor
                 bdrt.anchorMax = new Vector2(0.96f, 0.96f);
                 bdrt.sizeDelta = Vector2.zero;
 
-                Color badgeColor = asset.SizeTier == AssetSizeTier.Small ? new Color(0.2f, 0.85f, 0.4f, 0.85f) :
+                Color badgeColor = asset.IsPrefabInstance ? new Color(0.65f, 0.2f, 0.95f, 0.9f) :
+                                  (asset.SizeTier == AssetSizeTier.Small ? new Color(0.2f, 0.85f, 0.4f, 0.85f) :
                                   (asset.SizeTier == AssetSizeTier.Medium ? new Color(0.1f, 0.7f, 1.0f, 0.85f) :
                                   (asset.SizeTier == AssetSizeTier.Large ? new Color(1.0f, 0.6f, 0.1f, 0.85f) :
-                                   new Color(0.9f, 0.25f, 0.25f, 0.85f)));
+                                   new Color(0.9f, 0.25f, 0.25f, 0.85f))));
 
                 Image badgeImg = badgeObj.AddComponent<Image>();
                 badgeImg.color = badgeColor;
@@ -1340,7 +1352,39 @@ namespace DeadCoreEditor
                 badgeTmp.enableWordWrapping = false;
                 badgeTmp.raycastTarget = false;
 
-                // 4. Label (raycastTarget = false)
+                // INSTANCE DELETION BUTTON [X]
+                if (asset.IsPrefabInstance && asset.PrefabTemplate != null)
+                {
+                    GameObject delBtnObj = new GameObject("Btn_DeleteInstance", Il2CppType.Of<RectTransform>());
+                    delBtnObj.transform.SetParent(card.transform, false);
+
+                    RectTransform dbrt = delBtnObj.GetComponent<RectTransform>();
+                    dbrt.anchorMin = new Vector2(0f, 1f);
+                    dbrt.anchorMax = new Vector2(0f, 1f);
+                    dbrt.pivot = new Vector2(0f, 1f);
+                    dbrt.anchoredPosition = new Vector2(3f, -3f);
+                    dbrt.sizeDelta = new Vector2(18f, 18f);
+
+                    Image delImg = delBtnObj.AddComponent<Image>();
+                    delImg.color = new Color(0.85f, 0.2f, 0.2f, 0.92f);
+                    delImg.raycastTarget = true;
+
+                    Button delBtn = delBtnObj.AddComponent<Button>();
+                    delBtn.targetGraphic = delImg;
+
+                    TMP_Text delTxt = CreateText(delBtnObj.transform, "X",
+                        Vector2.zero, Vector2.one, Vector2.zero, Vector2.zero,
+                        10f, FontStyles.Bold, Color.white, TextAlignmentOptions.Center);
+                    delTxt.raycastTarget = false;
+
+                    CustomPrefabTemplate capturedTemplate = asset.PrefabTemplate;
+                    delBtn.onClick.AddListener((Action)(() =>
+                    {
+                        PrefabInstanceManager.DeleteInstance(capturedTemplate);
+                    }));
+                }
+
+                // Label (raycastTarget = false)
                 GameObject labelObj = new GameObject("Label", Il2CppType.Of<RectTransform>());
                 labelObj.transform.SetParent(card.transform, false);
 

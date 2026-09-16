@@ -69,6 +69,10 @@ namespace DeadCoreEditor
         public bool IsLaser;
         public bool IsRotatingLaser;
 
+        // Prefab Instance Flags
+        public bool IsPrefabInstance = false;
+        public CustomPrefabTemplate PrefabTemplate = null;
+
         public float DefaultScale = 1.0f;
         public float VerticalOffset = 0.0f;
         public Quaternion BaseRotation = Quaternion.identity;
@@ -102,6 +106,9 @@ namespace DeadCoreEditor
 
         public string GetSizeBadgeText()
         {
+            if (IsPrefabInstance)
+                return "PREFAB";
+
             if (DisplayName.Contains("16x16") || DisplayName.Contains("16x2x16"))
                 return "16x2x16";
 
@@ -111,14 +118,34 @@ namespace DeadCoreEditor
         }
     }
 
+    public class PrefabInstanceItem
+    {
+        public string AssetName;
+        public Vector3 LocalPosition;
+        public Quaternion LocalRotation;
+        public Vector3 LocalScale = Vector3.one;
+        public float CustomParameter;
+        public LightConfig LightCfg;
+        public ObjectMotionPath MotionPath;
+    }
+
+    public class CustomPrefabTemplate
+    {
+        public string Name;
+        public string FilePath;
+        public List<PrefabInstanceItem> Items = new List<PrefabInstanceItem>();
+        public GameObject SourceTemplate;
+        public Bounds TotalBounds;
+    }
+
     public class ObjectMotionPath
     {
         public Vector3 PointA;
         public Vector3 PointB;
         public float Speed = 3.5f;
-        public float RotationSpeed = 0f; // -150 to 150 deg/s (default 0 = no rotation)
-        public int RotationAxis = 1;      // 0 = X (Tumble), 1 = Y (Turntable), 2 = Z (Roll), 3 = Path Dir, 4 = Custom Override
-        public Vector3 CustomAxis = Vector3.up; // Normalized spinning axis override (X, Y, Z)
+        public float RotationSpeed = 0f;
+        public int RotationAxis = 1;
+        public Vector3 CustomAxis = Vector3.up;
         public bool IsActive = true;
         public Collider[] CachedColliders = null;
 
@@ -130,7 +157,7 @@ namespace DeadCoreEditor
             if (RotationAxis == 0) return Vector3.right;
             if (RotationAxis == 1) return Vector3.up;
             if (RotationAxis == 2) return Vector3.forward;
-            if (RotationAxis == 3) // Along motion path direction (Point A -> Point B)
+            if (RotationAxis == 3)
             {
                 Vector3 pathDir = PointB - PointA;
                 if (pathDir.sqrMagnitude > 0.0001f)
@@ -140,7 +167,6 @@ namespace DeadCoreEditor
                 }
                 return Vector3.up;
             }
-            // 4 = Custom Override (or fallback)
             if (CustomAxis.sqrMagnitude > 0.0001f)
                 return CustomAxis.normalized;
 
@@ -178,7 +204,7 @@ namespace DeadCoreEditor
 
         public Vector3 Position;
         public Quaternion Rotation;
-        public float Scale;                       
+        public float Scale;
         public Vector3 ScaleVector = Vector3.one;
         public float CustomParameter;
 
@@ -225,10 +251,6 @@ namespace DeadCoreEditor
         public string Description = "No description provided.";
         public string StagingScene = "level01_Spark01";
     }
-
-    // =========================================================================
-    // SECTION 3: AUTOMATED 3D ISOMETRIC LEVEL THUMBNAIL SERVICE
-    // =========================================================================
 
     public static class ThumbnailCaptureService
     {
@@ -282,12 +304,10 @@ namespace DeadCoreEditor
                 Camera cam = _studioCamObj.GetComponent<Camera>();
                 if (cam == null) cam = _studioCamObj.AddComponent<Camera>();
 
-                // Dimmed, modern studio backdrop
                 cam.clearFlags = CameraClearFlags.Color;
                 cam.backgroundColor = new Color(0.06f, 0.07f, 0.09f, 1f);
                 cam.cullingMask = ~LayerMask.GetMask("Ignore Raycast");
 
-                // True isometric simulation with a low FOV (18 deg)
                 cam.fieldOfView = 18f;
                 cam.nearClipPlane = 0.5f;
                 cam.farClipPlane = 5000f;
@@ -295,7 +315,6 @@ namespace DeadCoreEditor
                 float maxDim = Mathf.Max(combinedBounds.size.x, combinedBounds.size.y, combinedBounds.size.z);
                 float cameraDist = Mathf.Max(35f, maxDim * 2.8f);
 
-                // Exact 3/4 isometric coordinates (35.264° pitch, 45° azimuth)
                 float pitchRad = 35.264f * Mathf.Deg2Rad;
                 float yawRad = 45f * Mathf.Deg2Rad;
 

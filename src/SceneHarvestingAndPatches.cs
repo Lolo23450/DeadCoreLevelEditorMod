@@ -125,20 +125,43 @@ namespace DeadCoreEditor
             return m;
         }
 
+        public static void EnableGPUInstancingOnMaterial(Material mat)
+        {
+            if (mat == null) return;
+            try
+            {
+                mat.enableInstancing = true;
+            }
+            catch { }
+        }
+
         public static void HarvestAllSceneModels()
         {
             EditorSessionManager.AllAssets.Clear();
             HashSet<string> seenMeshFingerprints = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            HashSet<Material> seenMaterials = new HashSet<Material>();
 
-            // Cache standard level material
+            // Cache standard level material and enable GPU instancing across all scene materials
             MeshRenderer[] renderers = Resources.FindObjectsOfTypeAll<MeshRenderer>();
             for (int i = 0; i < renderers.Length; i++)
             {
                 MeshRenderer r = renderers[i];
-                if (r != null && r.sharedMaterial != null && !r.sharedMaterial.name.ToLower().Contains("laser"))
+                if (r == null) continue;
+
+                Material[] mats = r.sharedMaterials;
+                for (int m = 0; m < mats.Length; m++)
                 {
-                    EditorSessionManager.CachedSceneMaterial = r.sharedMaterial;
-                    break;
+                    Material mat = mats[m];
+                    if (mat != null && seenMaterials.Add(mat))
+                    {
+                        // Enables GPU instancing for platforms, architecture, and scenery
+                        EnableGPUInstancingOnMaterial(mat);
+
+                        if (EditorSessionManager.CachedSceneMaterial == null && !mat.name.ToLower().Contains("laser"))
+                        {
+                            EditorSessionManager.CachedSceneMaterial = mat;
+                        }
+                    }
                 }
             }
 
@@ -163,7 +186,7 @@ namespace DeadCoreEditor
                     DisplayName = "Launch Jumper Pad",
                     SourceTemplate = EditorSessionManager.PrefabJumper.gameObject,
                     Category = AssetCategory.Gameplay,
-                    SubCategory = "Platforms",
+                    SubCategory = "Gameplay",
                     IsJumper = true,
                     DefaultScale = 1.0f,
                     VerticalOffset = 0f,
@@ -173,7 +196,7 @@ namespace DeadCoreEditor
                 EditorSessionManager.AllAssets.Add(jAsset);
             }
 
-            // Gates & Checkpoints (Climb to gate root)
+            // Gates & Checkpoints
             try
             {
                 CheckPointScript nativeCp = GameObject.FindObjectOfType<CheckPointScript>();
@@ -204,7 +227,7 @@ namespace DeadCoreEditor
                         DisplayName = "Checkpoint Gate",
                         SourceTemplate = rootT.gameObject,
                         Category = AssetCategory.Gameplay,
-                        SubCategory = "Platforms",
+                        SubCategory = "Gameplay",
                         IsCheckPoint = true,
                         DefaultScale = 1.0f,
                         VerticalOffset = 0f,
@@ -218,7 +241,7 @@ namespace DeadCoreEditor
                         DisplayName = "Entry Checkpoint (Start)",
                         SourceTemplate = rootT.gameObject,
                         Category = AssetCategory.Gameplay,
-                        SubCategory = "Platforms",
+                        SubCategory = "Gameplay",
                         IsCheckPoint = true,
                         IsSpawnGate = true,
                         DefaultScale = 1.0f,
@@ -233,7 +256,7 @@ namespace DeadCoreEditor
                         DisplayName = "Goal Checkpoint (Finish)",
                         SourceTemplate = rootT.gameObject,
                         Category = AssetCategory.Gameplay,
-                        SubCategory = "Platforms",
+                        SubCategory = "Gameplay",
                         IsCheckPoint = true,
                         IsGoalGate = true,
                         DefaultScale = 1.0f,
@@ -311,6 +334,7 @@ namespace DeadCoreEditor
             if (unlitShader != null)
             {
                 Material sunMat = new Material(unlitShader) { color = new Color(1f, 0.88f, 0.35f, 1f) };
+                EnableGPUInstancingOnMaterial(sunMat);
                 _proceduralMaterials.Add(sunMat);
                 sunOrb.GetComponent<Renderer>().material = sunMat;
             }
@@ -333,9 +357,14 @@ namespace DeadCoreEditor
 
             // Laser Barriers
             Material laserMat = GameObject.FindObjectOfType<LaserManager>()?._sharedMaterial;
-            if (laserMat == null && unlitShader != null)
+            if (laserMat != null)
+            {
+                EnableGPUInstancingOnMaterial(laserMat);
+            }
+            else if (unlitShader != null)
             {
                 laserMat = new Material(unlitShader) { color = new Color(1f, 0.05f, 0.05f, 0.9f) };
+                EnableGPUInstancingOnMaterial(laserMat);
                 _proceduralMaterials.Add(laserMat);
             }
 
@@ -433,7 +462,7 @@ namespace DeadCoreEditor
             rotLaserAsset.ComputeSizeMetrics();
             EditorSessionManager.AllAssets.Add(rotLaserAsset);
 
-            // Safe Turret & Helix lookup (No unchecked [0])
+            // Turret & Helix
             try
             {
                 TurretScript nativeTurret = GameObject.FindObjectOfType<TurretScript>();
@@ -493,7 +522,7 @@ namespace DeadCoreEditor
                 EditorSessionManager.AllAssets.Add(helixAsset);
             }
 
-            // 2. SAFE ARCHITECTURAL MODEL HARVESTING (NO NATIVE PREFAB CRASHES)
+            // 2. ARCHITECTURAL & PLATFORM MODEL HARVESTING
             List<MeshFilter> gatheredFilters = new List<MeshFilter>();
             HashSet<MeshFilter> filterSet = new HashSet<MeshFilter>();
 
@@ -558,8 +587,9 @@ namespace DeadCoreEditor
 
                 bool isColumn = boundsSize.y > (Mathf.Max(boundsSize.x, boundsSize.z) * 2.5f);
 
+                // All platforms, floors, walls, columns, and architectural pieces live under Architecture
                 string subCat = "Architecture";
-                if (isPlatform) subCat = "Platforms";
+                if (isPlatform) subCat = "Architecture";
                 else if (isWall) subCat = "Walls";
                 else if (isColumn) subCat = "Columns";
                 else if (maxDim < 4.0f) subCat = "Details";
@@ -590,8 +620,9 @@ namespace DeadCoreEditor
                 EditorSessionManager.AllAssets.Add(asset);
             }
 
-            MelonLogger.Msg($">> [Harvest] Successfully harvested {EditorSessionManager.AllAssets.Count} unique models from scene!");
+            MelonLogger.Msg($">> [Harvest] Successfully harvested {EditorSessionManager.AllAssets.Count} unique models with GPU Instancing enabled!");
         }
+
         public static void HideVanillaLevelGeometry()
         {
             var activeScene = SceneManager.GetActiveScene();
@@ -749,7 +780,7 @@ namespace DeadCoreEditor
             // UI & EventSystem components
             if (go.GetComponent<UnityEngine.EventSystems.EventSystem>() != null ||
                 go.GetComponent<UnityEngine.EventSystems.StandaloneInputModule>() != null ||
-                go.GetComponent<Canvas>() != null )
+                go.GetComponent<Canvas>() != null)
                 return true;
 
             // Sky, clouds, and atmosphere
@@ -781,7 +812,7 @@ namespace DeadCoreEditor
     // SECTION 2: HARMONY RUNTIME ENGINE PATCHES
     // =========================================================================
 
-        [HarmonyPatch(typeof(StartLevelManager), nameof(StartLevelManager.StartLevelSequence))]
+    [HarmonyPatch(typeof(StartLevelManager), nameof(StartLevelManager.StartLevelSequence))]
     public static class StartLevelPatch
     {
         [HarmonyPostfix]
@@ -796,6 +827,7 @@ namespace DeadCoreEditor
             }
         }
     }
+
     // =========================================================================
     // PREVENTS TURRET BULLETS FROM GETTING STUCK ON TURRET COLLIDERS
     // =========================================================================
@@ -828,8 +860,6 @@ namespace DeadCoreEditor
 
                     if (!isBullet) continue;
 
-                    // Only ignore collisions between the bullet and the turret body.
-                    // DO NOT TOUCH velocity, position, or rotation: DeadCore's native AI aims automatically!
                     Collider[] bulletCols = hitCol.transform.root.GetComponentsInChildren<Collider>(true);
                     for (int b = 0; b < bulletCols.Length; b++)
                     {

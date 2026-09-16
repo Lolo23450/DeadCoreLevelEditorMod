@@ -33,6 +33,325 @@ namespace DeadCoreEditor
         public LightConfig LightCfg;
         public ObjectMotionPath MotionPath;
     }
+
+    public static class PrefabInstanceManager
+    {
+        public static List<CustomPrefabTemplate> SavedPrefabs = new List<CustomPrefabTemplate>();
+        public static string PrefabsDir => Path.Combine(Directory.GetCurrentDirectory(), "UserData", "MyPrefabs");
+
+        public static void EnsureDirectories()
+        {
+            if (!Directory.Exists(PrefabsDir)) Directory.CreateDirectory(PrefabsDir);
+        }
+
+        /// <summary>
+        /// Computes the exact 3D geometric centroid of selected objects and saves an instance to UserData/MyPrefabs.
+        /// </summary>
+        public static void CreateInstanceTemplateFromSelection(string templateName = "")
+        {
+            if (EditorSessionManager.SelectedObjects == null || EditorSessionManager.SelectedObjects.Count == 0)
+            {
+                EditorSessionManager.ShowNotification("Select objects first to create an Instance.");
+                return;
+            }
+
+            EnsureDirectories();
+
+            if (string.IsNullOrWhiteSpace(templateName))
+            {
+                int idx = SavedPrefabs.Count + 1;
+                templateName = $"Instance_{idx}";
+                while (File.Exists(Path.Combine(PrefabsDir, $"{templateName}.prefab.txt")))
+                {
+                    idx++;
+                    templateName = $"Instance_{idx}";
+                }
+            }
+
+            // 1. COMPUTE TRUE GEOMETRIC CENTROID
+            Bounds collectiveBounds = new Bounds();
+            bool boundsInit = false;
+
+            for (int i = 0; i < EditorSessionManager.SelectedObjects.Count; i++)
+            {
+                GameObject obj = EditorSessionManager.SelectedObjects[i];
+                if (obj == null) continue;
+                if (EditorSessionManager.IsWaypointMarker(obj, out _, out _)) continue;
+
+                Bounds b = StudioGizmoController.GetObjectWorldBounds(obj);
+                if (!boundsInit)
+                {
+                    collectiveBounds = b;
+                    boundsInit = true;
+                }
+                else
+                {
+                    collectiveBounds.Encapsulate(b);
+                }
+            }
+
+            Vector3 collectiveCenter = boundsInit ? collectiveBounds.center : EditorSessionManager.SelectedObject.transform.position;
+            CustomPrefabTemplate template = new CustomPrefabTemplate
+            {
+                Name = templateName,
+                TotalBounds = collectiveBounds,
+                FilePath = Path.Combine(PrefabsDir, $"{templateName}.prefab.txt")
+            };
+
+            // 2. STORE EACH OBJECT RELATIVE TO THE COLLECTIVE CENTER
+            for (int i = 0; i < EditorSessionManager.SelectedObjects.Count; i++)
+            {
+                GameObject obj = EditorSessionManager.SelectedObjects[i];
+                if (obj == null) continue;
+                if (EditorSessionManager.IsWaypointMarker(obj, out _, out _)) continue;
+
+                float param = 0f;
+                if (EditorSessionManager.JumperForces.TryGetValue(obj, out float jf)) param = jf;
+                else if (EditorSessionManager.TurbineSpeeds.TryGetValue(obj, out float ts)) param = ts;
+                else if (EditorSessionManager.TurretFireDelays.TryGetValue(obj, out float fd)) param = fd;
+                else if (EditorSessionManager.LaserRotationSpeeds.TryGetValue(obj, out float lrs)) param = lrs;
+
+                LightConfig lCfg = EditorSessionManager.PlacedLights.TryGetValue(obj, out var lc) ? lc.Clone() : null;
+                ObjectMotionPath mPath = EditorSessionManager.MotionPaths.TryGetValue(obj, out var mp) ? mp.Clone() : null;
+
+                string rawName = obj.name.StartsWith("Custom_") ? obj.name.Substring(7) : obj.name;
+
+                template.Items.Add(new PrefabInstanceItem
+                {
+                    AssetName = rawName,
+                    LocalPosition = obj.transform.position - collectiveCenter,
+                    LocalRotation = obj.transform.rotation,
+                    LocalScale = obj.transform.localScale,
+                    CustomParameter = param,
+                    LightCfg = lCfg,
+                    MotionPath = mPath
+                });
+            }
+
+            // 3. BUILD VISUAL TEMPLATE SO HOLOGRAMS AND THUMBNAILS RENDER PROPERLY
+            BuildVisualTemplateObject(template);
+
+            // 4. WRITE PREFAB FILE TO DISK IN USERDATA/MYPREFABS/
+            SavePrefabToDisk(template);
+
+            // 5. REGISTER IN CATALOG & REFRESH BROWSER
+            RegisterTemplateAsCatalogAsset(template);
+            SavedPrefabs.Add(template);
+
+            EditorSessionManager.ShowNotification($"Saved Instance in folder: '{templateName}' ({template.Items.Count} objects)");
+            StudioUIManager.RefreshAssetBrowser();
+        }
+
+        public static void BuildVisualTemplateObject(CustomPrefabTemplate template)
+        {
+            if (template.SourceTemplate != null)
+                GameObject.Destroy(template.SourceTemplate);
+
+            GameObject root = new GameObject($"Template_Instance_{template.Name}");
+            root.transform.position = new Vector3(8500f, 8500f, 8500f);
+            root.SetActive(false);
+
+            for (int i = 0; i < template.Items.Count; i++)
+            {
+                PrefabInstanceItem item = template.Items[i];
+                GameObject child = EditorSessionManager.SpawnAssetByName(item.AssetName, item.LocalPosition, item.LocalScale, item.LocalRotation);
+                if (child != null)
+                {
+                    child.name = item.AssetName;
+                    child.transform.SetParent(root.transform, false);
+                    child.transform.localPosition = item.LocalPosition;
+                    child.transform.localRotation = item.LocalRotation;
+                    child.transform.localScale = item.LocalScale;
+                }
+            }
+
+            template.SourceTemplate = root;
+        }
+
+        public static GameObject SpawnInstance(CustomPrefabTemplate template, Vector3 position, Quaternion rotation, Vector3 scale)
+        {
+            if (template == null || template.Items.Count == 0) return null;
+
+            GameObject instanceRoot = new GameObject($"Custom_Instance_{template.Name}");
+            instanceRoot.transform.position = position;
+            instanceRoot.transform.rotation = rotation;
+            instanceRoot.transform.localScale = scale;
+
+            for (int i = 0; i < template.Items.Count; i++)
+            {
+                PrefabInstanceItem item = template.Items[i];
+                Vector3 worldPos = position + (rotation * Vector3.Scale(item.LocalPosition, scale));
+                Quaternion worldRot = rotation * item.LocalRotation;
+                Vector3 worldScale = Vector3.Scale(item.LocalScale, scale);
+
+                GameObject child = EditorSessionManager.SpawnAssetByName(item.AssetName, worldPos, worldScale, worldRot);
+                if (child != null)
+                {
+                    child.transform.SetParent(instanceRoot.transform, true);
+                    child.transform.localScale = worldScale; // Stop scale shrinkage
+
+                    string low = item.AssetName.ToLower();
+                    if (item.CustomParameter > 0f)
+                    {
+                        if (low.Contains("jumper")) EditorSessionManager.ApplyJumperForce(child, item.CustomParameter);
+                        else if (low.Contains("helix")) EditorSessionManager.ApplyTurbineSpeed(child, item.CustomParameter);
+                        else if (low.Contains("turret")) EditorSessionManager.ApplyTurretSettings(child, item.CustomParameter);
+                    }
+                    if (low.Contains("rotating") && item.CustomParameter != 0f)
+                    {
+                        EditorSessionManager.LaserRotationSpeeds[child] = item.CustomParameter;
+                    }
+                    if (item.LightCfg != null)
+                    {
+                        EditorSessionManager.ApplyLightConfig(child, item.LightCfg);
+                    }
+                    if (item.MotionPath != null)
+                    {
+                        Vector3 delta = worldPos - item.MotionPath.PointA;
+                        EditorSessionManager.MotionPaths[child] = new ObjectMotionPath
+                        {
+                            PointA = worldPos,
+                            PointB = item.MotionPath.PointB + delta,
+                            Speed = item.MotionPath.Speed,
+                            RotationSpeed = item.MotionPath.RotationSpeed,
+                            RotationAxis = item.MotionPath.RotationAxis,
+                            CustomAxis = item.MotionPath.CustomAxis,
+                            IsActive = true
+                        };
+                    }
+
+                    EditorSessionManager.RegisterPlacedObject(child);
+                }
+            }
+
+            EditorSessionManager.RegisterPlacedObject(instanceRoot);
+            return instanceRoot;
+        }
+
+        public static void DeleteInstance(CustomPrefabTemplate template)
+        {
+            if (template == null) return;
+
+            // 1. Delete .prefab.txt and .png from UserData/MyPrefabs/
+            if (File.Exists(template.FilePath))
+            {
+                try { File.Delete(template.FilePath); } catch { }
+            }
+
+            string pngPath = Path.ChangeExtension(template.FilePath, ".png");
+            if (File.Exists(pngPath))
+            {
+                try { File.Delete(pngPath); } catch { }
+            }
+
+            // 2. Remove catalog asset
+            CatalogAsset catAsset = EditorSessionManager.AllAssets.Find(a => a.PrefabTemplate == template);
+            if (catAsset != null)
+            {
+                EditorSessionManager.AllAssets.Remove(catAsset);
+            }
+
+            // 3. Destroy visual template
+            if (template.SourceTemplate != null)
+            {
+                GameObject.Destroy(template.SourceTemplate);
+            }
+
+            SavedPrefabs.Remove(template);
+
+            EditorSessionManager.ShowNotification($"Deleted Instance: '{template.Name}' from folder");
+            StudioUIManager.RefreshAssetBrowser();
+        }
+
+        public static void RegisterTemplateAsCatalogAsset(CustomPrefabTemplate template)
+        {
+            if (template.SourceTemplate == null)
+                BuildVisualTemplateObject(template);
+
+            CatalogAsset asset = new CatalogAsset
+            {
+                DisplayName = $"[Prefab] {template.Name}",
+                SourceTemplate = template.SourceTemplate,
+                Category = AssetCategory.Building,
+                SubCategory = "Instances",
+                DefaultScale = 1.0f,
+                IsPrefabInstance = true,
+                PrefabTemplate = template
+            };
+
+            asset.ComputeSizeMetrics();
+            EditorSessionManager.AllAssets.Add(asset);
+        }
+
+        public static void SavePrefabToDisk(CustomPrefabTemplate template)
+        {
+            EnsureDirectories();
+            List<string> lines = new List<string>();
+            var inv = CultureInfo.InvariantCulture;
+
+            lines.Add($"#PREFAB: {template.Name}");
+            for (int i = 0; i < template.Items.Count; i++)
+            {
+                var it = template.Items[i];
+                lines.Add($"{it.AssetName};{it.LocalPosition.x.ToString("F4", inv)};{it.LocalPosition.y.ToString("F4", inv)};{it.LocalPosition.z.ToString("F4", inv)};" +
+                          $"{it.LocalRotation.x.ToString("F4", inv)};{it.LocalRotation.y.ToString("F4", inv)};{it.LocalRotation.z.ToString("F4", inv)};{it.LocalRotation.w.ToString("F4", inv)};" +
+                          $"{it.LocalScale.x.ToString("F4", inv)};{it.LocalScale.y.ToString("F4", inv)};{it.LocalScale.z.ToString("F4", inv)};{it.CustomParameter.ToString("F2", inv)}");
+            }
+
+            File.WriteAllLines(template.FilePath, lines.ToArray());
+        }
+
+        public static void LoadAllPrefabsFromDisk()
+        {
+            EnsureDirectories();
+            string[] files = Directory.GetFiles(PrefabsDir, "*.prefab.txt");
+
+            for (int f = 0; f < files.Length; f++)
+            {
+                string path = files[f];
+                string name = Path.GetFileNameWithoutExtension(path).Replace(".prefab", "");
+
+                if (SavedPrefabs.Exists(p => p.Name == name)) continue;
+
+                string[] lines = File.ReadAllLines(path);
+                CustomPrefabTemplate template = new CustomPrefabTemplate
+                {
+                    Name = name,
+                    FilePath = path
+                };
+
+                for (int l = 0; l < lines.Length; l++)
+                {
+                    string line = lines[l].Trim();
+                    if (string.IsNullOrWhiteSpace(line) || line.StartsWith("#")) continue;
+
+                    string[] p = line.Split(';');
+                    if (p.Length < 11) continue;
+
+                    template.Items.Add(new PrefabInstanceItem
+                    {
+                        AssetName = p[0],
+                        LocalPosition = new Vector3(ParseFloat(p[1]), ParseFloat(p[2]), ParseFloat(p[3])),
+                        LocalRotation = new Quaternion(ParseFloat(p[4]), ParseFloat(p[5]), ParseFloat(p[6]), ParseFloat(p[7])),
+                        LocalScale = new Vector3(ParseFloat(p[8]), ParseFloat(p[9]), ParseFloat(p[10])),
+                        CustomParameter = (p.Length >= 12) ? ParseFloat(p[11]) : 0f
+                    });
+                }
+
+                BuildVisualTemplateObject(template);
+                RegisterTemplateAsCatalogAsset(template);
+                SavedPrefabs.Add(template);
+            }
+        }
+
+        private static float ParseFloat(string str)
+        {
+            if (string.IsNullOrWhiteSpace(str)) return 0f;
+            float.TryParse(str.Trim().Replace(',', '.'), NumberStyles.Float, CultureInfo.InvariantCulture, out float v);
+            return v;
+        }
+    }
+
     public static class EditorSessionManager
     {
         // Session and State Tracking
@@ -1314,6 +1633,15 @@ namespace DeadCoreEditor
         public static GameObject SpawnCatalogObject(CatalogAsset asset, Vector3 position, Vector3 scale, Quaternion? customRotation = null)
         {
             if (asset == null || asset.SourceTemplate == null) return null;
+
+            // Handle Custom Prefab Instance Spawning
+            if (asset.IsPrefabInstance && asset.PrefabTemplate != null)
+            {
+                Quaternion rot = customRotation ?? GetCurrentCombinedRotation(asset);
+                return PrefabInstanceManager.SpawnInstance(asset.PrefabTemplate, position, rot, scale);
+            }
+
+            if (asset.SourceTemplate == null) return null;
 
             GameObject obj = GameObject.Instantiate(asset.SourceTemplate);
             obj.name = "Custom_" + asset.DisplayName.Replace(" ", "_");
@@ -2809,6 +3137,7 @@ namespace DeadCoreEditor
             SceneHarvestingService.HarvestAllSceneModels();
             SceneHarvestingService.DebugDumpSceneLighting();
             SceneHarvestingService.HideVanillaLevelGeometry();
+            PrefabInstanceManager.LoadAllPrefabsFromDisk();
 
             if (!string.IsNullOrEmpty(MapBrowserService.SelectedMapPath) && File.Exists(MapBrowserService.SelectedMapPath))
             {
