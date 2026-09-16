@@ -480,11 +480,17 @@ namespace DeadCoreEditor
                 GameObject obj = PlacedObjects[i];
                 if (obj == null) continue;
 
+                // Don't snapshot the turbine's moving rotor/joint
+                bool isHelix = PlacedObjectTypes.TryGetValue(obj, out var t) && t == PlacedObjectType.Turbine;
+
                 Transform[] allTransforms = obj.GetComponentsInChildren<Transform>(true);
-                for (int t = 0; t < allTransforms.Length; t++)
+                for (int tIdx = 0; tIdx < allTransforms.Length; tIdx++)
                 {
-                    Transform tr = allTransforms[t];
+                    Transform tr = allTransforms[tIdx];
                     if (tr == null || tr.name == "Editor_Snapping_Proxy") continue;
+
+                    // Skip the blade joint so its rotation is never frozen
+                    if (isHelix && tr != obj.transform) continue;
 
                     PlaytestSnapshots[tr.gameObject] = new PlaytestTransformSnapshot
                     {
@@ -722,6 +728,10 @@ namespace DeadCoreEditor
                 GameObject obj = PlacedObjects[i];
                 if (obj == null) continue;
 
+                // Do not touch Helix - let native DeadCore handle it (like in Class1.cs)
+                if (PlacedObjectTypes.TryGetValue(obj, out var objType) && objType == PlacedObjectType.Turbine)
+                    continue;
+
                 // 1. Turret scripts
                 TurretScript[] ts = obj.GetComponentsInChildren<TurretScript>(true);
                 for (int s = 0; s < ts.Length; s++)
@@ -729,7 +739,7 @@ namespace DeadCoreEditor
                     if (ts[s] != null) ts[s].enabled = active;
                 }
 
-                // 2. Freeze Animators and Animations in Edit Mode
+                // 2. Animators & Animations
                 Animator[] animators = obj.GetComponentsInChildren<Animator>(true);
                 for (int a = 0; a < animators.Length; a++)
                 {
@@ -742,40 +752,13 @@ namespace DeadCoreEditor
                     if (animations[a] != null) animations[a].enabled = active;
                 }
 
-                // 3. Helix Turbines: Blade Rigidbody MUST be dynamic during playtest for the motor to spin
-                Helix helix = obj.GetComponentInChildren<Helix>(true);
-                if (helix != null)
-                {
-                    helix.enabled = active;
-                    if (helix._hingeJoint != null)
-                    {
-                        Rigidbody bladeRb = helix._hingeJoint.GetComponent<Rigidbody>();
-                        if (bladeRb != null)
-                        {
-                            bladeRb.isKinematic = !active; // In Playtest: false (spins)! In Edit Mode: true (frozen)!
-                            if (!active)
-                            {
-                                bladeRb.velocity = Vector3.zero;
-                                bladeRb.angularVelocity = Vector3.zero;
-                            }
-                        }
-                    }
-
-                    HelixPushingZone zone = obj.GetComponentInChildren<HelixPushingZone>(true);
-                    if (zone != null) zone.enabled = active;
-                }
-
-                // 4. Keep platforms, walls and general rigidbodies kinematic so parented items don't fall
+                // 3. Static/Platform Rigidbodies only
                 Rigidbody[] rbs = obj.GetComponentsInChildren<Rigidbody>(true);
                 for (int r = 0; r < rbs.Length; r++)
                 {
                     if (rbs[r] != null)
                     {
-                        // Skip the blade joint so it can spin freely
-                        if (helix != null && helix._hingeJoint != null && rbs[r].gameObject == helix._hingeJoint.gameObject)
-                            continue;
-
-                        rbs[r].isKinematic = true;
+                        rbs[r].isKinematic = !active;
                         if (!active)
                         {
                             rbs[r].velocity = Vector3.zero;
