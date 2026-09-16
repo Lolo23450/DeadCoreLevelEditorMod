@@ -742,15 +742,45 @@ namespace DeadCoreEditor
                     if (animations[a] != null) animations[a].enabled = active;
                 }
 
-                // 3. Keep placed objects kinematic so parented transforms follow parents
+                // 3. Helix Turbines: Blade Rigidbody MUST be dynamic during playtest for the motor to spin
+                Helix helix = obj.GetComponentInChildren<Helix>(true);
+                if (helix != null)
+                {
+                    helix.enabled = active;
+                    if (helix._hingeJoint != null)
+                    {
+                        Rigidbody bladeRb = helix._hingeJoint.GetComponent<Rigidbody>();
+                        if (bladeRb != null)
+                        {
+                            bladeRb.isKinematic = !active; // In Playtest: false (spins)! In Edit Mode: true (frozen)!
+                            if (!active)
+                            {
+                                bladeRb.velocity = Vector3.zero;
+                                bladeRb.angularVelocity = Vector3.zero;
+                            }
+                        }
+                    }
+
+                    HelixPushingZone zone = obj.GetComponentInChildren<HelixPushingZone>(true);
+                    if (zone != null) zone.enabled = active;
+                }
+
+                // 4. Keep platforms, walls and general rigidbodies kinematic so parented items don't fall
                 Rigidbody[] rbs = obj.GetComponentsInChildren<Rigidbody>(true);
                 for (int r = 0; r < rbs.Length; r++)
                 {
                     if (rbs[r] != null)
                     {
+                        // Skip the blade joint so it can spin freely
+                        if (helix != null && helix._hingeJoint != null && rbs[r].gameObject == helix._hingeJoint.gameObject)
+                            continue;
+
                         rbs[r].isKinematic = true;
-                        rbs[r].velocity = Vector3.zero;
-                        rbs[r].angularVelocity = Vector3.zero;
+                        if (!active)
+                        {
+                            rbs[r].velocity = Vector3.zero;
+                            rbs[r].angularVelocity = Vector3.zero;
+                        }
                     }
                 }
             }
@@ -1462,6 +1492,35 @@ namespace DeadCoreEditor
                     if (obj == null || !obj.activeSelf) continue;
                     float speed = LaserRotationSpeeds.ContainsKey(obj) ? LaserRotationSpeeds[obj] : ActiveLaserRotationSpeed;
                     obj.transform.Rotate(Vector3.up, speed * dt, Space.Self);
+                }
+
+                // ADD THIS: Dedicated autonomous turbine update loop
+                for (int i = 0; i < PlacedTurbines.Count; i++)
+                {
+                    GameObject obj = PlacedTurbines[i];
+                    if (obj == null || !obj.activeSelf) continue;
+
+                    float speed = TurbineSpeeds.ContainsKey(obj) ? TurbineSpeeds[obj] : ActiveTurbineSpeed;
+
+                    if (!_cachedHelixScripts.TryGetValue(obj, out Helix helixScript) || helixScript == null)
+                    {
+                        helixScript = obj.GetComponentInChildren<Helix>();
+                        _cachedHelixScripts[obj] = helixScript;
+                    }
+
+                    if (helixScript != null && helixScript._hingeJoint != null)
+                    {
+                        Rigidbody bladeRb = helixScript._hingeJoint.GetComponent<Rigidbody>();
+
+                        // If native physics motor isn't spinning, apply smooth kinematic rotation
+                        if (bladeRb == null || bladeRb.isKinematic)
+                        {
+                            Transform bladeT = helixScript._hingeJoint.transform;
+                            Vector3 spinAxis = helixScript._hingeJoint.axis;
+                            if (spinAxis.sqrMagnitude < 0.001f) spinAxis = Vector3.forward;
+                            bladeT.Rotate(spinAxis, (speed * 15f) * dt, Space.Self);
+                        }
+                    }
                 }
 
                 if (player != null)
@@ -2231,6 +2290,16 @@ namespace DeadCoreEditor
                 h.enabled = true;
                 h._maximumVelocity = speed * 20f;
                 _cachedHelixScripts[turbineObj] = h;
+
+                if (h._hingeJoint != null)
+                {
+                    h._hingeJoint.useMotor = true;
+                    JointMotor m = h._hingeJoint.motor;
+                    m.targetVelocity = speed * 20f;
+                    m.force = 1000f;
+                    m.freeSpin = true;
+                    h._hingeJoint.motor = m;
+                }
             }
         }
 
