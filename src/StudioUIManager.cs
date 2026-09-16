@@ -2567,21 +2567,31 @@ namespace DeadCoreEditor
 
         public static bool ReplaceTitleScreenLogsButton()
         {
-            TMP_Text[] allTmps = Resources.FindObjectsOfTypeAll<TMP_Text>();
+            var scene = SceneManager.GetActiveScene();
+            if (!scene.isLoaded) return false;
+
             bool replaced = false;
+            GameObject[] roots = scene.GetRootGameObjects();
 
-            for (int i = 0; i < allTmps.Length; i++)
+            for (int r = 0; r < roots.Length; r++)
             {
-                TMP_Text tmp = allTmps[i];
-                if (tmp == null || !tmp.gameObject.scene.isLoaded || !tmp.gameObject.activeInHierarchy) continue;
-                if (tmp.GetComponentInParent<LogsMenu>() != null) continue;
+                if (roots[r] == null) continue;
+                TMP_Text[] allTmps = roots[r].GetComponentsInChildren<TMP_Text>(true);
 
-                string t = tmp.text.Trim().ToLower();
-                if (t == "logs" || t == "log" || t == "archives" || t == "codex" || t == "records")
+                for (int i = 0; i < allTmps.Length; i++)
                 {
-                    tmp.text = "Level Editor";
-                    DisableLocalizationScripts(tmp.gameObject);
-                    replaced = true;
+                    TMP_Text tmp = allTmps[i];
+                    // Skip if null, inactive, or if text is null/empty
+                    if (tmp == null || !tmp.gameObject.activeInHierarchy || string.IsNullOrWhiteSpace(tmp.text)) continue;
+                    if (tmp.GetComponentInParent<LogsMenu>() != null) continue;
+
+                    string t = tmp.text.Trim().ToLower();
+                    if (t == "logs" || t == "log" || t == "archives" || t == "codex" || t == "records")
+                    {
+                        tmp.text = "Level Editor";
+                        DisableLocalizationScripts(tmp.gameObject);
+                        replaced = true;
+                    }
                 }
             }
 
@@ -2590,19 +2600,35 @@ namespace DeadCoreEditor
 
         public static void OpenNativeMenu()
         {
-            LogsMenu[] allMenus = Resources.FindObjectsOfTypeAll<LogsMenu>();
-            for (int i = 0; i < allMenus.Length; i++)
+            // Access through DeadCoreLevelEditorMod or find it safely in scene roots
+            LogsMenu target = DeadCoreLevelEditorMod._cachedActiveMenu;
+            if (target == null)
             {
-                LogsMenu target = allMenus[i];
-                if (target == null || !target.gameObject.scene.isLoaded) continue;
+                target = GameObject.FindObjectOfType<LogsMenu>();
+                if (target == null)
+                {
+                    var scene = SceneManager.GetActiveScene();
+                    if (scene.isLoaded)
+                    {
+                        GameObject[] roots = scene.GetRootGameObjects();
+                        for (int r = 0; r < roots.Length; r++)
+                        {
+                            if (roots[r] == null) continue;
+                            target = roots[r].GetComponentInChildren<LogsMenu>(true);
+                            if (target != null) break;
+                        }
+                    }
+                }
+            }
 
+            if (target != null)
+            {
                 MenuGroupScript targetGroup = target.GetComponentInParent<MenuGroupScript>();
                 if (targetGroup != null)
                 {
                     if (MenuGroupScript.CurrentGroup != null && MenuGroupScript.CurrentGroup != targetGroup)
                         MenuGroupScript.CurrentGroup.Close();
                     targetGroup.Open();
-                    return;
                 }
             }
         }
@@ -3422,18 +3448,26 @@ namespace DeadCoreEditor
         {
             if (root == null) return;
 
-            Component[] comps = root.GetComponentsInChildren<Component>(true);
-            for (int i = 0; i < comps.Length; i++)
+            try
             {
-                Component c = comps[i];
-                if (c == null) continue;
-                string typeName = c.GetIl2CppType().Name;
-                if (typeName == "TextLabel" || typeName.Contains("Translate") || typeName.Contains("Localization"))
+                Component[] comps = root.GetComponentsInChildren<Component>(true);
+                for (int i = 0; i < comps.Length; i++)
                 {
-                    MonoBehaviour mb = c.TryCast<MonoBehaviour>();
-                    if (mb != null) mb.enabled = false;
+                    Component c = comps[i];
+                    if (c == null) continue;
+
+                    var il2Type = c.GetIl2CppType();
+                    if (il2Type == null) continue;
+
+                    string typeName = il2Type.Name;
+                    if (typeName == "TextLabel" || typeName.Contains("Translate") || typeName.Contains("Localization"))
+                    {
+                        MonoBehaviour mb = c.TryCast<MonoBehaviour>();
+                        if (mb != null) mb.enabled = false;
+                    }
                 }
             }
+            catch { }
         }
     }
 
@@ -3444,7 +3478,7 @@ namespace DeadCoreEditor
     public class DeadCoreLevelEditorMod : MelonMod
     {
         private static LogsMenu _lastTransformedLogsMenu = null;
-        private static LogsMenu _cachedActiveMenu = null;
+        public static LogsMenu _cachedActiveMenu = null;
         public static int ActiveTab = 0;
         private static float _titleButtonScanTimer = 0f;
         private static bool _titleButtonHooked = false;
@@ -3497,25 +3531,10 @@ namespace DeadCoreEditor
                 if (Input.GetKeyDown(KeyCode.F2))
                     NativeLogsMenuHijacker.OpenNativeMenu();
 
-                if (_cachedActiveMenu == null || !_cachedActiveMenu.gameObject.scene.isLoaded || !_cachedActiveMenu.gameObject.activeInHierarchy)
-                {
-                    _cachedActiveMenu = GameObject.FindObjectOfType<LogsMenu>();
-                    if (_cachedActiveMenu == null)
-                    {
-                        LogsMenu[] menus = Resources.FindObjectsOfTypeAll<LogsMenu>();
-                        for (int i = 0; i < menus.Length; i++)
-                        {
-                            if (menus[i] != null && menus[i].gameObject.scene.isLoaded && menus[i].gameObject.activeInHierarchy)
-                            {
-                                _cachedActiveMenu = menus[i];
-                                break;
-                            }
-                        }
-                    }
-                }
+                // ONLY find and transform the LogsMenu when it is actually OPEN and ACTIVE
+                LogsMenu activeMenu = GameObject.FindObjectOfType<LogsMenu>();
 
-                LogsMenu activeMenu = _cachedActiveMenu;
-                if (activeMenu != null)
+                if (activeMenu != null && activeMenu.gameObject.activeInHierarchy)
                 {
                     if (_lastTransformedLogsMenu != activeMenu)
                     {

@@ -48,23 +48,29 @@ namespace DeadCoreEditor
         {
             NativeSceneSun = null;
 
-            if (RenderSettings.sun != null && RenderSettings.sun.gameObject.scene.isLoaded)
+            if (RenderSettings.sun != null)
             {
                 NativeSceneSun = RenderSettings.sun;
+                return;
             }
 
-            Light[] allLights = Resources.FindObjectsOfTypeAll<Light>();
-            for (int i = 0; i < allLights.Length; i++)
+            var scene = SceneManager.GetActiveScene();
+            if (scene.isLoaded)
             {
-                Light l = allLights[i];
-                if (l == null) continue;
-
-                bool isSceneObject = l.gameObject.scene.isLoaded;
-                if (NativeSceneSun == null && isSceneObject && l.type == LightType.Directional)
+                GameObject[] roots = scene.GetRootGameObjects();
+                for (int r = 0; r < roots.Length; r++)
                 {
-                    if (!l.name.Contains("Template") && !l.name.StartsWith("Custom_"))
+                    if (roots[r] == null) continue;
+                    Light[] lights = roots[r].GetComponentsInChildren<Light>(true);
+                    for (int i = 0; i < lights.Length; i++)
                     {
-                        NativeSceneSun = l;
+                        Light l = lights[i];
+                        if (l != null && l.type == LightType.Directional &&
+                            !l.name.Contains("Template") && !l.name.StartsWith("Custom_"))
+                        {
+                            NativeSceneSun = l;
+                            return;
+                        }
                     }
                 }
             }
@@ -514,7 +520,7 @@ namespace DeadCoreEditor
                 Vector3 boundsSize = mesh.bounds.size;
                 float maxDim = Mathf.Max(boundsSize.x, Mathf.Max(boundsSize.y, boundsSize.z));
 
-                if (maxDim > 350f || maxDim < 0.2f) continue;
+                if (maxDim > 100f || maxDim < 3f) continue;
                 if (mesh.vertexCount < 4) continue;
 
                 if (mLow.Contains("skybox") || mLow.Contains("horizon") || mLow.Contains("fog") ||
