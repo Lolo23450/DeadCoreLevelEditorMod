@@ -50,6 +50,10 @@ namespace DeadCoreEditor
         private static Button _motionPathAxisBtn = null;
         private static TMP_Text _motionPathAxisBtnText = null;
 
+        private static TMP_InputField _motionPathAxisXInput = null;
+        private static TMP_InputField _motionPathAxisYInput = null;
+        private static TMP_InputField _motionPathAxisZInput = null;
+
         // Hierarchy Drag & Drop Mapping
         private static readonly Dictionary<GameObject, GameObject> _targetToRowMap = new Dictionary<GameObject, GameObject>();
         private static readonly Dictionary<GameObject, GameObject> _rowToTargetMap = new Dictionary<GameObject, GameObject>();
@@ -214,24 +218,29 @@ namespace DeadCoreEditor
                 GameObject obj = EditorSessionManager.PlacedObjects[i];
                 if (obj == null) continue;
 
-                if (EditorSessionManager.PlacedObjectTypes.TryGetValue(obj, out var pType) &&
-                    (pType == PlacedObjectType.Spotlight || pType == PlacedObjectType.Sunlight))
+                if (EditorSessionManager.PlacedObjectTypes.TryGetValue(obj, out var pType))
                 {
-                    BoxCollider bc = obj.GetComponent<BoxCollider>();
-                    if (bc == null)
-                    {
-                        bc = obj.AddComponent<BoxCollider>();
-                        bc.size = new Vector3(1.4f, 1.4f, 1.6f);
-                        bc.center = new Vector3(0f, 0f, 0.4f);
-                        bc.isTrigger = false;
-                        bc.enabled = true;
-                    }
+                    bool isLight = (pType == PlacedObjectType.Spotlight || pType == PlacedObjectType.Sunlight);
+                    bool isGate = (pType == PlacedObjectType.Checkpoint || pType == PlacedObjectType.SpawnGate || pType == PlacedObjectType.GoalGate);
 
-                    obj.layer = 0;
-                    Transform housing = obj.transform.Find("Light_Housing");
-                    if (housing != null) housing.gameObject.layer = 0;
-                    Transform lens = obj.transform.Find("Light_Lens");
-                    if (lens != null) lens.gameObject.layer = 0;
+                    if (isLight || isGate)
+                    {
+                        BoxCollider bc = obj.GetComponent<BoxCollider>();
+                        if (bc == null)
+                        {
+                            bc = obj.AddComponent<BoxCollider>();
+                            bc.size = isGate ? new Vector3(3.5f, 4.5f, 1.5f) : new Vector3(1.4f, 1.4f, 1.6f);
+                            bc.center = isGate ? new Vector3(0f, 2.25f, 0f) : new Vector3(0f, 0f, 0.4f);
+                        }
+
+                        // 1. MUST be a trigger so the player runs straight through without colliding
+                        bc.isTrigger = true;
+
+                        // 2. Only active in Edit Mode for clicking/selection; disabled during playtest for gates
+                        bc.enabled = EditorSessionManager.IsEditModeActive || isLight;
+
+                        obj.layer = 0; // Default layer so the editor raycast can hit it in Edit Mode
+                    }
                 }
             }
         }
@@ -506,9 +515,42 @@ namespace DeadCoreEditor
             dbrt.offsetMax = new Vector2(-8f, -4f);
         }
 
-        // =========================================================================
-        // EXPANDABLE INSPECTOR PANEL + RGB LIGHTING SELECTOR
-        // =========================================================================
+        private static string GetRotationAxisName(int axisIndex)
+        {
+            switch (axisIndex)
+            {
+                case 0: return "X - Tumble";
+                case 1: return "Y - Turntable";
+                case 2: return "Z - Roll";
+                case 3: return "Path (A -> B)";
+                case 4: return "Custom Override";
+                default: return "Custom Override";
+            }
+        }
+
+        private static void OnMotionPathAxisInputChanged(string val)
+        {
+            if (_suppressInspectorCallbacks || EditorSessionManager.SelectedObject == null) return;
+
+            GameObject target = EditorSessionManager.SelectedObject;
+            if (EditorSessionManager.IsWaypointMarker(target, out GameObject owner, out bool _)) target = owner;
+
+            if (!EditorSessionManager.MotionPaths.TryGetValue(target, out var mp) || mp == null) return;
+
+            float x = ParseFloat(_motionPathAxisXInput?.text, mp.CustomAxis.x);
+            float y = ParseFloat(_motionPathAxisYInput?.text, mp.CustomAxis.y);
+            float z = ParseFloat(_motionPathAxisZInput?.text, mp.CustomAxis.z);
+
+            Vector3 newAxis = new Vector3(x, y, z);
+            if (newAxis.sqrMagnitude > 0.0001f)
+                mp.CustomAxis = newAxis.normalized;
+            else
+                mp.CustomAxis = Vector3.up;
+
+            mp.RotationAxis = 4; // Automatically switches to Custom Override on user input
+            if (_motionPathAxisBtnText != null)
+                _motionPathAxisBtnText.text = "Axis: [Custom Override]";
+        }
 
         // =========================================================================
         // TARGETED FIX: Safe RectTransform Instantiation
@@ -812,21 +854,28 @@ namespace DeadCoreEditor
             GameObject rotRow = CreateRowContainer(_motionPathActiveControlsObj.transform, "Row_RotControls", 24f);
             SetupRowHorizontalLayout(rotRow, 4f);
 
-            _motionPathAxisBtn = CreateButton(rotRow.transform, "Btn_ToggleAxis", "Axis: [Y - Turntable]", 140f, () =>
+            _motionPathAxisBtn = CreateButton(rotRow.transform, "Btn_ToggleAxis", "Axis: [Y - Turntable]", 145f, () =>
             {
                 GameObject target = EditorSessionManager.SelectedObject;
                 if (target == null) return;
                 if (EditorSessionManager.IsWaypointMarker(target, out GameObject owner, out _)) target = owner;
 
-                ObjectMotionPath motionPath = null;
-                if (EditorSessionManager.MotionPaths.TryGetValue(target, out motionPath) && motionPath != null)
+                if (EditorSessionManager.MotionPaths.TryGetValue(target, out var motionPath) && motionPath != null)
                 {
-                    motionPath.RotationAxis = (motionPath.RotationAxis + 1) % 3;
-                    string axisName = (motionPath.RotationAxis == 0) ? "X - Tumble" :
-                                      (motionPath.RotationAxis == 1 ? "Y - Turntable" : "Z - Roll");
+                    // Cycles: 0 (X), 1 (Y), 2 (Z), 3 (Path Dir), 4 (Custom Override)
+                    motionPath.RotationAxis = (motionPath.RotationAxis + 1) % 5;
 
-                    if (_motionPathAxisBtnText != null) _motionPathAxisBtnText.text = $"Axis: [{axisName}]";
-                    EditorSessionManager.ShowNotification($"Rotation Axis: {axisName}");
+                    if (motionPath.RotationAxis == 0) motionPath.CustomAxis = Vector3.right;
+                    else if (motionPath.RotationAxis == 1) motionPath.CustomAxis = Vector3.up;
+                    else if (motionPath.RotationAxis == 2) motionPath.CustomAxis = Vector3.forward;
+                    else if (motionPath.RotationAxis == 3)
+                    {
+                        Vector3 delta = motionPath.PointB - motionPath.PointA;
+                        motionPath.CustomAxis = delta.sqrMagnitude > 0.001f ? delta.normalized : Vector3.up;
+                    }
+
+                    RefreshInspectorValues();
+                    EditorSessionManager.ShowNotification($"Rotation Axis set to [{GetRotationAxisName(motionPath.RotationAxis)}]");
                 }
             }, new Color(0.18f, 0.28f, 0.40f, 1f));
             _motionPathAxisBtnText = _motionPathAxisBtn.GetComponentInChildren<TMP_Text>();
@@ -837,8 +886,7 @@ namespace DeadCoreEditor
                 if (target == null) return;
                 if (EditorSessionManager.IsWaypointMarker(target, out GameObject owner, out _)) target = owner;
 
-                ObjectMotionPath motionPath = null;
-                if (EditorSessionManager.MotionPaths.TryGetValue(target, out motionPath) && motionPath != null)
+                if (EditorSessionManager.MotionPaths.TryGetValue(target, out var motionPath) && motionPath != null)
                 {
                     motionPath.RotationSpeed = 0f;
                     if (_motionPathRotSlider != null) _motionPathRotSlider.value = 0f;
@@ -847,30 +895,50 @@ namespace DeadCoreEditor
                 }
             }, new Color(0.25f, 0.28f, 0.32f, 1f));
 
-            // Direction Offset Buttons
-            GameObject dirBtnRow = CreateRowContainer(_motionPathActiveControlsObj.transform, "Row_DirButtons", 24f);
-            SetupRowHorizontalLayout(dirBtnRow, 4f);
+            // Custom 3D Axis Override Inputs (X, Y, Z)
+            CreateVector3Row(_motionPathActiveControlsObj.transform, "Axis Vector", out _motionPathAxisXInput, out _motionPathAxisYInput, out _motionPathAxisZInput, OnMotionPathAxisInputChanged);
 
-            CreateButton(dirBtnRow.transform, "Btn_X", "+10m X", 60f, () => ApplyPointBOffset(new Vector3(10f, 0f, 0f)));
-            CreateButton(dirBtnRow.transform, "Btn_Y", "+10m Y", 60f, () => ApplyPointBOffset(new Vector3(0f, 10f, 0f)));
-            CreateButton(dirBtnRow.transform, "Btn_Z", "+10m Z", 60f, () => ApplyPointBOffset(new Vector3(0f, 0f, 10f)));
-            CreateButton(dirBtnRow.transform, "Btn_NegX", "-10m X", 60f, () => ApplyPointBOffset(new Vector3(-10f, 0f, 0f)));
+            // Quick Axis Helpers: Align to Path & Normalize
+            GameObject axisHelperRow = CreateRowContainer(_motionPathActiveControlsObj.transform, "Row_AxisHelpers", 24f);
+            SetupRowHorizontalLayout(axisHelperRow, 4f);
 
-            // Remove Path Button
-            GameObject removeBtnRow = CreateRowContainer(_motionPathActiveControlsObj.transform, "Row_Remove", 24f);
-            SetupRowHorizontalLayout(removeBtnRow, 0f);
-
-            CreateButton(removeBtnRow.transform, "Btn_RemovePath", "[- Remove Motion Path]", 240f, () =>
+            CreateButton(axisHelperRow.transform, "Btn_AlignPath", "Align Path Dir", 120f, () =>
             {
                 GameObject target = EditorSessionManager.SelectedObject;
                 if (target == null) return;
                 if (EditorSessionManager.IsWaypointMarker(target, out GameObject owner, out _)) target = owner;
 
-                EditorSessionManager.MotionPaths.Remove(target);
-                EditorSessionManager.DestroyWaypointVisuals(target);
-                RefreshInspectorValues();
-                EditorSessionManager.ShowNotification("Motion path removed.");
-            }, new Color(0.7f, 0.25f, 0.25f, 1f));
+                if (EditorSessionManager.MotionPaths.TryGetValue(target, out var mp) && mp != null)
+                {
+                    Vector3 delta = mp.PointB - mp.PointA;
+                    if (delta.sqrMagnitude > 0.001f)
+                    {
+                        mp.RotationAxis = 4; // Set to Custom Override
+                        mp.CustomAxis = target.transform.InverseTransformDirection(delta.normalized).normalized;
+                        RefreshInspectorValues();
+                        EditorSessionManager.ShowNotification($"Aligned axis to path: ({mp.CustomAxis.x:F2}, {mp.CustomAxis.y:F2}, {mp.CustomAxis.z:F2})");
+                    }
+                }
+            }, new Color(0.18f, 0.32f, 0.45f, 1f));
+
+            CreateButton(axisHelperRow.transform, "Btn_NormAxis", "Normalize", 115f, () =>
+            {
+                GameObject target = EditorSessionManager.SelectedObject;
+                if (target == null) return;
+                if (EditorSessionManager.IsWaypointMarker(target, out GameObject owner, out _)) target = owner;
+
+                if (EditorSessionManager.MotionPaths.TryGetValue(target, out var mp) && mp != null)
+                {
+                    if (mp.CustomAxis.sqrMagnitude > 0.0001f)
+                        mp.CustomAxis.Normalize();
+                    else
+                        mp.CustomAxis = Vector3.up;
+
+                    mp.RotationAxis = 4;
+                    RefreshInspectorValues();
+                    EditorSessionManager.ShowNotification("Normalized spin axis vector.");
+                }
+            }, new Color(0.22f, 0.25f, 0.30f, 1f));
         }
 
         private static void ApplyPointBOffset(Vector3 offset)
@@ -1113,7 +1181,7 @@ namespace DeadCoreEditor
             string search = (_browserSearchInput != null && !string.IsNullOrEmpty(_browserSearchInput.text))
                 ? _browserSearchInput.text.ToLower() : "";
 
-            // 1. Gather all assets matching the category tab and search text
+            // 1. calculGather all assets matching the category tab and search text
             List<CatalogAsset> matchedAssets = new List<CatalogAsset>();
 
             for (int i = 0; i < EditorSessionManager.AllAssets.Count; i++)
@@ -1795,6 +1863,9 @@ namespace DeadCoreEditor
                 if (_laserSection != null) _laserSection.SetActive(false);
                 if (_lightSection != null) _lightSection.SetActive(false);
                 if (_motionPathSection != null) _motionPathSection.SetActive(false);
+                if (_motionPathAxisXInput != null) _motionPathAxisXInput.text = "0";
+                if (_motionPathAxisYInput != null) _motionPathAxisYInput.text = "1";
+                if (_motionPathAxisZInput != null) _motionPathAxisZInput.text = "0";
                 return;
             }
 
@@ -1935,10 +2006,16 @@ namespace DeadCoreEditor
 
                     if (_motionPathAxisBtnText != null)
                     {
-                        string axisName = (motionPath.RotationAxis == 0) ? "X - Tumble" :
-                                          (motionPath.RotationAxis == 1 ? "Y - Turntable" : "Z - Roll");
-                        _motionPathAxisBtnText.text = $"Axis: [{axisName}]";
+                        _motionPathAxisBtnText.text = $"Axis: [{GetRotationAxisName(motionPath.RotationAxis)}]";
                     }
+
+                    Vector3 effAxis = (motionPath.RotationAxis == 4)
+                        ? motionPath.CustomAxis
+                        : motionPath.GetEffectiveLocalAxis(pathOwner != null ? pathOwner.transform : null);
+
+                    if (_motionPathAxisXInput != null) _motionPathAxisXInput.text = effAxis.x.ToString("F2", CultureInfo.InvariantCulture);
+                    if (_motionPathAxisYInput != null) _motionPathAxisYInput.text = effAxis.y.ToString("F2", CultureInfo.InvariantCulture);
+                    if (_motionPathAxisZInput != null) _motionPathAxisZInput.text = effAxis.z.ToString("F2", CultureInfo.InvariantCulture);
                 }
             }
 

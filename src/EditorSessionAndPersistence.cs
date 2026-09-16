@@ -141,6 +141,105 @@ namespace DeadCoreEditor
         private static readonly List<GameObject> _highlightBoxes = new List<GameObject>();
         private static readonly List<GameObject> _selectionBeacons = new List<GameObject>();
 
+        public struct PlaytestTransformSnapshot
+        {
+            public Vector3 LocalPosition;
+            public Quaternion LocalRotation;
+            public Vector3 LocalScale;
+        }
+
+        public static readonly Dictionary<GameObject, PlaytestTransformSnapshot> PlaytestSnapshots = new Dictionary<GameObject, PlaytestTransformSnapshot>();
+
+        /// <summary>
+        /// Captures the exact design-time local transforms of all placed objects and their sub-components.
+        /// </summary>
+        public static void CapturePlaytestSnapshots()
+        {
+            PlaytestSnapshots.Clear();
+            for (int i = 0; i < PlacedObjects.Count; i++)
+            {
+                GameObject obj = PlacedObjects[i];
+                if (obj == null) continue;
+
+                Transform[] allTransforms = obj.GetComponentsInChildren<Transform>(true);
+                for (int t = 0; t < allTransforms.Length; t++)
+                {
+                    Transform tr = allTransforms[t];
+                    if (tr == null || tr.name == "Editor_Snapping_Proxy") continue;
+
+                    PlaytestSnapshots[tr.gameObject] = new PlaytestTransformSnapshot
+                    {
+                        LocalPosition = tr.localPosition,
+                        LocalRotation = tr.localRotation,
+                        LocalScale = tr.localScale
+                    };
+                }
+            }
+        }
+
+        /// <summary>
+        /// Restores all objects back to their pre-playtest positions, rotations, scales, and physics states.
+        /// </summary>
+        public static void RestorePlaytestSnapshots()
+        {
+            if (PlaytestSnapshots.Count == 0) return;
+
+            foreach (var kvp in PlaytestSnapshots)
+            {
+                GameObject go = kvp.Key;
+                if (go == null) continue;
+
+                PlaytestTransformSnapshot snap = kvp.Value;
+                Transform tr = go.transform;
+
+                // 1. Freeze rigidbodies to prevent physics fights during reset
+                Rigidbody rb = go.GetComponent<Rigidbody>();
+                if (rb != null)
+                {
+                    rb.velocity = Vector3.zero;
+                    rb.angularVelocity = Vector3.zero;
+                    if (IsEditModeActive)
+                    {
+                        rb.isKinematic = true;
+                    }
+                }
+
+                // 2. Restore exact local transform
+                tr.localPosition = snap.LocalPosition;
+                tr.localRotation = snap.LocalRotation;
+                tr.localScale = snap.LocalScale;
+
+                if (rb != null)
+                {
+                    rb.position = tr.position;
+                    rb.rotation = tr.rotation;
+                }
+
+                // 3. Reactivate if deactivated during playtest
+                if (!go.activeSelf && PlacedObjects.Contains(go))
+                {
+                    go.SetActive(true);
+                }
+            }
+
+            // 4. Ensure motion path targets cleanly match Point A
+            for (int i = 0; i < PlacedObjects.Count; i++)
+            {
+                GameObject obj = PlacedObjects[i];
+                if (obj == null) continue;
+
+                StudioGizmoController.InvalidateCachedCenter(obj);
+
+                if (MotionPaths.TryGetValue(obj, out var path) && path != null)
+                {
+                    obj.transform.position = path.PointA;
+                }
+            }
+
+            UpdateSelectionHighlight();
+            StudioUIManager.RefreshInspectorValues();
+        }
+
         // =========================================================================
         // KEYBIND PARENTING WORKFLOW (Ctrl + P / Alt + P)
         // =========================================================================
@@ -297,21 +396,22 @@ namespace DeadCoreEditor
             ShowNotification(count > 0 ? $"Unparented {count} object(s) to root [Alt+P]" : "Selected objects are already at root.");
         }
 
-        public static void SetTurretSimulationActive(bool active)
+        public static void SetSimulationActive(bool active)
         {
             for (int i = 0; i < PlacedObjects.Count; i++)
             {
                 GameObject obj = PlacedObjects[i];
                 if (obj == null) continue;
 
+                // 1. Turret scripts
                 TurretScript[] ts = obj.GetComponentsInChildren<TurretScript>(true);
-                if (ts == null || ts.Length == 0) continue;
-
                 for (int s = 0; s < ts.Length; s++)
                 {
                     if (ts[s] != null) ts[s].enabled = active;
                 }
 
+                // 2. Freeze all Animators and Animations (Checkpoints, Gates, Platforms)
+                // This prevents Unity animations from locking transform.position in Edit Mode
                 Animator[] animators = obj.GetComponentsInChildren<Animator>(true);
                 for (int a = 0; a < animators.Length; a++)
                 {
@@ -324,6 +424,7 @@ namespace DeadCoreEditor
                     if (animations[a] != null) animations[a].enabled = active;
                 }
 
+                // 3. Make all rigidbodies kinematic in Edit Mode so they don't fall or resist gizmo moves
                 Rigidbody[] rbs = obj.GetComponentsInChildren<Rigidbody>(true);
                 for (int r = 0; r < rbs.Length; r++)
                 {
@@ -750,6 +851,7 @@ namespace DeadCoreEditor
                             Speed = item.MotionPath.Speed,
                             RotationSpeed = item.MotionPath.RotationSpeed,
                             RotationAxis = item.MotionPath.RotationAxis,
+                            CustomAxis = item.MotionPath.CustomAxis,
                             IsActive = true
                         };
                     }
@@ -904,12 +1006,15 @@ namespace DeadCoreEditor
             SetSpotlightMeshesVisible(IsEditModeActive);
 
             GameObject player = FindPlayerEntity();
-            SetTurretSimulationActive(!IsEditModeActive);
+            SetSimulationActive(!IsEditModeActive);
             SetSnappingProxiesActive(IsEditModeActive);
             SetJumperSimulationActive(!IsEditModeActive);
 
             if (IsEditModeActive)
             {
+                // EXITING PLAYTEST -> Reset all objects to their original positions/rotations
+                RestorePlaytestSnapshots();
+
                 if (player != null)
                 {
                     FrozenPlayerPosition = player.transform.position;
@@ -930,6 +1035,11 @@ namespace DeadCoreEditor
             }
             else
             {
+                // ENTERING PLAYTEST -> Snapshot current state and reset timers
+                CapturePlaytestSnapshots();
+                LevelTimer = 0f;
+                IsLevelCompleted = false;
+
                 EditorViewportCamera.DestroyCamera();
                 PlacementHologramController.DestroyPreview();
                 StudioGizmoController.DestroyGizmo();
@@ -1237,14 +1347,18 @@ namespace DeadCoreEditor
                 {
                     HelixPushingZone zone = c.GetComponent<HelixPushingZone>() ?? c.GetComponentInParent<HelixPushingZone>();
                     string cName = c.gameObject.name.ToLower();
-                    if (zone != null || cName.Contains("zone") || cName.Contains("push") || cName.Contains("vent") || cName.Contains("wind"))
+
+                    // Keep pushing zones AND blade/kill triggers as triggers
+                    if (zone != null || cName.Contains("zone") || cName.Contains("push") ||
+                        cName.Contains("vent") || cName.Contains("wind") || cName.Contains("kill") ||
+                        cName.Contains("death") || cName.Contains("blade") || cName.Contains("hazard"))
                     {
                         c.isTrigger = true;
                     }
                     else
                     {
-                        c.isTrigger = false;
-                        hasSolidCollider = true;
+                        // Keep the native housing solid without breaking native triggers
+                        if (!c.isTrigger) hasSolidCollider = true;
                     }
                 }
                 else if (isJumper || isTurret)
@@ -1601,6 +1715,7 @@ namespace DeadCoreEditor
             RedoHistory.Clear();
 
             CachedVoidDeathY = -140f;
+            PlaytestSnapshots.Clear();
             StudioUIManager.RefreshHierarchy();
         }
 
@@ -2254,8 +2369,7 @@ namespace DeadCoreEditor
                 // 2. Continuous rotation & player tangential momentum
                 if (Mathf.Abs(path.RotationSpeed) > 0.01f)
                 {
-                    Vector3 localAxis = (path.RotationAxis == 0) ? Vector3.right :
-                                        (path.RotationAxis == 2 ? Vector3.forward : Vector3.up);
+                    Vector3 localAxis = path.GetEffectiveLocalAxis(obj.transform);
 
                     float rotAngle = path.RotationSpeed * dt;
                     Vector3 worldAxis = obj.transform.TransformDirection(localAxis);
@@ -2269,9 +2383,11 @@ namespace DeadCoreEditor
                         Vector3 rotPush = newOffset - offset;
                         cc.Move(rotPush);
 
-                        if (path.RotationAxis == 1) // Apply yaw directly to player view
+                        // If the axis has a vertical (Y) component, rotate the player view accordingly
+                        if (Mathf.Abs(worldAxis.y) > 0.25f)
                         {
-                            player.transform.rotation = rotDelta * player.transform.rotation;
+                            float yawAngle = rotAngle * worldAxis.y;
+                            player.transform.rotation = Quaternion.AngleAxis(yawAngle, Vector3.up) * player.transform.rotation;
                         }
                     }
 
@@ -2284,7 +2400,7 @@ namespace DeadCoreEditor
 
                 float speed = Mathf.Max(0.1f, path.Speed);
                 float duration = dist / speed;
-                float t = Mathf.PingPong(Time.time / duration, 1.0f);
+                float t = Mathf.PingPong(LevelTimer / duration, 1.0f);
                 Vector3 targetPos = path.EvaluatePosition(t);
                 Vector3 deltaPos = targetPos - obj.transform.position;
 
@@ -2702,6 +2818,7 @@ namespace DeadCoreEditor
             SetSnappingProxiesActive(false);
             _lightRefreshTimer = 0.35f;
             SetSpotlightMeshesVisible(false);
+            CapturePlaytestSnapshots();
 
             UnfreezePlayerControls();
             IsLevelInitialized = true;
@@ -2961,7 +3078,7 @@ namespace DeadCoreEditor
                 if (EditorSessionManager.MotionPaths.ContainsKey(obj))
                 {
                     var mp = EditorSessionManager.MotionPaths[obj];
-                    pathParams = $";PATH:1:{mp.Speed.ToString("F2", inv)}:{mp.PointA.x.ToString("F4", inv)}:{mp.PointA.y.ToString("F4", inv)}:{mp.PointA.z.ToString("F4", inv)}:{mp.PointB.x.ToString("F4", inv)}:{mp.PointB.y.ToString("F4", inv)}:{mp.PointB.z.ToString("F4", inv)}:{mp.RotationSpeed.ToString("F2", inv)}:{mp.RotationAxis}";
+                    pathParams = $";PATH:1:{mp.Speed.ToString("F2", inv)}:{mp.PointA.x.ToString("F4", inv)}:{mp.PointA.y.ToString("F4", inv)}:{mp.PointA.z.ToString("F4", inv)}:{mp.PointB.x.ToString("F4", inv)}:{mp.PointB.y.ToString("F4", inv)}:{mp.PointB.z.ToString("F4", inv)}:{mp.RotationSpeed.ToString("F2", inv)}:{mp.RotationAxis}:{mp.CustomAxis.x.ToString("F4", inv)}:{mp.CustomAxis.y.ToString("F4", inv)}:{mp.CustomAxis.z.ToString("F4", inv)}";
                 }
 
                 int parentIdx = -1;
@@ -3114,6 +3231,19 @@ namespace DeadCoreEditor
                             float rotSpd = (pathParts.Length >= 9) ? ParseFloat(pathParts[8]) : 0f;
                             int rotAxis = (pathParts.Length >= 10 && int.TryParse(pathParts[9], out int ra)) ? ra : 1;
 
+                            Vector3 customAxis = Vector3.up;
+                            if (pathParts.Length >= 13)
+                            {
+                                customAxis = new Vector3(ParseFloat(pathParts[10]), ParseFloat(pathParts[11]), ParseFloat(pathParts[12]));
+                                if (customAxis.sqrMagnitude < 0.0001f) customAxis = Vector3.up;
+                            }
+                            else
+                            {
+                                if (rotAxis == 0) customAxis = Vector3.right;
+                                else if (rotAxis == 2) customAxis = Vector3.forward;
+                                else customAxis = Vector3.up;
+                            }
+
                             obj.transform.position = pA;
                             EditorSessionManager.MotionPaths[obj] = new ObjectMotionPath
                             {
@@ -3122,6 +3252,7 @@ namespace DeadCoreEditor
                                 Speed = spd > 0.01f ? spd : 3.5f,
                                 RotationSpeed = rotSpd,
                                 RotationAxis = rotAxis,
+                                CustomAxis = customAxis,
                                 IsActive = true
                             };
                         }

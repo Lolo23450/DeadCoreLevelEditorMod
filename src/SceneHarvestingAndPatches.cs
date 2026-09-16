@@ -173,64 +173,78 @@ namespace DeadCoreEditor
                 EditorSessionManager.AllAssets.Add(jAsset);
             }
 
-            // Gates & Checkpoints
+            // Gates & Checkpoints (Climb to gate root)
             try
             {
-                EditorSessionManager.PrefabCheckPoint = GameObject.FindObjectOfType<CheckPointScript>();
-                if (EditorSessionManager.PrefabCheckPoint == null)
+                CheckPointScript nativeCp = GameObject.FindObjectOfType<CheckPointScript>();
+                if (nativeCp == null)
                 {
                     CheckPointScript[] allCps = Resources.FindObjectsOfTypeAll<CheckPointScript>();
-                    if (allCps != null && allCps.Length > 0) EditorSessionManager.PrefabCheckPoint = allCps[0];
+                    if (allCps != null && allCps.Length > 0) nativeCp = allCps[0];
+                }
+
+                if (nativeCp != null)
+                {
+                    Transform rootT = nativeCp.transform;
+                    while (rootT.parent != null && (
+                        rootT.parent.name.ToLower().Contains("checkpoint") ||
+                        rootT.parent.name.ToLower().Contains("gate") ||
+                        rootT.parent.name.ToLower().Contains("porte") ||
+                        rootT.name.ToLower().Contains("trigger") ||
+                        rootT.name.ToLower().Contains("spawn")
+                    ))
+                    {
+                        rootT = rootT.parent;
+                    }
+
+                    EditorSessionManager.PrefabCheckPoint = rootT.GetComponentInChildren<CheckPointScript>();
+
+                    var cpAsset = new CatalogAsset
+                    {
+                        DisplayName = "Checkpoint Gate",
+                        SourceTemplate = rootT.gameObject,
+                        Category = AssetCategory.Gameplay,
+                        SubCategory = "Platforms",
+                        IsCheckPoint = true,
+                        DefaultScale = 1.0f,
+                        VerticalOffset = 0f,
+                        BaseRotation = Quaternion.identity
+                    };
+                    cpAsset.ComputeSizeMetrics();
+                    EditorSessionManager.AllAssets.Add(cpAsset);
+
+                    var spawnAsset = new CatalogAsset
+                    {
+                        DisplayName = "Entry Checkpoint (Start)",
+                        SourceTemplate = rootT.gameObject,
+                        Category = AssetCategory.Gameplay,
+                        SubCategory = "Platforms",
+                        IsCheckPoint = true,
+                        IsSpawnGate = true,
+                        DefaultScale = 1.0f,
+                        VerticalOffset = 0f,
+                        BaseRotation = Quaternion.identity
+                    };
+                    spawnAsset.ComputeSizeMetrics();
+                    EditorSessionManager.AllAssets.Add(spawnAsset);
+
+                    var goalAsset = new CatalogAsset
+                    {
+                        DisplayName = "Goal Checkpoint (Finish)",
+                        SourceTemplate = rootT.gameObject,
+                        Category = AssetCategory.Gameplay,
+                        SubCategory = "Platforms",
+                        IsCheckPoint = true,
+                        IsGoalGate = true,
+                        DefaultScale = 1.0f,
+                        VerticalOffset = 0f,
+                        BaseRotation = Quaternion.identity
+                    };
+                    goalAsset.ComputeSizeMetrics();
+                    EditorSessionManager.AllAssets.Add(goalAsset);
                 }
             }
             catch { }
-
-            if (EditorSessionManager.PrefabCheckPoint != null)
-            {
-                var cpAsset = new CatalogAsset
-                {
-                    DisplayName = "Checkpoint Gate",
-                    SourceTemplate = EditorSessionManager.PrefabCheckPoint.gameObject,
-                    Category = AssetCategory.Gameplay,
-                    SubCategory = "Platforms",
-                    IsCheckPoint = true,
-                    DefaultScale = 1.0f,
-                    VerticalOffset = -0.32f,
-                    BaseRotation = Quaternion.identity
-                };
-                cpAsset.ComputeSizeMetrics();
-                EditorSessionManager.AllAssets.Add(cpAsset);
-
-                var spawnAsset = new CatalogAsset
-                {
-                    DisplayName = "Entry Checkpoint (Start)",
-                    SourceTemplate = EditorSessionManager.PrefabCheckPoint.gameObject,
-                    Category = AssetCategory.Gameplay,
-                    SubCategory = "Platforms",
-                    IsCheckPoint = true,
-                    IsSpawnGate = true,
-                    DefaultScale = 1.0f,
-                    VerticalOffset = -0.32f,
-                    BaseRotation = Quaternion.identity
-                };
-                spawnAsset.ComputeSizeMetrics();
-                EditorSessionManager.AllAssets.Add(spawnAsset);
-
-                var goalAsset = new CatalogAsset
-                {
-                    DisplayName = "Goal Checkpoint (Finish)",
-                    SourceTemplate = EditorSessionManager.PrefabCheckPoint.gameObject,
-                    Category = AssetCategory.Gameplay,
-                    SubCategory = "Platforms",
-                    IsCheckPoint = true,
-                    IsGoalGate = true,
-                    DefaultScale = 1.0f,
-                    VerticalOffset = -0.32f,
-                    BaseRotation = Quaternion.identity
-                };
-                goalAsset.ComputeSizeMetrics();
-                EditorSessionManager.AllAssets.Add(goalAsset);
-            }
 
             // Tech Spotlight
             GameObject spotTemplate = new GameObject("Template_Spotlight");

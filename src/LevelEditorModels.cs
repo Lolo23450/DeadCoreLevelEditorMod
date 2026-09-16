@@ -117,12 +117,35 @@ namespace DeadCoreEditor
         public Vector3 PointB;
         public float Speed = 3.5f;
         public float RotationSpeed = 0f; // -150 to 150 deg/s (default 0 = no rotation)
-        public int RotationAxis = 1;      // 0 = X (Tumble), 1 = Y (Turntable), 2 = Z (Roll)
+        public int RotationAxis = 1;      // 0 = X (Tumble), 1 = Y (Turntable), 2 = Z (Roll), 3 = Path Dir, 4 = Custom Override
+        public Vector3 CustomAxis = Vector3.up; // Normalized spinning axis override (X, Y, Z)
         public bool IsActive = true;
         public Collider[] CachedColliders = null;
 
         public float TotalDistance => Vector3.Distance(PointA, PointB);
         public float TravelDuration => TotalDistance / Mathf.Max(0.1f, Speed);
+
+        public Vector3 GetEffectiveLocalAxis(Transform t = null)
+        {
+            if (RotationAxis == 0) return Vector3.right;
+            if (RotationAxis == 1) return Vector3.up;
+            if (RotationAxis == 2) return Vector3.forward;
+            if (RotationAxis == 3) // Along motion path direction (Point A -> Point B)
+            {
+                Vector3 pathDir = PointB - PointA;
+                if (pathDir.sqrMagnitude > 0.0001f)
+                {
+                    pathDir.Normalize();
+                    return (t != null) ? t.InverseTransformDirection(pathDir).normalized : pathDir;
+                }
+                return Vector3.up;
+            }
+            // 4 = Custom Override (or fallback)
+            if (CustomAxis.sqrMagnitude > 0.0001f)
+                return CustomAxis.normalized;
+
+            return Vector3.up;
+        }
 
         public ObjectMotionPath Clone()
         {
@@ -133,6 +156,7 @@ namespace DeadCoreEditor
                 Speed = this.Speed,
                 RotationSpeed = this.RotationSpeed,
                 RotationAxis = this.RotationAxis,
+                CustomAxis = this.CustomAxis,
                 IsActive = this.IsActive,
                 CachedColliders = null
             };

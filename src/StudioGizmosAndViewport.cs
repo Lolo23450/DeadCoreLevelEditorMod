@@ -175,6 +175,10 @@ namespace DeadCoreEditor
     // SECTION 2: HOLOGRAPHIC PREVIEW & HIGH-PRECISION BOUNDARY SNAPPING
     // =========================================================================
 
+    // =========================================================================
+    // SECTION 2: HOLOGRAPHIC PREVIEW & ROCK-SOLID BOUNDARY SNAPPING
+    // =========================================================================
+
     public static class PlacementHologramController
     {
         private static GameObject _ghostInstance = null;
@@ -183,7 +187,7 @@ namespace DeadCoreEditor
         private static Bounds _cachedGhostLocalBounds = new Bounds(Vector3.zero, Vector3.one * 2f);
         private static Vector3 _targetPosition = Vector3.zero;
         public static Vector3 TargetPosition => _targetPosition;
-        private static Vector3 _currentSnappedNormal = Vector3.up;
+        private static Vector3 _currentStableNormal = Vector3.up;
 
         public static void SpawnHologram(CatalogAsset asset)
         {
@@ -194,16 +198,15 @@ namespace DeadCoreEditor
             _ghostInstance.name = "Holographic_Ghost_Preview";
             _ghostInstance.layer = 2; // Layer 2: Ignore Raycast
 
-            // Put every child on layer 2 so the raycast never hits the preview
             foreach (var tr in _ghostInstance.GetComponentsInChildren<Transform>(true))
             {
                 tr.gameObject.layer = 2;
             }
 
-            // Disable all physical colliders on the ghost to eliminate self-intersection
+            // Remove all colliders from ghost preview to eliminate self-intersection
             foreach (var col in _ghostInstance.GetComponentsInChildren<Collider>(true))
             {
-                col.enabled = false;
+                GameObject.DestroyImmediate(col);
             }
 
             foreach (var mb in _ghostInstance.GetComponentsInChildren<MonoBehaviour>(true))
@@ -213,9 +216,7 @@ namespace DeadCoreEditor
 
             EditorSessionManager.StripParticlesAndLights(_ghostInstance);
 
-            // Cache local bounds once (no physics collider needed on the ghost)
             _cachedGhostLocalBounds = CalculateOptimizedProxyBounds(_ghostInstance);
-
             _ghostInstance.transform.localScale = Vector3.one * EditorSessionManager.ActivePlacementScale;
             ApplyRotationToPreview();
             _ghostInstance.SetActive(true);
@@ -269,7 +270,6 @@ namespace DeadCoreEditor
             return hasBounds ? localBounds : new Bounds(Vector3.zero, Vector3.one * 2f);
         }
 
-        // Mathematical OBB half-extent along an arbitrary normal vector
         public static float GetProjectedHalfExtent(Vector3 localExtents, Vector3 scale, Quaternion rotation, Vector3 normal)
         {
             Vector3 scaledExtents = new Vector3(
@@ -289,8 +289,7 @@ namespace DeadCoreEditor
 
         public static Vector3 GetWorldCenterOffset(Vector3 localCenter, Vector3 scale, Quaternion rotation)
         {
-            Vector3 scaledCenter = Vector3.Scale(localCenter, scale);
-            return rotation * scaledCenter;
+            return rotation * Vector3.Scale(localCenter, scale);
         }
 
         public static Quaternion CalculateActiveRotation(CatalogAsset asset, Vector3 surfaceNormal)
@@ -311,7 +310,7 @@ namespace DeadCoreEditor
         {
             if (_ghostInstance != null)
             {
-                _ghostInstance.transform.rotation = CalculateActiveRotation(EditorSessionManager.CurrentAsset, _currentSnappedNormal);
+                _ghostInstance.transform.rotation = CalculateActiveRotation(EditorSessionManager.CurrentAsset, _currentStableNormal);
             }
         }
 
@@ -370,7 +369,7 @@ namespace DeadCoreEditor
                 ? EditorViewportCamera.ViewportCamera.ViewportPointToRay(new Vector3(0.5f, 0.5f, 0f))
                 : EditorViewportCamera.ViewportCamera.ScreenPointToRay(Input.mousePosition);
 
-            // Filter out Layer 2 (Ignore Raycast) completely
+            // Filter out Layer 2 (Ignore Raycast)
             int raycastMask = ~LayerMask.GetMask("Ignore Raycast");
             RaycastHit[] hits = Physics.RaycastAll(ray, 1500f, raycastMask, QueryTriggerInteraction.Ignore);
 
@@ -405,69 +404,51 @@ namespace DeadCoreEditor
             }
             else
             {
-                if (EditorSessionManager.EnforceAdjacentPlacement && EditorSessionManager.LastPlacedObject != null && EditorSessionManager.LastPlacedObject.activeSelf)
+                // Smooth fallback plane without jumping miles away
+                Plane fallbackPlane = new Plane(Vector3.up, _targetPosition);
+                if (fallbackPlane.Raycast(ray, out float enter))
                 {
-                    Transform lastTr = EditorSessionManager.LastPlacedObject.transform;
-                    Vector3 toCam = (EditorViewportCamera.ViewportCamera.transform.position - lastTr.position).normalized;
-                    rawTargetPos = lastTr.position + Vector3.ProjectOnPlane(toCam, Vector3.up).normalized * 4f;
-                    hitNormal = Vector3.up;
+                    rawTargetPos = ray.GetPoint(Mathf.Min(enter, 35f));
                 }
                 else
                 {
                     rawTargetPos = ray.origin + ray.direction * 14f;
-                    hitNormal = -ray.direction;
                 }
+                hitNormal = Vector3.up;
             }
-
-            Quaternion targetRot = CalculateActiveRotation(EditorSessionManager.CurrentAsset, hitNormal);
 
             _targetPosition = CalculateAccurateBoundaryPosition(
                 rawTargetPos,
-                targetRot,
                 hitNormal,
                 hasHit,
                 hitCollider,
-                EditorSessionManager.CurrentAsset
+                EditorSessionManager.CurrentAsset,
+                out Quaternion targetRot
             );
 
-            // Responsive snap with no rubber-band lag
-            float distToTarget = Vector3.Distance(_ghostInstance.transform.position, _targetPosition);
-            if (distToTarget > 12f)
-            {
-                _ghostInstance.transform.position = _targetPosition;
-            }
-            else
-            {
-                _ghostInstance.transform.position = Vector3.Lerp(_ghostInstance.transform.position, _targetPosition, Time.deltaTime * 50f);
-            }
+            // Instant 1:1 positioning without lag or elastic jitter
+            _ghostInstance.transform.position = _targetPosition;
+            _ghostInstance.transform.rotation = targetRot;
 
-            _ghostInstance.transform.rotation = Quaternion.Slerp(_ghostInstance.transform.rotation, targetRot, Time.deltaTime * 35f);
-
+            // Click to commit placement (never blocked by gizmos)
             if (Input.GetMouseButtonDown(0) && !Input.GetMouseButton(1) && !StudioUIManager.IsPointerOverUI())
             {
-                if (!StudioGizmoController.IsHoveringHandle)
-                {
-                    CommitPlacement(targetRot);
-                }
+                CommitPlacement(targetRot);
             }
         }
 
-        // =========================================================================
-        // MATHEMATICALLY EXACT BOUNDARY CONTACT & ADJACENT SURFACE SNAPPING
-        // =========================================================================
         public static Vector3 CalculateAccurateBoundaryPosition(
             Vector3 rawHitPos,
-            Quaternion ghostRot,
             Vector3 rawHitNormal,
             bool hasHit,
             Collider hitCol,
-            CatalogAsset asset)
+            CatalogAsset asset,
+            out Quaternion finalRotation)
         {
             Vector3 ghostScale = Vector3.one * EditorSessionManager.ActivePlacementScale;
             float grid = EditorSessionManager.CurrentGridSnap;
             bool isGridActive = grid > 0.01f;
 
-            // 1. Identify if we hit an existing placed object
             GameObject hitPlacedObj = null;
             Transform curr = (hitCol != null) ? hitCol.transform : null;
             while (curr != null)
@@ -480,35 +461,43 @@ namespace DeadCoreEditor
                 curr = curr.parent;
             }
 
-            // 2. High-Precision Adjacent Snapping (Object-to-Object)
+            // High-Precision Face Detection using Normalized Box Coordinates
             if (hitPlacedObj != null)
             {
                 Quaternion rotA = hitPlacedObj.transform.rotation;
                 Vector3 scaleA = hitPlacedObj.transform.lossyScale;
                 Bounds boundsA = CalculateOptimizedProxyBounds(hitPlacedObj);
                 Vector3 centerA_world = hitPlacedObj.transform.position + GetWorldCenterOffset(boundsA.center, scaleA, rotA);
+                Vector3 extentsA = Vector3.Scale(boundsA.extents, scaleA);
 
-                // Convert normal to hit object's local space to lock onto exact face without jitter
-                Vector3 localHitNormal = Quaternion.Inverse(rotA) * rawHitNormal;
+                // Transform hit point into hit object's local space relative to center
+                Vector3 localHitPoint = Quaternion.Inverse(rotA) * (rawHitPos - centerA_world);
+
+                // Normalized offsets along box axes
+                float nx = localHitPoint.x / Mathf.Max(0.01f, extentsA.x);
+                float ny = (localHitPoint.y / Mathf.Max(0.01f, extentsA.y)) * 1.15f; // Slight top bias
+                float nz = localHitPoint.z / Mathf.Max(0.01f, extentsA.z);
+
+                float ax = Mathf.Abs(nx);
+                float ay = Mathf.Abs(ny);
+                float az = Mathf.Abs(nz);
+
                 Vector3 localCardNormal;
-                float ax = Mathf.Abs(localHitNormal.x);
-                float ay = Mathf.Abs(localHitNormal.y);
-                float az = Mathf.Abs(localHitNormal.z);
-
-                if (ay >= ax && ay >= az) localCardNormal = new Vector3(0f, Mathf.Sign(localHitNormal.y), 0f);
-                else if (ax >= ay && ax >= az) localCardNormal = new Vector3(Mathf.Sign(localHitNormal.x), 0f, 0f);
-                else localCardNormal = new Vector3(0f, 0f, Mathf.Sign(localHitNormal.z));
+                if (ay >= ax && ay >= az) localCardNormal = new Vector3(0f, Mathf.Sign(ny), 0f);
+                else if (ax >= ay && ax >= az) localCardNormal = new Vector3(Mathf.Sign(nx), 0f, 0f);
+                else localCardNormal = new Vector3(0f, 0f, Mathf.Sign(nz));
 
                 Vector3 faceNormal_world = rotA * localCardNormal;
+                _currentStableNormal = faceNormal_world;
 
-                // Exact OBB extent projection along face normal
+                finalRotation = CalculateActiveRotation(asset, _currentStableNormal);
+
                 float extA = GetProjectedHalfExtent(boundsA.extents, scaleA, rotA, faceNormal_world);
-                float extB = GetProjectedHalfExtent(_cachedGhostLocalBounds.extents, ghostScale, ghostRot, faceNormal_world);
+                float extB = GetProjectedHalfExtent(_cachedGhostLocalBounds.extents, ghostScale, finalRotation, faceNormal_world);
                 float contactDist = extA + extB;
 
                 Vector3 faceCenter_world = centerA_world + faceNormal_world * contactDist;
 
-                // Determine orthogonal tangent axes for smooth surface sliding / grid stepping
                 Vector3 t1Local, t2Local;
                 if (Mathf.Abs(localCardNormal.y) > 0.5f)
                 {
@@ -540,17 +529,20 @@ namespace DeadCoreEditor
                 }
 
                 Vector3 targetCenter_world = faceCenter_world + (t1 * offset1) + (t2 * offset2);
-                Vector3 ghostCenterOffset_world = GetWorldCenterOffset(_cachedGhostLocalBounds.center, ghostScale, ghostRot);
+                Vector3 ghostCenterOffset_world = GetWorldCenterOffset(_cachedGhostLocalBounds.center, ghostScale, finalRotation);
 
                 return targetCenter_world - ghostCenterOffset_world;
             }
 
-            // 3. World / Geometry Surface Contact (Floors, Scenery)
+            // World Surface Contact (Floors)
             Vector3 contactNormal = rawHitNormal.normalized;
             if (contactNormal.y > 0.65f) contactNormal = Vector3.up;
             else if (contactNormal.y < -0.65f) contactNormal = Vector3.down;
+            _currentStableNormal = contactNormal;
 
-            float normalExtB = GetProjectedHalfExtent(_cachedGhostLocalBounds.extents, ghostScale, ghostRot, contactNormal);
+            finalRotation = CalculateActiveRotation(asset, _currentStableNormal);
+
+            float normalExtB = GetProjectedHalfExtent(_cachedGhostLocalBounds.extents, ghostScale, finalRotation, contactNormal);
             Vector3 contactCenter_world = rawHitPos + contactNormal * (normalExtB + 0.001f);
 
             if (isGridActive)
@@ -562,7 +554,7 @@ namespace DeadCoreEditor
                 );
             }
 
-            Vector3 finalCenterOffset = GetWorldCenterOffset(_cachedGhostLocalBounds.center, ghostScale, ghostRot);
+            Vector3 finalCenterOffset = GetWorldCenterOffset(_cachedGhostLocalBounds.center, ghostScale, finalRotation);
             return contactCenter_world - finalCenterOffset;
         }
 
@@ -621,7 +613,7 @@ namespace DeadCoreEditor
     }
 
     // =========================================================================
-    // SECTION 3: 3D GIZMO CONTROLLER (OVERHAULED DYNAMIC PROJECTION & PER-AXIS SCALING)
+    // SECTION 3: 3D GIZMO CONTROLLER (SELECT MODE ONLY - ZERO INTERFERENCE)
     // =========================================================================
 
     public static class StudioGizmoController
@@ -643,12 +635,10 @@ namespace DeadCoreEditor
         private static Material _matBlue = null;
         private static Material _matYellow = null;
 
-        // Active State
         private static int _activeDragAxis = -1; // 0=X, 1=Y, 2=Z, 3=Center
         public static bool IsDraggingGizmo => _activeDragAxis != -1;
         public static bool IsHoveringHandle = false;
 
-        // User tunable scale multiplier (adjustable via '[' and ']' or inspector)
         public static float GizmoScaleMultiplier = 1.0f;
 
         private static Vector3 _dragStartCenterPos = Vector3.zero;
@@ -660,9 +650,6 @@ namespace DeadCoreEditor
         private static readonly Dictionary<GameObject, Quaternion> _dragStartRotations = new Dictionary<GameObject, Quaternion>();
         private static readonly Dictionary<GameObject, Vector3> _dragStartScales = new Dictionary<GameObject, Vector3>();
 
-        // ---------------------------------------------------------------------
-        // COMPACT DIRECTIONAL SUNLIGHT WIDGET
-        // ---------------------------------------------------------------------
         public static void AttachSunVisualWidget(GameObject sunObj)
         {
             if (sunObj == null) return;
@@ -683,12 +670,14 @@ namespace DeadCoreEditor
             Material sunMat = CreateSolidMaterial(sunColor);
 
             GameObject orb = GameObject.CreatePrimitive(PrimitiveType.Sphere);
+            StripCollider(orb);
             orb.name = "Sun_Orb";
             orb.transform.SetParent(widget.transform, false);
             orb.transform.localScale = Vector3.one * 0.75f;
             orb.GetComponent<Renderer>().sharedMaterial = sunMat;
 
             GameObject ray = GameObject.CreatePrimitive(PrimitiveType.Cylinder);
+            StripCollider(ray);
             ray.name = "Sun_Ray_Shaft";
             ray.transform.SetParent(widget.transform, false);
             ray.transform.localRotation = Quaternion.Euler(90f, 0f, 0f);
@@ -697,6 +686,7 @@ namespace DeadCoreEditor
             ray.GetComponent<Renderer>().sharedMaterial = sunMat;
 
             GameObject tip = GameObject.CreatePrimitive(PrimitiveType.Sphere);
+            StripCollider(tip);
             tip.name = "Sun_Ray_Tip";
             tip.transform.SetParent(widget.transform, false);
             tip.transform.localPosition = new Vector3(0f, 0f, 1.6f);
@@ -757,9 +747,6 @@ namespace DeadCoreEditor
             _cachedLocalCentroids.Clear();
         }
 
-        // =========================================================================
-        // SOLID OVERLAY GIZMO MATERIALS (ZTEST ALWAYS SO HANDLES NEVER GET BURIED)
-        // =========================================================================
         private static Material CreateSolidMaterial(Color col)
         {
             Shader s = Shader.Find("HDRP/Unlit")
@@ -771,6 +758,7 @@ namespace DeadCoreEditor
             if (s == null)
             {
                 GameObject temp = GameObject.CreatePrimitive(PrimitiveType.Cube);
+                StripCollider(temp);
                 Renderer rend = temp.GetComponent<Renderer>();
                 if (rend != null && rend.sharedMaterial != null) s = rend.sharedMaterial.shader;
                 GameObject.DestroyImmediate(temp);
@@ -790,10 +778,16 @@ namespace DeadCoreEditor
                 m.EnableKeyword("_EMISSION");
             }
 
-            // Always render on top of scene geometry (ZTest Always)
             if (m.HasProperty("_ZTest")) m.SetInt("_ZTest", (int)UnityEngine.Rendering.CompareFunction.Always);
             m.renderQueue = 3500;
             return m;
+        }
+
+        private static void StripCollider(GameObject go)
+        {
+            if (go == null) return;
+            Collider c = go.GetComponent<Collider>();
+            if (c != null) GameObject.DestroyImmediate(c);
         }
 
         private static void EnsureGizmoInstances()
@@ -806,6 +800,7 @@ namespace DeadCoreEditor
             _matYellow = CreateSolidMaterial(new Color(1f, 0.92f, 0.15f, 1f));
 
             _gizmoRoot = new GameObject("Studio_3D_Gizmo_Root");
+            _gizmoRoot.layer = 2; // Layer 2: Ignore Raycast
 
             // 1. TRANSLATE
             _groupTranslate = new GameObject("Group_Translate");
@@ -844,6 +839,7 @@ namespace DeadCoreEditor
             root.transform.SetParent(parent, false);
 
             GameObject shaft = GameObject.CreatePrimitive(PrimitiveType.Cylinder);
+            StripCollider(shaft);
             shaft.name = "Shaft";
             shaft.transform.SetParent(root.transform, false);
             shaft.transform.localScale = new Vector3(0.18f, 0.9f, 0.18f);
@@ -852,6 +848,7 @@ namespace DeadCoreEditor
             shaft.GetComponent<Renderer>().sharedMaterial = mat;
 
             GameObject tip = GameObject.CreatePrimitive(PrimitiveType.Sphere);
+            StripCollider(tip);
             tip.name = "Tip";
             tip.transform.SetParent(root.transform, false);
             tip.transform.localScale = new Vector3(0.55f, 0.55f, 0.55f);
@@ -867,6 +864,7 @@ namespace DeadCoreEditor
             root.transform.SetParent(parent, false);
 
             GameObject shaft = GameObject.CreatePrimitive(PrimitiveType.Cylinder);
+            StripCollider(shaft);
             shaft.name = "Shaft";
             shaft.transform.SetParent(root.transform, false);
             shaft.transform.localScale = new Vector3(0.18f, 0.9f, 0.18f);
@@ -875,6 +873,7 @@ namespace DeadCoreEditor
             shaft.GetComponent<Renderer>().sharedMaterial = mat;
 
             GameObject cube = GameObject.CreatePrimitive(PrimitiveType.Cube);
+            StripCollider(cube);
             cube.name = "TipCube";
             cube.transform.SetParent(root.transform, false);
             cube.transform.localScale = new Vector3(0.52f, 0.52f, 0.52f);
@@ -911,6 +910,7 @@ namespace DeadCoreEditor
         private static GameObject CreatePrimitiveObj(PrimitiveType type, Transform parent, string name, Vector3 localPos, Vector3 scale, Material mat)
         {
             GameObject go = GameObject.CreatePrimitive(type);
+            StripCollider(go);
             go.name = name;
             go.transform.SetParent(parent, false);
             go.transform.localPosition = localPos;
@@ -919,23 +919,18 @@ namespace DeadCoreEditor
             return go;
         }
 
-        // =========================================================================
-        // OVERHAULED MULTI-FACTOR GIZMO SCALING PIPELINE
-        // =========================================================================
         public static float CalculateDynamicGizmoScale(Camera cam, Vector3 center3D, List<GameObject> targets)
         {
             if (cam == null) return 1.0f;
 
-            // 1. Perspective Distance & Screen Space Ratio
             float dist = Vector3.Distance(cam.transform.position, center3D);
             float fovRad = cam.fieldOfView * 0.5f * Mathf.Deg2Rad;
             float frustumHeightAtDist = 2.0f * dist * Mathf.Tan(fovRad);
-            float baseScreenScale = frustumHeightAtDist * 0.085f;
 
-            // 2. Object Scale & Bounding Extents Influence
+            float distanceFalloff = Mathf.Lerp(1.25f, 0.30f, Mathf.InverseLerp(5f, 75f, dist));
+            float baseScreenScale = frustumHeightAtDist * 0.080f * distanceFalloff;
+
             float maxObjExtent = 0f;
-            float maxObjScale = 1f;
-
             for (int i = 0; i < targets.Count; i++)
             {
                 GameObject go = targets[i];
@@ -944,25 +939,20 @@ namespace DeadCoreEditor
                 Bounds b = GetObjectWorldBounds(go);
                 float ext = Mathf.Max(b.extents.x, Mathf.Max(b.extents.y, b.extents.z));
                 if (ext > maxObjExtent) maxObjExtent = ext;
-
-                Vector3 ls = go.transform.lossyScale;
-                float s = Mathf.Max(Mathf.Abs(ls.x), Mathf.Max(Mathf.Abs(ls.y), Mathf.Abs(ls.z)));
-                if (s > maxObjScale) maxObjScale = s;
             }
 
-            // Ensures handles reach outside huge platforms when close, but don't overgrow when far
-            float extentClearance = Mathf.Clamp(maxObjExtent * 0.15f, 0f, 12f);
+            float clearanceFade = Mathf.Clamp01(1.0f - (dist / 40f));
+            float extentClearance = Mathf.Clamp(maxObjExtent * 0.12f, 0f, 6f) * clearanceFade;
 
-            // 3. User & Placement Multipliers
-            float placementMul = Mathf.Clamp(EditorSessionManager.ActivePlacementScale, 0.2f, 5.0f);
-            float finalScale = (baseScreenScale + extentClearance * 0.25f) * GizmoScaleMultiplier;
-
-            return Mathf.Clamp(finalScale, 0.4f, 90f);
+            float finalScale = (baseScreenScale + extentClearance) * GizmoScaleMultiplier;
+            return Mathf.Clamp(finalScale, 0.2f, 18f);
         }
 
         public static void UpdateGizmo()
         {
-            if (!EditorSessionManager.IsEditModeActive)
+            // The Gizmo should ONLY be active in Select Mode. 
+            // In Placement Mode, it is hidden so it never blocks placement clicks or causes jitter!
+            if (!EditorSessionManager.IsEditModeActive || EditorSessionManager.InteractionMode != EditorInteractionMode.SelectMode)
             {
                 if (_gizmoRoot != null) _gizmoRoot.SetActive(false);
                 IsHoveringHandle = false;
@@ -980,30 +970,18 @@ namespace DeadCoreEditor
                 EditorSessionManager.ShowNotification($"Gizmo Scale: {GizmoScaleMultiplier:F2}x");
             }
 
-            bool isPlacing = (EditorSessionManager.InteractionMode == EditorInteractionMode.PlacementMode);
             List<GameObject> activeList = new List<GameObject>();
-
-            if (isPlacing)
+            if (EditorSessionManager.SelectedObjects != null && EditorSessionManager.SelectedObjects.Count > 0)
             {
-                if (PlacementHologramController.GhostInstance != null && PlacementHologramController.GhostInstance.activeSelf)
-                    activeList.Add(PlacementHologramController.GhostInstance);
-                else if (EditorSessionManager.SelectedObject != null)
-                    activeList.Add(EditorSessionManager.SelectedObject);
+                for (int i = 0; i < EditorSessionManager.SelectedObjects.Count; i++)
+                {
+                    GameObject go = EditorSessionManager.SelectedObjects[i];
+                    if (go != null && go.activeSelf) activeList.Add(go);
+                }
             }
-            else
+            else if (EditorSessionManager.SelectedObject != null && EditorSessionManager.SelectedObject.activeSelf)
             {
-                if (EditorSessionManager.SelectedObjects != null && EditorSessionManager.SelectedObjects.Count > 0)
-                {
-                    for (int i = 0; i < EditorSessionManager.SelectedObjects.Count; i++)
-                    {
-                        GameObject go = EditorSessionManager.SelectedObjects[i];
-                        if (go != null && go.activeSelf) activeList.Add(go);
-                    }
-                }
-                else if (EditorSessionManager.SelectedObject != null && EditorSessionManager.SelectedObject.activeSelf)
-                {
-                    activeList.Add(EditorSessionManager.SelectedObject);
-                }
+                activeList.Add(EditorSessionManager.SelectedObject);
             }
 
             if (activeList.Count == 0)
@@ -1031,11 +1009,10 @@ namespace DeadCoreEditor
                 _gizmoRoot.transform.position = center3D;
             }
 
-            // Multi-factor dynamic scaling
             _lastCalculatedGizmoScale = CalculateDynamicGizmoScale(cam, center3D, activeList);
             _gizmoRoot.transform.localScale = Vector3.one * _lastCalculatedGizmoScale;
 
-            EditorGizmoMode mode = isPlacing ? EditorGizmoMode.Translate : EditorSessionManager.CurrentGizmoMode;
+            EditorGizmoMode mode = EditorSessionManager.CurrentGizmoMode;
             if (mode == EditorGizmoMode.Select) mode = EditorGizmoMode.Translate;
 
             _groupTranslate.SetActive(mode == EditorGizmoMode.Translate);
@@ -1046,24 +1023,18 @@ namespace DeadCoreEditor
             int hovered = Check3DHover(cam, center3D, _lastCalculatedGizmoScale, mode);
             IsHoveringHandle = (hovered != -1 || _activeDragAxis != -1);
 
-            if (!isPlacing)
-            {
-                Handle3DDragging(activeList, cam, center3D, hovered, mode);
-            }
+            Handle3DDragging(activeList, cam, center3D, hovered, mode);
         }
 
-        // =========================================================================
-        // MATHEMATICAL SCREEN-SPACE HOVER DETECTION (ADAPTIVE TO DYNAMIC GIZMO SCALE)
-        // =========================================================================
         private static int Check3DHover(Camera cam, Vector3 center3D, float gizmoScale, EditorGizmoMode mode)
         {
             if (StudioUIManager.IsPointerOverUI()) return -1;
 
             Vector3 sCenter = cam.WorldToScreenPoint(center3D);
-            if (sCenter.z <= 0.1f) return -1; // Behind camera
+            if (sCenter.z <= 0.1f) return -1;
 
             Vector2 mousePos = Input.mousePosition;
-            float hitRadius = 24f; // pixels
+            float hitRadius = 24f;
 
             if (mode == EditorGizmoMode.Translate)
             {
@@ -1079,17 +1050,16 @@ namespace DeadCoreEditor
                 float minD = Mathf.Min(dX, Mathf.Min(dY, dZ));
                 if (minD < hitRadius)
                 {
-                    if (minD == dX) return 0; // X
-                    if (minD == dY) return 1; // Y
-                    if (minD == dZ) return 2; // Z
+                    if (minD == dX) return 0;
+                    if (minD == dY) return 1;
+                    if (minD == dZ) return 2;
                 }
             }
             else if (mode == EditorGizmoMode.Scale)
             {
-                // Check center uniform scale box first
                 if (Vector2.Distance(mousePos, sCenter) < 18f)
                 {
-                    return 3; // Center Uniform Scale
+                    return 3;
                 }
 
                 float stemLen = 1.85f * gizmoScale;
@@ -1104,9 +1074,9 @@ namespace DeadCoreEditor
                 float minD = Mathf.Min(dX, Mathf.Min(dY, dZ));
                 if (minD < hitRadius)
                 {
-                    if (minD == dX) return 0; // X non-uniform
-                    if (minD == dY) return 1; // Y non-uniform
-                    if (minD == dZ) return 2; // Z non-uniform
+                    if (minD == dX) return 0;
+                    if (minD == dY) return 1;
+                    if (minD == dZ) return 2;
                 }
             }
             else if (mode == EditorGizmoMode.Rotate)
@@ -1123,9 +1093,9 @@ namespace DeadCoreEditor
                 float minD = Mathf.Min(dX, Mathf.Min(dY, dZ));
                 if (minD < hitRadius + 4f)
                 {
-                    if (minD == dX) return 0; // Pitch
-                    if (minD == dY) return 1; // Yaw
-                    if (minD == dZ) return 2; // Roll
+                    if (minD == dX) return 0;
+                    if (minD == dY) return 1;
+                    if (minD == dZ) return 2;
                 }
             }
 
@@ -1142,9 +1112,6 @@ namespace DeadCoreEditor
             return Vector2.Distance(p, a + ba * t);
         }
 
-        // =========================================================================
-        // 1:1 PLANE-PROJECTION DRAGGING & INDEPENDENT PER-AXIS SCALING
-        // =========================================================================
         private static void Handle3DDragging(List<GameObject> targets, Camera cam, Vector3 center3D, int hovered, EditorGizmoMode mode)
         {
             if (Input.GetMouseButtonDown(0) && !Input.GetMouseButton(1) && !StudioUIManager.IsPointerOverUI())
@@ -1271,21 +1238,21 @@ namespace DeadCoreEditor
 
                         Vector3 baseScale = _dragStartScales[go];
 
-                        if (_activeDragAxis == 3) // Center Box: Uniform scale on all axes
+                        if (_activeDragAxis == 3)
                         {
                             Vector3 offset = _dragStartPositions[go] - _dragStartCenterPos;
                             go.transform.position = _dragStartCenterPos + (offset * factor);
                             go.transform.localScale = baseScale * factor;
                         }
-                        else if (_activeDragAxis == 0) // Red Handle: X-Axis only
+                        else if (_activeDragAxis == 0)
                         {
                             go.transform.localScale = new Vector3(Mathf.Max(0.02f, baseScale.x * factor), baseScale.y, baseScale.z);
                         }
-                        else if (_activeDragAxis == 1) // Green Handle: Y-Axis only
+                        else if (_activeDragAxis == 1)
                         {
                             go.transform.localScale = new Vector3(baseScale.x, Mathf.Max(0.02f, baseScale.y * factor), baseScale.z);
                         }
-                        else if (_activeDragAxis == 2) // Blue Handle: Z-Axis only
+                        else if (_activeDragAxis == 2)
                         {
                             go.transform.localScale = new Vector3(baseScale.x, baseScale.y, Mathf.Max(0.02f, baseScale.z * factor));
                         }

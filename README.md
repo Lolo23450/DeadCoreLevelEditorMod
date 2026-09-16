@@ -1,6 +1,30 @@
-# DeadCore Level Editor Suite
+# DeadCore Level Editor Suite — Studio Edition
 
-A real-time, in-game 3D level editor and custom map manager for **DeadCore Redux**. Build custom parkour courses, place native mechanics (jump pads, turbines, defense turrets, rotating lasers, checkpoints), link moving kinematic paths, customize map lighting, and playtest seamlessly inside the engine.
+A real-time, in-engine 3D level editor and custom map studio for **DeadCore Redux**. Build intricate parkour courses, place native mechanics (jump pads, turbines, defense turrets, rotating lasers, checkpoints), configure kinematic motion paths with custom spinning axis overrides, tune physical HDRP scene lighting, and playtest instantly with one keystroke.
+
+---
+
+## Key Features
+
+* **Complete Studio Workspace**: Docked UGUI panels including an interactive Scene Hierarchy, Contextual Inspector, Top Toolbar, and an Asset Browser with live 3D isometric previews.
+* **3D Transform Gizmos**: Native Translation, Rotation, and Scaling gizmos (including uniform center-scale and independent 3D non-uniform axis scaling).
+* **Kinematic Motion Paths & Visual Waypoints**:
+  * In-scene interactive waypoint handles (Point A = Green sphere, Point B = Orange sphere) with real-time vector connection lines.
+  * Standing player momentum carry and friction transfer.
+  * **Spinning Axis Override**: Rotate platforms around canonical axes (`X`, `Y`, `Z`), align rotation along the motion path vector (`Point A -> Point B`), or define a custom 3D vector override `(X, Y, Z)` with one-click path alignment and normalization tools.
+* **Scene Hierarchy with Drag & Drop**:
+  * Parent and unparent objects via keybinds (`Ctrl+P`, `Alt+P`) or by dragging rows in the hierarchy tree.
+  * Cycle-detection prevents recursive parenting loops.
+  * Quick-focus (`[F]`) and instant unparent (`[X]`) buttons per row.
+* **Catalog Asset Browser**:
+  * Categorized filtering: `Architecture`, `Platforms`, `Gameplay`, `Hazards`, `All`.
+  * Size-tier filters (`Small <4m`, `Medium 4–15m`, `Large 15–45m`, `Giant >45m`) and ascending/descending physical size sorting.
+  * Color-coded physical size badges (`16x2x16`, `12m`, etc.) rendered on every thumbnail.
+* **Physical HDRP Lighting & Atmosphere**:
+  * Direct control over Global Sunlight and focused Tech Spotlights.
+  * Calibrated physical Lux/Lumens intensity, cone spot angles, volumetric scattering/fog dimmers, and an RGB color swatch with instant presets.
+* **Automated 3D Isometric Thumbnails**: Captures 18° low-FOV isometric `.png` snapshots of your courses automatically upon saving.
+* **Non-Destructive Playtesting**: Instantly toggle between First-Person gameplay and freecam editing (`F1`) without reloading the scene.
 
 ---
 
@@ -14,32 +38,57 @@ A real-time, in-game 3D level editor and custom map manager for **DeadCore Redux
 ## Installation
 
 1. **Install MelonLoader**:
-   * Download and run the **MelonLoader.Installer.exe** from the official GitHub releases.
-   * Select your **DeadCore Redux** executable (`DeadCoreRedux.exe`) in your Steam game directory:
+   * Download and run the **MelonLoader.Installer.exe** from GitHub releases.
+   * Select your **DeadCore Redux** executable (`DeadCoreRedux.exe`) in your Steam directory:
      ```text
      Steam/steamapps/common/DeadCoreRedux/DeadCoreRedux.exe
      ```
-   * Click **Install**.
+   * Complete the installation.
 2. **Install the Mod**:
-   * Download `DeadCoreLevelEditorMod.dll` from this repository’s **releases** folder.
-   * Place the `.dll` file into the `Mods/` folder in your game directory:
+   * Download `DeadCoreLevelEditorMod.dll` from the release folder.
+   * Place the file into the `Mods/` directory:
      ```text
      Steam/steamapps/common/DeadCoreRedux/Mods/DeadCoreLevelEditorMod.dll
      ```
-3. **Launch the Game**:
-   * Start DeadCore Redux through Steam. MelonLoader will initialize the editor suite automatically.
+3. **Launch**:
+   * Start DeadCore Redux via Steam. MelonLoader will initialize the mod suite automatically.
 
 ---
 
 ## Quick Start Guide
 
-1. **Open the Menu**: On the Main Menu, click the rebranded **Level Editor** button (or press `F2`).
-2. **Create a Course**: Click **`+ New`** on the bottom bar to generate a fresh map with a starting platform and metadata template.
-3. **Edit Metadata**: Fill in your level title, author, difficulty rating, and description directly in the UI panel, then click **`SAVE DETAILS`**.
-4. **Launch**: Click **`Play`** (or press `Enter`) to load into the map.
-5. **Build**: Press `F1` to enter **Edit Mode** (Freecam).
-6. **Playtest**: Press `F1` again to drop back into **First-Person Playtest Mode** at any time.
-7. **Save**: Press `F5` while editing to quick-save your progress.
+1. **Open the Editor Browser**: On the game's Main Menu, click **Level Editor** (or press `F2`).
+2. **Create a Course**: Click **`+ New`** on the bottom bar to generate a starter level with a floor platform.
+3. **Configure Details**: Fill in the title, author, difficulty rating, and description, then click **`SAVE DETAILS`**.
+4. **Launch**: Select your level from the list and click **`Play`** (or press `Enter`).
+5. **Switch to Studio Edit Mode**: Press **`F1`** to enter freecam editing.
+6. **Equip & Place**: Click any prop in the bottom **Asset Browser** to spawn a placement hologram, then **Left-Click** into the scene to place it.
+7. **Select & Transform**: Click **`MODE: [SELECT]`** (or press `Esc`) and click placed objects to position, rotate, or scale them using the 3D Gizmos or Inspector coordinates.
+8. **Test & Save**: Press **`F1`** to drop back into first-person gameplay immediately. Press **`F5`** at any time to quick-save.
+
+---
+
+## Studio Interface Overview
+
+```text
+┌──────────────────────────────────────────────────────────────────────────────────┐
+│ [MODE: SELECT/PLACEMENT] [Move] [Rotate] [Scale] [Align] [Snap] [SNAP 3D] [PLAYTEST] [Save] [Load] │ (Top Toolbar)
+├──────────────────────┬────────────────────────────────────┬──────────────────────┤
+│ SCENE HIERARCHY      │                                    │ INSPECTOR            │
+│                      │                                    │                      │
+│ [ Filter...        ] │                                    │ Selection: Platform  │
+│                      │                                    │                      │
+│ ▼ Platform_Base (2)  │         3D VIEWPORT & GIZMOS       │ ► Transform (Pos/Rot)│
+│   ├── Jumper_Pad [F] │                                    │ ► Non-Uniform Scale  │
+│   └── Turret_01  [F] │                                    │ ► Hazard / Pad Tuning│
+│                      │                                    │ ► Lighting & RGB     │
+│ [ Delete Selected  ] │                                    │ ► Kinematic Path     │
+├──────────────────────┴────────────────────────────────────┴──────────────────────┤
+│ ASSET BROWSER: [Architecture] [Platforms] [Gameplay] [Hazards] [All]   [Search...]│
+│ [ALL SIZES] [SMALL <4m] [MEDIUM 4-15m] [LARGE 15-45m] [GIANT >45m]   [SIZE: ▲ ASC]│
+│ [Card: Floor 16x16] [Card: Launch Jumper] [Card: Turret] [Card: Laser 8m] ...     │
+└──────────────────────────────────────────────────────────────────────────────────┘
+```
 
 ---
 
@@ -47,118 +96,111 @@ A real-time, in-game 3D level editor and custom map manager for **DeadCore Redux
 
 ### Camera & Viewport Navigation (Edit Mode)
 
-| Key / Input | Action |
+| Input | Action |
 | :--- | :--- |
-| **`F1`** | Toggle between **Playtest Mode** & **3D Hammer Edit Mode** |
-| **`F2`** | Open native **Level Editor Menu** (Main Menu scene) |
-| **`F3`** | Toggle the **Light & Atmosphere Inspector Window** |
-| **`F4`** | Dump full scene lighting hierarchy to MelonLoader console (Debug) |
-| **`F5`** / **`F6`** | **Quick Save** / **Quick Load** current level |
-| **`WASD`** | Fly Freecam forward / left / backward / right |
+| **`F1`** | Toggle between **Playtest Mode** and **Studio Edit Mode** |
+| **`F2`** | Open native **Level Editor Menu** (from Main Menu) |
+| **`F4`** | Dump scene lighting hierarchy to console (Debug) |
+| **`F5`** / **`F6`** | **Quick Save** / **Quick Load** current course |
+| **`Right Click (Hold)`** | Freelook / Viewport camera orientation |
+| **`WASD`** | Fly camera forward / left / backward / right |
 | **`Space` / `E`** | Fly upward |
 | **`Q`** | Fly downward |
-| **`Right Click (Hold)`** | Freelook / Rotate viewport camera |
-| **`Right Click (Click)`** | Deselect active asset / Cancel placement |
-| **`Left Shift (Hold)`** | Sprint / High-speed camera flight |
-| **`Left Ctrl (Hold)`** | Precision / Slow camera flight |
+| **`Left Shift (Hold)`** | Flight speed boost (3.5x) |
+| **`Left Ctrl (Hold)`** | Precision flight deceleration (0.25x) |
+| **`Mouse Scroll`** | Camera zoom / dolly (in Select Mode) |
 
 ---
 
-### Asset Palette & Placement
+### Selection, Gizmos & Placement
 
-| Key / Input | Action |
+| Input | Action |
 | :--- | :--- |
-| **`Tab`** | Toggle active category (**1: Building** $\leftrightarrow$ **2: Gameplay**) |
-| **`1` / `2`** | Directly select category (**1** = Building, **2** = Gameplay) |
-| **`Mouse Scroll`** | Cycle through items on the 3D Carousel Arc |
-| **`Left Click (World)`** | Place active hologram block into the world |
-| **`Left Click (Arc)`** | Click any icon on the 3D wheel to equip it directly |
-| **`Esc` / `X`** | Cancel placement / Deselect active item or light |
-| **`Delete` / `Middle Click`** | Delete aimed placed object |
+| **`Left Click` (World)** | In **Placement Mode**: Place active hologram.<br>In **Select Mode**: Select object (or drag active gizmo handle). |
+| **`Ctrl + Left Click`** | Add or remove objects to/from **Multi-Selection** |
+| **`Esc`** | Cancel active placement and return to **Select Mode** |
+| **`Delete` / `Backspace`** | Delete selected object(s) |
+| **`Left / Right Arrow`** | Decrease / Increase visual 3D gizmo handle scale |
+| **`Numpad +` / `Numpad -`** | Increase / Decrease active placement scale (`0.05x` – `25.0x`) |
+| **`Shift + Scroll`** | Fine-tune placement scale in Placement Mode |
 
 ---
 
-### Object Alignment & Snapping
+### Clipboard, Duplication & Parenting
 
-| Key / Input | Action |
+| Input | Action |
 | :--- | :--- |
-| **`C`** | Toggle **Surface Auto-Align** (`ON` = Snaps flush to walls/ceilings, `OFF` = Manual) |
-| **`G`** | Cycle Grid Snapping (`1m` $\rightarrow$ `2m` $\rightarrow$ `4m` $\rightarrow$ `0.5m` $\rightarrow$ `OFF`) |
-| **`Left / Right Arrow`** | Rotate **Yaw** (Y-axis) |
-| **`Up / Down Arrow`** | Rotate **Pitch** (X-axis) |
-| **`[` / `]`** *(or `PgUp` / `PgDn`)* | Rotate **Roll** (Z-axis) |
-| **`Shift + Arrows`** | Fast **45°** angle step |
-| **`Ctrl + Arrows`** | Micro-precision **5°** angle step |
-| **`T`** | Snap all rotation axes to nearest **90°** angle |
-| **`R`** | Reset rotation to zero `(0°, 0°, 0°)` |
+| **`Ctrl + C`** | Copy selected object(s) to clipboard (including custom parameters, paths, and lighting) |
+| **`Ctrl + V`** | Paste clipboard objects at cursor position or near selection |
+| **`Ctrl + D`** | Duplicate selection in-place with grid offset |
+| **`Ctrl + P`** | **Parent Objects**: Multi-selection parents all items under the active target; single selection enters 2-step lock mode |
+| **`Alt + P`** *(or `Ctrl+Shift+P`)* | **Unparent Objects**: Detaches selection to the root hierarchy |
+| **`Ctrl + Z`** | **Undo** last action (Placement, Deletion, Parenting, Transform) |
+| **`Ctrl + Y`** *(or `Ctrl+Shift+Z`)* | **Redo** undone action |
 
 ---
 
-### Advanced Mechanics: Moving Platforms & Parenting
+## Kinematic Motion Paths & Spinning Axis Override
 
-#### 1. Kinematic Moving Paths (`M`)
-Any placed object (or child hierarchy) can smoothly oscillate between two points with player momentum transfer:
-1. Aim at an object and press **`M`** to select it and lock **Point A**.
-2. Aim your crosshair at the destination position and press **`M`** again to lock **Point B**.
-3. Hold **`Shift + Scroll`** while aiming at the path to adjust travel speed (`0.5 m/s` – `30.0 m/s`).
-4. Press **`Shift + M`** while aiming at the object to remove its path.
+Every placed platform or structure can oscillate kinematically between two points while maintaining independent continuous rotation and transferring realistic tangential momentum to the player.
 
-#### 2. Assembly Parenting (`P`)
-Link multiple objects together into compound structures:
-1. Aim at the object you want to attach and press **`P`** (marked as Child).
-2. Aim at the base object you want to attach it to and press **`P`** again (Parent).
-3. Moving or animating the parent will carry all children along with it.
-4. Press **`Shift + P`** while aiming at an object to unparent it.
+### Setup & In-Scene Waypoints
+1. Select an object and scroll down to the **Kinematic Motion Path** card in the Inspector.
+2. Click **`[+ Create Motion Path]`**. Two visual waypoints will appear in the world:
+   * **Point A (Green Sphere)**: Starting position.
+   * **Point B (Orange Sphere)**: Target destination.
+   * **Cyan Guide Line**: Visual connection between points.
+3. Select Point B in the scene (or use the Inspector direction offset buttons) and move it with the 3D Gizmo to shape the travel trajectory.
+4. Adjust **Speed (m/s)** via slider (`0.0` to `25.0 m/s`).
 
----
+### Continuous Spin & Axis Override
+Platforms can continuously spin while traveling along their path, acting as turntables, rolling cylinders, tumbling obstacles, or drill screws.
 
-### In-Game Object Tweaking (`Shift + Scroll`)
-
-Hold **`Left Shift`** while scrolling the **`Mouse Wheel`** to adjust the parameters of the aimed or selected item:
-
-* **Generic Blocks / Platforms**: Adjust placement scale (`0.01x` – `50.0x`).
-* **Moving Paths**: Adjust platform velocity (`0.5 m/s` – `30.0 m/s`).
-* **Jump Pads**: Adjust launch impulse force (`1.0` – `60.0`).
-* **Turbines (Helices)**: Adjust wind repulsion speed (`1.0` – `100.0`).
-* **Defense Turrets**: Adjust projectile firing delay (`0.05s` – `5.0s`).
-* **Rotating Lasers**: Adjust angular rotation speed (`°/s`).
-
----
-
-### Lighting & Atmosphere Inspector (`F3`)
-
-The editor includes full control over HDRP scene lighting and skybox illumination:
-* **Global Sunlight**: Places an infinite directional sun source that adjusts sun angle, shadows, and scene-wide trilight ambient tones.
-* **Spotlights**: Place focused volumetric cone lights.
-* **Inspector Panel (`F3`)**:
-  * **Intensity Slider**: Calibrated for HDRP physical Lux units (`0.1x` – `30.0x`).
-  * **Cone Angle**: Adjust spot angle (`10°` – `150°`).
-  * **Volumetric Fog Intensity**: Scale atmospheric volumetric scattering.
-  * **RGB Color Sliders & Presets**: Custom palette with instant Cyan, Sun, Green, Red, and White presets.
-  * **Aiming**: Select any placed light and use the **Arrow Keys** to re-aim its beam direction in real time.
-
----
-
-### Undo / Redo System
-
-| Key | Action |
+| Setting / Control | Description |
 | :--- | :--- |
-| **`Ctrl + Z`** | **Undo** last action (Placement, Deletion, Parenting, Motion Path) |
-| **`Ctrl + Y`** *(or `Ctrl + Shift + Z`)* | **Redo** undone action |
+| **Spin Slider** | Sets rotational speed from `-150°/s` to `+150°/s`. Setting to `0` halts spin. |
+| **Axis Cycle Button** | Cycles through 5 rotation modes:<br>• `X - Tumble`: Rotates around the local pitch axis.<br>• `Y - Turntable`: Rotates around the local yaw axis.<br>• `Z - Roll`: Rotates around the local barrel-roll axis.<br>• `Path (A -> B)`: Dynamically aligns the spin vector with the movement path heading.<br>• `Custom Override`: Rotates around the defined $(X, Y, Z)$ vector. |
+| **Axis Vector Inputs** | Direct $(X, Y, Z)$ numeric inputs for defining arbitrary rotational axes (e.g. `X: 0.71, Y: 0.71, Z: 0.0` for a 45° diagonal axle). Typing directly into these fields switches the mode to **Custom Override**. |
+| **`Align Path Dir`** | Automatically calculates the heading from Point A to Point B and sets it as the platform's local spin axis. |
+| **`Normalize`** | Converts the current Axis Vector override into a unit vector with a single click. |
+| **Player Momentum Transfer** | When standing on a rotating surface, the player receives real-time centrifugal push, and azimuthal (yaw) view orientation aligns smoothly with the platform. |
 
 ---
 
-## File Storage & Sharing
+## Contextual Mechanics Inspector
 
-All courses are saved as plain-text `.txt` files containing full transform data, custom parameters, motion vectors, light configs, and metadata headers.
+Selecting an entity populates tailored control sliders in the right-hand panel:
 
-* **Your Levels (`My Levels` tab)**:
+* **Transform**: Direct coordinate inputs for $(X, Y, Z)$ position, Euler angles, and independent non-uniform scale. Includes **Snap 90** and **Reset Rot** buttons.
+* **Jump Pads**: Adjust launch impulse acceleration force (`5.0` to `75.0`).
+* **Turbines (Helices)**: Adjust wind repulsion speed (`5.0` to `100.0`). Wind forces dynamically apply directional thrust to the player's CharacterController.
+* **Defense Turrets**: Tune fire delay intervals (`0.1s` to `5.0s`). Bullets cleanly ignore native turret colliders to prevent self-collision.
+* **Rotating Lasers**: Configure continuous angular barrier speed (`0°/s` to `180°/s`).
+* **Lighting & Atmosphere**:
+  * **Type Toggle**: Configures focused **Tech Spotlights** or scene-wide **Global Sunlight**.
+  * **Intensity**: Physical Lux calibrated for HDRP lighting (`0.1` to `30.0`).
+  * **Spot Angle**: Cone spread angle (`10°` to `150°`).
+  * **Volumetric Fog**: Controls volumetric scattering intensity and atmospheric dimming.
+  * **RGB Color Pickers**: Individual R, G, B sliders (`0`–`255`), live preview swatch, and instant color presets (`Cyan`, `Gold`, `Acid`, `Red`, `White`, `Violet`).
+
+---
+
+## File Storage & Map Sharing
+
+Courses are saved as plain-text `.txt` files containing full transform data, non-uniform scaling vectors, custom component parameters, kinematic paths, light configurations, and metadata headers.
+
+* **Your Local Levels (`My Levels` tab)**:
   ```text
   Steam/steamapps/common/DeadCoreRedux/UserData/MyLevels/
   ```
-* **Downloaded Levels (`Community` tab)**:
+* **Downloaded Community Levels (`Community` tab)**:
   ```text
   Steam/steamapps/common/DeadCoreRedux/UserData/DownloadedLevels/
   ```
 
-> **Sharing Custom Maps**: Send your level's `.txt` file to other players. When placed into their `UserData/DownloadedLevels/` directory, it will automatically appear in their in-game **Community** browser tab.
+### Sharing Custom Levels
+To share a custom map with other players:
+1. Locate your level file (e.g. `MyParkourCourse.txt`) and its companion screenshot (`MyParkourCourse.png`) in `UserData/MyLevels/`.
+2. Send both files to your friend.
+3. Have them place the files into their `UserData/DownloadedLevels/` directory.
+4. The map will immediately appear with its metadata, stats HUD, and 3D preview under their in-game **Community** tab.
