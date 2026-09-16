@@ -2618,10 +2618,18 @@ namespace DeadCoreEditor
             {
                 player.transform.position = FrozenPlayerPosition;
                 player.transform.rotation = FrozenPlayerRotation;
+
                 if (cc != null && cc.enabled) cc.enabled = false;
+
+                Rigidbody rb = player.GetComponent<Rigidbody>();
+                if (rb != null)
+                {
+                    rb.isKinematic = true;
+                    rb.velocity = Vector3.zero;
+                    rb.angularVelocity = Vector3.zero;
+                }
             }
         }
-
         private static void CheckVoidFall(GameObject player)
         {
             if (player.transform.position.y < CachedVoidDeathY)
@@ -2707,27 +2715,72 @@ namespace DeadCoreEditor
             UnfreezePlayerControls();
         }
 
+        private static readonly List<MonoBehaviour> _disabledPlayerScripts = new List<MonoBehaviour>();
         public static void SetPlayerControlsActive(bool active)
         {
             GameObject player = FindPlayerEntity();
             if (player == null) return;
 
+            Transform playerRoot = player.transform.root;
+
+            // 1. Freeze / Unfreeze CharacterController
             CharacterController cc = GetPlayerController();
             if (cc != null) cc.enabled = active;
 
-            foreach (var mb in player.GetComponentsInChildren<MonoBehaviour>(true))
+            // 2. Freeze / Unfreeze Rigidbodies
+            Rigidbody[] rbs = playerRoot.GetComponentsInChildren<Rigidbody>(true);
+            for (int i = 0; i < rbs.Length; i++)
             {
-                if (mb == null) continue;
-                string typeName = mb.GetType().Name.ToLower();
-                if (typeName.Contains("motor") || typeName.Contains("controller") ||
-                    typeName.Contains("movement") || typeName.Contains("input") ||
-                    typeName.Contains("look") || typeName.Contains("fps") ||
-                    typeName.Contains("weapon") || typeName.Contains("gun") ||
-                    typeName.Contains("shoot") || typeName.Contains("switch") ||
-                    typeName.Contains("fire") || typeName.Contains("arm"))
+                if (rbs[i] == null) continue;
+                rbs[i].isKinematic = !active;
+                if (!active)
                 {
-                    mb.enabled = active;
+                    rbs[i].velocity = Vector3.zero;
+                    rbs[i].angularVelocity = Vector3.zero;
                 }
+            }
+
+            // 4. Disable / Restore all player scripts across the entire hierarchy
+            if (!active)
+            {
+                _disabledPlayerScripts.Clear();
+
+                List<MonoBehaviour> allScripts = new List<MonoBehaviour>();
+                allScripts.AddRange(playerRoot.GetComponentsInChildren<MonoBehaviour>(true));
+
+                // If the player's camera is in a separate root tree, include it
+                if (PlayerCameraInstance != null && !PlayerCameraInstance.transform.IsChildOf(playerRoot))
+                {
+                    allScripts.AddRange(PlayerCameraInstance.transform.root.GetComponentsInChildren<MonoBehaviour>(true));
+                }
+
+                for (int i = 0; i < allScripts.Count; i++)
+                {
+                    MonoBehaviour mb = allScripts[i];
+                    if (mb == null) continue;
+
+                    // Never disable components belonging to the editor mod itself
+                    string ns = mb.GetIl2CppType().Namespace ?? "";
+                    if (ns.StartsWith("DeadCoreEditor")) continue;
+
+                    if (mb.enabled)
+                    {
+                        mb.enabled = false;
+                        _disabledPlayerScripts.Add(mb);
+                    }
+                }
+            }
+            else
+            {
+                // Re-enable only scripts that were originally active
+                for (int i = 0; i < _disabledPlayerScripts.Count; i++)
+                {
+                    if (_disabledPlayerScripts[i] != null)
+                    {
+                        _disabledPlayerScripts[i].enabled = true;
+                    }
+                }
+                _disabledPlayerScripts.Clear();
             }
         }
 
@@ -3128,6 +3181,7 @@ namespace DeadCoreEditor
             EditorSessionManager.ClearAllPlacedObjects();
 
             List<int> loadedParentIndices = new List<int>();
+            List<Vector3> loadedScales = new List<Vector3>(); // 1. Track original scales
             int count = 0;
 
             foreach (string line in lines)
@@ -3182,7 +3236,7 @@ namespace DeadCoreEditor
                 GameObject obj = EditorSessionManager.SpawnAssetByName(rawName, pos, scaleVec, rot);
                 if (obj != null)
                 {
-                    obj.transform.localScale = scaleVec; // Ensures non-uniform scale is applied
+                    obj.transform.localScale = scaleVec;
                     string lowName = rawName.ToLower();
 
                     if (customParam > 0f)
@@ -3265,13 +3319,16 @@ namespace DeadCoreEditor
                         string pVal = trimmed.Substring(parentTagIdx + 8).Split(';')[0].Trim();
                         int.TryParse(pVal, out pIndex);
                     }
+
                     loadedParentIndices.Add(pIndex);
+                    loadedScales.Add(scaleVec); // 2. Store the exact local scale
 
                     EditorSessionManager.RegisterPlacedObject(obj);
                     count++;
                 }
             }
 
+            // 3. Restore parent hierarchies without scale shrinkage
             for (int i = 0; i < EditorSessionManager.PlacedObjects.Count; i++)
             {
                 if (i < loadedParentIndices.Count && loadedParentIndices[i] >= 0 && loadedParentIndices[i] < EditorSessionManager.PlacedObjects.Count)
@@ -3280,7 +3337,15 @@ namespace DeadCoreEditor
                     GameObject parent = EditorSessionManager.PlacedObjects[loadedParentIndices[i]];
                     if (child != null && parent != null && child != parent)
                     {
+                        // Attach parent maintaining world position & rotation
                         child.transform.SetParent(parent.transform, true);
+
+                        // FIX: Overwrite the divided local scale back to its exact saved value
+                        if (i < loadedScales.Count)
+                        {
+                            child.transform.localScale = loadedScales[i];
+                        }
+
                         EditorSessionManager.RecalculateParentChildCount(parent);
                     }
                 }

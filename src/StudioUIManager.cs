@@ -144,7 +144,31 @@ namespace DeadCoreEditor
         public static bool IsPointerOverUI()
         {
             if (_canvasRoot == null || !_canvasRoot.activeInHierarchy) return false;
-            return EventSystem.current != null && EventSystem.current.IsPointerOverGameObject();
+
+            // 1. Standard EventSystem Raycast
+            if (EventSystem.current != null && EventSystem.current.IsPointerOverGameObject())
+                return true;
+
+            // 2. Geometric Screen Rect Fallback (prevents 3D viewport clicks while over panels)
+            Vector2 mousePos = Input.mousePosition;
+
+            if (_assetBrowserPanel != null && _assetBrowserPanel.activeInHierarchy &&
+                RectTransformUtility.RectangleContainsScreenPoint(_assetBrowserPanel.GetComponent<RectTransform>(), mousePos))
+                return true;
+
+            if (_hierarchyPanel != null && _hierarchyPanel.activeInHierarchy &&
+                RectTransformUtility.RectangleContainsScreenPoint(_hierarchyPanel.GetComponent<RectTransform>(), mousePos))
+                return true;
+
+            if (_inspectorPanel != null && _inspectorPanel.activeInHierarchy &&
+                RectTransformUtility.RectangleContainsScreenPoint(_inspectorPanel.GetComponent<RectTransform>(), mousePos))
+                return true;
+
+            if (_toolbarPanel != null && _toolbarPanel.activeInHierarchy &&
+                RectTransformUtility.RectangleContainsScreenPoint(_toolbarPanel.GetComponent<RectTransform>(), mousePos))
+                return true;
+
+            return false;
         }
 
         public static void SetNotificationText(string text)
@@ -1181,7 +1205,6 @@ namespace DeadCoreEditor
             string search = (_browserSearchInput != null && !string.IsNullOrEmpty(_browserSearchInput.text))
                 ? _browserSearchInput.text.ToLower() : "";
 
-            // 1. calculGather all assets matching the category tab and search text
             List<CatalogAsset> matchedAssets = new List<CatalogAsset>();
 
             for (int i = 0; i < EditorSessionManager.AllAssets.Count; i++)
@@ -1192,7 +1215,6 @@ namespace DeadCoreEditor
                 if (!string.IsNullOrEmpty(search) && !asset.DisplayName.ToLower().Contains(search))
                     continue;
 
-                // Category filtering
                 if (_activeBrowserCategory == "Architecture")
                 {
                     bool isArch = asset.Category == AssetCategory.Building;
@@ -1225,45 +1247,58 @@ namespace DeadCoreEditor
                     if (!isHazard) continue;
                 }
 
-                // Size Tier filter
                 if (_activeSizeFilter != AssetSizeTier.All && asset.SizeTier != _activeSizeFilter)
                     continue;
 
                 matchedAssets.Add(asset);
             }
 
-            // 2. Sort systematically by physical size in every tab
             matchedAssets.Sort((a, b) =>
             {
                 int cmp = a.MaxDimension.CompareTo(b.MaxDimension);
                 return _sortSizeAscending ? cmp : -cmp;
             });
 
-            // 3. Render cards with color-coded size tags
             for (int i = 0; i < matchedAssets.Count; i++)
             {
                 CatalogAsset asset = matchedAssets[i];
 
-                GameObject card = new GameObject("Card_" + asset.DisplayName);
+                // 1. Safe RectTransform instantiation for the card
+                GameObject card = new GameObject("Card_" + asset.DisplayName, Il2CppType.Of<RectTransform>());
                 card.transform.SetParent(_browserContent, false);
-                RectTransform crt = card.AddComponent<RectTransform>();
+
+                RectTransform crt = card.GetComponent<RectTransform>();
                 crt.sizeDelta = new Vector2(100f, 106f);
 
                 Image bg = card.AddComponent<Image>();
                 bg.color = new Color(0.15f, 0.17f, 0.21f, 0.95f);
+                bg.raycastTarget = true; // The button's target graphic receives the click
 
                 Button btn = card.AddComponent<Button>();
-                CatalogAsset capturedAsset = asset;
-                btn.onClick.AddListener((Action)(() => EditorSessionManager.EquipAsset(capturedAsset)));
+                btn.targetGraphic = bg;
+                ColorBlock cb = btn.colors;
+                cb.normalColor = Color.white;
+                cb.highlightedColor = new Color(1.3f, 1.3f, 1.3f, 1f);
+                cb.pressedColor = new Color(0.2f, 0.7f, 1.0f, 1f);
+                btn.colors = cb;
 
-                // Thumbnail Container
-                GameObject preview = new GameObject("Thumbnail");
+                CatalogAsset capturedAsset = asset;
+                btn.onClick.AddListener((Action)(() =>
+                {
+                    EditorSessionManager.EquipAsset(capturedAsset);
+                }));
+
+                // 2. Thumbnail (raycastTarget = false so it doesn't block the button)
+                GameObject preview = new GameObject("Thumbnail", Il2CppType.Of<RectTransform>());
                 preview.transform.SetParent(card.transform, false);
-                RectTransform prt = preview.AddComponent<RectTransform>();
+
+                RectTransform prt = preview.GetComponent<RectTransform>();
                 prt.anchorMin = new Vector2(0.06f, 0.28f);
                 prt.anchorMax = new Vector2(0.94f, 0.95f);
                 prt.sizeDelta = Vector2.zero;
+
                 Image pImg = preview.AddComponent<Image>();
+                pImg.raycastTarget = false;
 
                 if (asset.ThumbnailSprite == null)
                     asset.ThumbnailSprite = AssetThumbnailRenderer.GenerateThumbnail(asset);
@@ -1281,10 +1316,11 @@ namespace DeadCoreEditor
                                  (asset.IsJumper ? Color.green : new Color(0.25f, 0.35f, 0.45f))));
                 }
 
-                // Color-coded Size Badge Overlay (Top-Right)
-                GameObject badgeObj = new GameObject("SizeBadge");
+                // 3. Size Badge (raycastTarget = false)
+                GameObject badgeObj = new GameObject("SizeBadge", Il2CppType.Of<RectTransform>());
                 badgeObj.transform.SetParent(card.transform, false);
-                RectTransform bdrt = badgeObj.AddComponent<RectTransform>();
+
+                RectTransform bdrt = badgeObj.GetComponent<RectTransform>();
                 bdrt.anchorMin = new Vector2(0.52f, 0.76f);
                 bdrt.anchorMax = new Vector2(0.96f, 0.96f);
                 bdrt.sizeDelta = Vector2.zero;
@@ -1294,16 +1330,21 @@ namespace DeadCoreEditor
                                   (asset.SizeTier == AssetSizeTier.Large ? new Color(1.0f, 0.6f, 0.1f, 0.85f) :
                                    new Color(0.9f, 0.25f, 0.25f, 0.85f)));
 
-                badgeObj.AddComponent<Image>().color = badgeColor;
+                Image badgeImg = badgeObj.AddComponent<Image>();
+                badgeImg.color = badgeColor;
+                badgeImg.raycastTarget = false;
+
                 TMP_Text badgeTmp = CreateText(badgeObj.transform, asset.GetSizeBadgeText(),
                     Vector2.zero, Vector2.one, Vector2.zero, Vector2.zero,
                     9f, FontStyles.Bold, Color.white, TextAlignmentOptions.Center);
                 badgeTmp.enableWordWrapping = false;
+                badgeTmp.raycastTarget = false;
 
-                // Title Label (Bottom)
-                GameObject labelObj = new GameObject("Label");
+                // 4. Label (raycastTarget = false)
+                GameObject labelObj = new GameObject("Label", Il2CppType.Of<RectTransform>());
                 labelObj.transform.SetParent(card.transform, false);
-                RectTransform lrt = labelObj.AddComponent<RectTransform>();
+
+                RectTransform lrt = labelObj.GetComponent<RectTransform>();
                 lrt.anchorMin = Vector2.zero;
                 lrt.anchorMax = new Vector2(1f, 0.28f);
                 lrt.offsetMin = new Vector2(3f, 2f);
@@ -1315,6 +1356,7 @@ namespace DeadCoreEditor
                 label.alignment = TextAlignmentOptions.Center;
                 label.color = Color.white;
                 label.overflowMode = TextOverflowModes.Ellipsis;
+                label.raycastTarget = false;
 
                 _browserCards.Add(card);
             }

@@ -592,49 +592,188 @@ namespace DeadCoreEditor
 
             MelonLogger.Msg($">> [Harvest] Successfully harvested {EditorSessionManager.AllAssets.Count} unique models from scene!");
         }
-
         public static void HideVanillaLevelGeometry()
         {
             var activeScene = SceneManager.GetActiveScene();
             string sName = activeScene.name.ToLower();
             if (sName.Contains("menu")) return;
 
+            // 1. Rescue essential entities before anything is modified
+            GameObject player = EditorSessionManager.FindPlayerEntity();
+            if (player != null)
+            {
+                player.transform.SetParent(null, true);
+                player.SetActive(true);
+            }
+
+            if (NativeSceneSun != null)
+            {
+                NativeSceneSun.transform.SetParent(null, true);
+                NativeSceneSun.gameObject.SetActive(true);
+                NativeSceneSun.enabled = true;
+            }
+
+            StartLevelManager slm = GameObject.FindObjectOfType<StartLevelManager>();
+            if (slm != null)
+            {
+                slm.transform.SetParent(null, true);
+                slm.gameObject.SetActive(true);
+            }
+
+            // 2. Ensure EventSystem is rescued so UI clicks never break
+            UnityEngine.EventSystems.EventSystem es = GameObject.FindObjectOfType<UnityEngine.EventSystems.EventSystem>();
+            if (es != null)
+            {
+                es.transform.SetParent(null, true);
+                es.gameObject.SetActive(true);
+                es.enabled = true;
+                var sim = es.GetComponent<UnityEngine.EventSystems.StandaloneInputModule>();
+                if (sim != null) sim.enabled = true;
+            }
+
+            // 3. Process roots
             GameObject[] rootObjects = activeScene.GetRootGameObjects();
             for (int i = 0; i < rootObjects.Length; i++)
             {
                 GameObject root = rootObjects[i];
                 if (root == null) continue;
-                string r = root.name;
+                if (IsProtected(root, player, slm != null ? slm.gameObject : null)) continue;
 
-                if (r == "_LA" || r == "L_A")
+                string rLow = root.name.ToLower();
+
+                // _LD is Level Design (vanilla platforms, obstacles, hazards) -> Hide it!
+                if (rLow == "_ld" || rLow == "l_d")
                 {
-                    if (NativeSceneSun != null && NativeSceneSun.transform.IsChildOf(root.transform))
-                    {
-                        NativeSceneSun.transform.SetParent(null, true);
-                        NativeSceneSun.gameObject.SetActive(true);
-                        NativeSceneSun.enabled = true;
-                    }
                     root.SetActive(false);
+                    continue;
                 }
-                else if (r == "_LD" || r == "L_D")
+
+                // _LA is Level Art (Skybox, Volumetric Clouds, Atmosphere, Sun) -> MUST REMAIN ACTIVE!
+                if (rLow == "_la" || rLow == "l_a")
                 {
-                    GameObject player = EditorSessionManager.FindPlayerEntity();
-                    if (player != null && player.transform.IsChildOf(root.transform))
-                    {
-                        player.transform.SetParent(null, true);
-                        player.SetActive(true);
-                    }
+                    root.SetActive(true);
+                    continue;
+                }
 
-                    StartLevelManager slm = root.GetComponentInChildren<StartLevelManager>(true);
-                    if (slm != null)
-                    {
-                        slm.transform.SetParent(null, true);
-                        slm.gameObject.SetActive(true);
-                    }
-
+                // Check if root is a vanilla hazard container or spark
+                if (IsVanillaGameplayHazardOrPickup(root))
+                {
                     root.SetActive(false);
+                    continue;
+                }
+
+                // 4. Scan non-art roots for loose vanilla sparks, kill planes, or gameplay triggers
+                Transform[] children = root.GetComponentsInChildren<Transform>(true);
+                for (int c = 0; c < children.Length; c++)
+                {
+                    Transform t = children[c];
+                    if (t == null) continue;
+                    GameObject go = t.gameObject;
+
+                    if (IsProtected(go, player, slm != null ? slm.gameObject : null)) continue;
+
+                    if (IsVanillaGameplayHazardOrPickup(go))
+                    {
+                        go.SetActive(false);
+                    }
                 }
             }
+        }
+
+        private static bool IsVanillaGameplayHazardOrPickup(GameObject go)
+        {
+            if (go == null) return false;
+
+            string n = go.name.ToLower();
+
+            // Collectible sparks
+            if (n.Contains("spark") && !n.Contains("sky") && !n.Contains("light"))
+                return true;
+
+            // Gameplay kill/death zones (exclude sky/cloud/fog atmosphere zones)
+            if (n.Contains("zone") && !n.Contains("sky") && !n.Contains("cloud") && !n.Contains("fog") && !n.Contains("volume") && !n.Contains("atmosphere"))
+                return true;
+
+            // Vanilla death/fall/checkpoint triggers
+            if (n.Contains("trigger") && (n.Contains("kill") || n.Contains("death") || n.Contains("fall") || n.Contains("void") || n.Contains("zone") || n.Contains("respawn") || n.Contains("checkpoint")))
+                return true;
+
+            return false;
+        }
+
+        private static bool IsAtmosphereOrSkyObject(GameObject go)
+        {
+            if (go == null) return false;
+
+            string nLow = go.name.ToLower();
+            if (nLow.Contains("sky") || nLow.Contains("cloud") || nLow.Contains("fog") ||
+                nLow.Contains("volume") || nLow.Contains("atmosphere") || nLow.Contains("dome") ||
+                nLow.Contains("horizon") || nLow.Contains("backdrop") || nLow.Contains("star") ||
+                nLow.Contains("sun") || nLow.Contains("light") || nLow.Contains("env") ||
+                nLow.Contains("ambient") || nLow.Contains("post"))
+            {
+                return true;
+            }
+
+            Component[] comps = go.GetComponents<Component>();
+            for (int i = 0; i < comps.Length; i++)
+            {
+                if (comps[i] == null) continue;
+                string cName = comps[i].GetIl2CppType().Name.ToLower();
+                if (cName.Contains("volume") || cName.Contains("sky") || cName.Contains("cloud") ||
+                    cName.Contains("atmosphere") || cName.Contains("lightdata"))
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        private static bool IsProtected(GameObject go, GameObject player, GameObject slm)
+        {
+            if (go == null) return false;
+
+            // Player hierarchy
+            if (player != null && (go == player || go.transform.IsChildOf(player.transform)))
+                return true;
+
+            // Directional Sun
+            if (NativeSceneSun != null && (go == NativeSceneSun.gameObject || go.transform.IsChildOf(NativeSceneSun.transform)))
+                return true;
+
+            // Start Level Manager
+            if (slm != null && (go == slm || go.transform.IsChildOf(slm.transform)))
+                return true;
+
+            // UI & EventSystem components
+            if (go.GetComponent<UnityEngine.EventSystems.EventSystem>() != null ||
+                go.GetComponent<UnityEngine.EventSystems.StandaloneInputModule>() != null ||
+                go.GetComponent<Canvas>() != null )
+                return true;
+
+            // Sky, clouds, and atmosphere
+            if (IsAtmosphereOrSkyObject(go))
+                return true;
+
+            // Custom editor entities AND harvested templates
+            string name = go.name;
+            if (name.StartsWith("Template_") ||
+                name.StartsWith("Custom_") ||
+                name.StartsWith("Studio_") ||
+                name.StartsWith("Editor_") ||
+                name.StartsWith("Holographic_") ||
+                name.StartsWith("Waypoint_") ||
+                name.StartsWith("Highlight_") ||
+                name.StartsWith("Card_"))
+            {
+                return true;
+            }
+
+            if (EditorSessionManager.PlacedObjects != null && EditorSessionManager.PlacedObjects.Contains(go))
+                return true;
+
+            return false;
         }
     }
 
@@ -642,7 +781,7 @@ namespace DeadCoreEditor
     // SECTION 2: HARMONY RUNTIME ENGINE PATCHES
     // =========================================================================
 
-    [HarmonyPatch(typeof(StartLevelManager), nameof(StartLevelManager.StartLevelSequence))]
+        [HarmonyPatch(typeof(StartLevelManager), nameof(StartLevelManager.StartLevelSequence))]
     public static class StartLevelPatch
     {
         [HarmonyPostfix]
