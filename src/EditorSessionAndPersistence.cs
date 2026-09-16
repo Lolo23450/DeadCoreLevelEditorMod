@@ -1366,20 +1366,26 @@ namespace DeadCoreEditor
             if (obj == null) return;
 
             Transform old = obj.transform.Find("Editor_Snapping_Proxy");
-            if (old != null) GameObject.DestroyImmediate(old.gameObject);
+            if (old != null) GameObject.Destroy(old.gameObject); // Safe destroy
 
             GameObject proxyObj = new GameObject("Editor_Snapping_Proxy");
             proxyObj.transform.SetParent(obj.transform, false);
             proxyObj.transform.localPosition = Vector3.zero;
             proxyObj.transform.localRotation = Quaternion.identity;
             proxyObj.transform.localScale = Vector3.one;
-            proxyObj.layer = 2; // Layer 2: Ignore Raycast so it never intercepts bullets or gameplay
+            proxyObj.layer = 2; // Layer 2: Ignore Raycast
 
             Bounds proxyB = PlacementHologramController.CalculateOptimizedProxyBounds(obj);
             BoxCollider bc = proxyObj.AddComponent<BoxCollider>();
             bc.isTrigger = true;
             bc.center = proxyB.center;
-            bc.size = proxyB.size;
+
+            // Enforce minimum 0.2m thickness on all 3 axes to prevent PhysX zero-volume engine crash
+            bc.size = new Vector3(
+                Mathf.Max(0.2f, Mathf.Abs(proxyB.size.x)),
+                Mathf.Max(0.2f, Mathf.Abs(proxyB.size.y)),
+                Mathf.Max(0.2f, Mathf.Abs(proxyB.size.z))
+            );
         }
 
         // =========================================================================
@@ -2223,7 +2229,7 @@ namespace DeadCoreEditor
 
                 // 1. Detect if player is standing on this platform
                 bool playerOnPlatform = false;
-                if (canPushPlayer)
+                if (canPushPlayer && obj != null)
                 {
                     if (path.CachedColliders == null || path.CachedColliders.Length == 0)
                         path.CachedColliders = obj.GetComponentsInChildren<Collider>(true);
@@ -2231,11 +2237,17 @@ namespace DeadCoreEditor
                     for (int c = 0; c < path.CachedColliders.Length; c++)
                     {
                         Collider col = path.CachedColliders[c];
-                        if (col != null && col.bounds.Contains(playerFeetPos + Vector3.down * 0.2f))
+                        if (col == null || !col.gameObject.activeInHierarchy || col.isTrigger) continue;
+
+                        try
                         {
-                            playerOnPlatform = true;
-                            break;
+                            if (col.bounds.Contains(playerFeetPos + Vector3.down * 0.2f))
+                            {
+                                playerOnPlatform = true;
+                                break;
+                            }
                         }
+                        catch { }
                     }
                 }
 

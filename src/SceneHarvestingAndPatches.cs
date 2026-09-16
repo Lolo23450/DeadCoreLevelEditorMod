@@ -124,7 +124,7 @@ namespace DeadCoreEditor
             EditorSessionManager.AllAssets.Clear();
             HashSet<string> seenMeshFingerprints = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
-            // Cache standard level material from valid non-laser geometry
+            // Cache standard level material
             MeshRenderer[] renderers = Resources.FindObjectsOfTypeAll<MeshRenderer>();
             for (int i = 0; i < renderers.Length; i++)
             {
@@ -138,18 +138,14 @@ namespace DeadCoreEditor
 
             GameObject ld = GameObject.Find("_LD") ?? GameObject.Find("L_D") ?? GameObject.Find("l_d");
 
-            // =================================================================
-            // 1. GAMEPLAY ENTITIES (JUMPERS, CHECKPOINTS, GATES, LIGHTS, HAZARDS)
-            // =================================================================
-
-            // Jump Launchers
+            // 1. GAMEPLAY ENTITIES
             try
             {
                 EditorSessionManager.PrefabJumper = GameObject.FindObjectOfType<Jumper>();
                 if (EditorSessionManager.PrefabJumper == null)
                 {
                     Jumper[] allJumpers = Resources.FindObjectsOfTypeAll<Jumper>();
-                    if (allJumpers.Length > 0) EditorSessionManager.PrefabJumper = allJumpers[0];
+                    if (allJumpers != null && allJumpers.Length > 0) EditorSessionManager.PrefabJumper = allJumpers[0];
                 }
             }
             catch { }
@@ -178,7 +174,7 @@ namespace DeadCoreEditor
                 if (EditorSessionManager.PrefabCheckPoint == null)
                 {
                     CheckPointScript[] allCps = Resources.FindObjectsOfTypeAll<CheckPointScript>();
-                    if (allCps.Length > 0) EditorSessionManager.PrefabCheckPoint = allCps[0];
+                    if (allCps != null && allCps.Length > 0) EditorSessionManager.PrefabCheckPoint = allCps[0];
                 }
             }
             catch { }
@@ -323,7 +319,6 @@ namespace DeadCoreEditor
                 _proceduralMaterials.Add(laserMat);
             }
 
-            // Compact Laser Barrier (4m x 3m)
             GameObject laserSmall = new GameObject("Template_Small_Laser");
             Mesh laserSmallMesh = CreateDoubleSidedPlaneMesh(4f, 3f);
             laserSmall.AddComponent<MeshFilter>().sharedMesh = laserSmallMesh;
@@ -345,7 +340,6 @@ namespace DeadCoreEditor
             laserSmallAsset.ComputeSizeMetrics();
             EditorSessionManager.AllAssets.Add(laserSmallAsset);
 
-            // Medium Laser Barrier (8m x 4m)
             GameObject laserTemplate = new GameObject("Template_Laser_Barrier");
             Mesh laserMesh = CreateDoubleSidedPlaneMesh(8f, 4f);
             laserTemplate.AddComponent<MeshFilter>().sharedMesh = laserMesh;
@@ -367,7 +361,6 @@ namespace DeadCoreEditor
             laserAsset.ComputeSizeMetrics();
             EditorSessionManager.AllAssets.Add(laserAsset);
 
-            // Long Laser Barrier (22m x 4m)
             GameObject longLaserTemplate = new GameObject("Template_Long_Laser_Barrier");
             Mesh longLaserMesh = CreateDoubleSidedPlaneMesh(22f, 4f);
             longLaserTemplate.AddComponent<MeshFilter>().sharedMesh = longLaserMesh;
@@ -389,7 +382,6 @@ namespace DeadCoreEditor
             longLaserAsset.ComputeSizeMetrics();
             EditorSessionManager.AllAssets.Add(longLaserAsset);
 
-            // Rotating Dual Laser (18m)
             GameObject rotLaserRoot = new GameObject("Template_Rotating_Laser");
             GameObject centerHub = GameObject.CreatePrimitive(PrimitiveType.Cube);
             centerHub.name = "CenterHub";
@@ -421,10 +413,16 @@ namespace DeadCoreEditor
             rotLaserAsset.ComputeSizeMetrics();
             EditorSessionManager.AllAssets.Add(rotLaserAsset);
 
-            // Turrets & Helix
+            // Safe Turret & Helix lookup (No unchecked [0])
             try
             {
-                TurretScript nativeTurret = GameObject.FindObjectOfType<TurretScript>() ?? Resources.FindObjectsOfTypeAll<TurretScript>()[0];
+                TurretScript nativeTurret = GameObject.FindObjectOfType<TurretScript>();
+                if (nativeTurret == null)
+                {
+                    TurretScript[] all = Resources.FindObjectsOfTypeAll<TurretScript>();
+                    if (all != null && all.Length > 0) nativeTurret = all[0];
+                }
+
                 if (nativeTurret != null)
                 {
                     Transform rootT = nativeTurret.transform;
@@ -451,10 +449,16 @@ namespace DeadCoreEditor
 
             try
             {
-                Helix nativeHelix = GameObject.FindObjectOfType<Helix>() ?? Resources.FindObjectsOfTypeAll<Helix>()[0];
+                Helix nativeHelix = GameObject.FindObjectOfType<Helix>();
+                if (nativeHelix == null)
+                {
+                    Helix[] all = Resources.FindObjectsOfTypeAll<Helix>();
+                    if (all != null && all.Length > 0) nativeHelix = all[0];
+                }
                 if (nativeHelix != null) EditorSessionManager.PrefabHelix = nativeHelix.gameObject;
             }
             catch { }
+
             if (EditorSessionManager.PrefabHelix != null)
             {
                 var helixAsset = new CatalogAsset
@@ -469,35 +473,27 @@ namespace DeadCoreEditor
                 EditorSessionManager.AllAssets.Add(helixAsset);
             }
 
-            // =================================================================
-            // 2. MASSIVE ARCHITECTURAL & MODULAR MODEL HARVESTING
-            // =================================================================
-
-            // Collect mesh filters from all loaded scene roots (including hidden/inactive)
+            // 2. SAFE ARCHITECTURAL MODEL HARVESTING (NO NATIVE PREFAB CRASHES)
             List<MeshFilter> gatheredFilters = new List<MeshFilter>();
-            var activeScene = SceneManager.GetActiveScene();
-            if (activeScene.isLoaded)
+            HashSet<MeshFilter> filterSet = new HashSet<MeshFilter>();
+
+            for (int s = 0; s < SceneManager.sceneCount; s++)
             {
-                GameObject[] roots = activeScene.GetRootGameObjects();
+                var scene = SceneManager.GetSceneAt(s);
+                if (!scene.isLoaded) continue;
+
+                GameObject[] roots = scene.GetRootGameObjects();
                 for (int r = 0; r < roots.Length; r++)
                 {
                     if (roots[r] == null) continue;
                     MeshFilter[] childFilters = roots[r].GetComponentsInChildren<MeshFilter>(true);
                     for (int c = 0; c < childFilters.Length; c++)
                     {
-                        if (childFilters[c] != null) gatheredFilters.Add(childFilters[c]);
+                        if (childFilters[c] != null && filterSet.Add(childFilters[c]))
+                        {
+                            gatheredFilters.Add(childFilters[c]);
+                        }
                     }
-                }
-            }
-
-            // Supplement with all active & memory-resident meshes in loaded scenes
-            MeshFilter[] allResourceFilters = Resources.FindObjectsOfTypeAll<MeshFilter>();
-            for (int f = 0; f < allResourceFilters.Length; f++)
-            {
-                MeshFilter mf = allResourceFilters[f];
-                if (mf != null && mf.gameObject.scene.isLoaded && !gatheredFilters.Contains(mf))
-                {
-                    gatheredFilters.Add(mf);
                 }
             }
 
@@ -511,7 +507,6 @@ namespace DeadCoreEditor
                 string goName = mf.gameObject.name.ToLower();
                 string mLow = mName.ToLower();
 
-                // Skip non-architectural entities handled specifically
                 if (goName.Contains("helice") || goName.Contains("tourelle") || goName.Contains("laser") ||
                     goName.Contains("jumper") || goName.Contains("checkpoint") || goName.Contains("gizmo") ||
                     goName.Contains("proxy") || goName.Contains("wireframe")) continue;
@@ -519,11 +514,9 @@ namespace DeadCoreEditor
                 Vector3 boundsSize = mesh.bounds.size;
                 float maxDim = Mathf.Max(boundsSize.x, Mathf.Max(boundsSize.y, boundsSize.z));
 
-                // Broad harvesting range: from small 1m detail blocks to massive 100m DeadCore mega-structures
-                if (maxDim > 100f || maxDim < 1f) continue;
+                if (maxDim > 350f || maxDim < 0.2f) continue;
                 if (mesh.vertexCount < 4) continue;
 
-                // Skip skyboxes, atmosphere, backdrop cards, and LOD downgrades
                 if (mLow.Contains("skybox") || mLow.Contains("horizon") || mLow.Contains("fog") ||
                     mLow.Contains("dome") || mLow.Contains("cloud") || mLow.Contains("backdrop") ||
                     mLow.Contains("ambiance") || mLow.Contains("dust")) continue;
@@ -531,12 +524,10 @@ namespace DeadCoreEditor
                 if (mLow.Contains("impostor") || mLow.Contains("shadow") || mLow.Contains("hole") ||
                     mLow.Contains("lod1") || mLow.Contains("lod2") || mLow.Contains("lod3")) continue;
 
-                // Unique geometric fingerprint: avoids discarding distinct models with generic names like "Mesh" or "Cube"
                 string fingerprint = $"{mName}_{mesh.vertexCount}_{boundsSize.x:F1}x{boundsSize.y:F1}x{boundsSize.z:F1}";
                 if (seenMeshFingerprints.Contains(fingerprint)) continue;
                 seenMeshFingerprints.Add(fingerprint);
 
-                // Smart classification & friendly naming
                 bool isPlatform = goName.Contains("16x2x16") || mLow.Contains("16x2x16") ||
                                   goName.Contains("platform") || mLow.Contains("platform") ||
                                   goName.Contains("plateforme") || mLow.Contains("plateforme") ||
@@ -554,19 +545,12 @@ namespace DeadCoreEditor
                 else if (maxDim < 4.0f) subCat = "Details";
                 else if (maxDim > 45.0f) subCat = "Structures";
 
-                string friendlyName;
-                if (goName.Contains("16x2x16") || mLow.Contains("16x2x16"))
-                {
-                    friendlyName = "Floor Platform 16x16";
-                }
-                else
-                {
-                    string cleaned = mName.Replace("Mesh", "").Replace("_", " ").Trim();
-                    if (string.IsNullOrWhiteSpace(cleaned) || cleaned.Length < 2)
-                        cleaned = mf.gameObject.name.Replace("_", " ").Trim();
+                string friendlyName = (goName.Contains("16x2x16") || mLow.Contains("16x2x16"))
+                    ? "Floor Platform 16x16"
+                    : mName.Replace("Mesh", "").Replace("_", " ").Trim();
 
-                    friendlyName = cleaned;
-                }
+                if (string.IsNullOrWhiteSpace(friendlyName) || friendlyName.Length < 2)
+                    friendlyName = mf.gameObject.name.Replace("_", " ").Trim();
 
                 var asset = new CatalogAsset
                 {
