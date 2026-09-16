@@ -28,12 +28,11 @@ namespace DeadCoreEditor
         public string AssetName;
         public Vector3 RelativeOffset;
         public Quaternion Rotation;
-        public float Scale;
+        public Vector3 Scale = Vector3.one; // Full 3D scale (X, Y, Z)
         public float CustomParameter;
         public LightConfig LightCfg;
         public ObjectMotionPath MotionPath;
     }
-
     public static class EditorSessionManager
     {
         // Session and State Tracking
@@ -41,6 +40,9 @@ namespace DeadCoreEditor
         public static bool IsCustomSessionActive = false;
         public static bool IsEditModeActive = false;
         public static bool IsLevelInitialized = false;
+
+        // Trigger Visualization State
+        public static bool AreTriggersVisible = false;
 
         // Interaction State: Select Mode vs Placement Mode
         public static EditorInteractionMode InteractionMode = EditorInteractionMode.SelectMode;
@@ -68,7 +70,7 @@ namespace DeadCoreEditor
 
         // Placement & Snapping Settings
         public static float ActivePlacementScale = 1.0f;
-        public static float CurrentGridSnap = 1.0f;
+        public static float CurrentGridSnap = 0.0f;
         public static bool AutoAlignToSurface = false;
         public static bool EnforceAdjacentPlacement = true;
 
@@ -139,6 +141,162 @@ namespace DeadCoreEditor
         private static readonly List<GameObject> _highlightBoxes = new List<GameObject>();
         private static readonly List<GameObject> _selectionBeacons = new List<GameObject>();
 
+        // =========================================================================
+        // KEYBIND PARENTING WORKFLOW (Ctrl + P / Alt + P)
+        // =========================================================================
+
+        public static bool IsDescendantOf(GameObject parentNode, GameObject potentialChild)
+        {
+            if (parentNode == null || potentialChild == null) return false;
+            Transform curr = potentialChild.transform;
+            while (curr != null)
+            {
+                if (curr.gameObject == parentNode) return true;
+                curr = curr.parent;
+            }
+            return false;
+        }
+
+        public static void ParentSelectedObjects()
+        {
+            if (SelectedObjects == null || SelectedObjects.Count == 0)
+            {
+                ShowNotification("Nothing selected to parent.");
+                return;
+            }
+
+            // 1. Multi-Selection Mode: Parent all objects to the last selected object
+            if (SelectedObjects.Count >= 2)
+            {
+                GameObject parentTarget = SelectedObject;
+                if (parentTarget == null) return;
+
+                int count = 0;
+                for (int i = 0; i < SelectedObjects.Count; i++)
+                {
+                    GameObject child = SelectedObjects[i];
+                    if (child == null || child == parentTarget) continue;
+                    if (IsWaypointMarker(child, out _, out _)) continue;
+
+                    // Prevent cyclic parenting loops
+                    if (IsDescendantOf(child, parentTarget))
+                    {
+                        ShowNotification($"Cannot parent '{child.name}': Cyclic loop detected.");
+                        continue;
+                    }
+
+                    GameObject oldParent = child.transform.parent != null ? child.transform.parent.gameObject : null;
+                    if (oldParent == parentTarget) continue;
+
+                    child.transform.SetParent(parentTarget.transform, true);
+
+                    if (oldParent != null) RecalculateParentChildCount(oldParent);
+                    RecalculateParentChildCount(parentTarget);
+
+                    StudioGizmoController.InvalidateCachedCenter(child);
+
+                    UndoHistory.Push(new HistoryRecord
+                    {
+                        ActionType = HistoryActionType.Parenting,
+                        TargetObject = child,
+                        PreviousParent = oldParent,
+                        NewParent = parentTarget
+                    });
+                    count++;
+                }
+
+                ParentingChildTarget = null;
+                RedoHistory.Clear();
+                StudioUIManager.RefreshHierarchy();
+                ShowNotification($"Parented {count} object(s) under '{parentTarget.name}' [Ctrl+P]");
+            }
+            // 2. Two-Step Mode: Single object selection
+            else
+            {
+                GameObject current = SelectedObject;
+
+                if (ParentingChildTarget == null)
+                {
+                    ParentingChildTarget = current;
+                    ShowNotification($"Child locked: '{current.name}'. Select parent & press Ctrl+P.");
+                }
+                else if (ParentingChildTarget == current)
+                {
+                    ParentingChildTarget = null;
+                    ShowNotification("Parenting cancelled.");
+                }
+                else
+                {
+                    // Current is the parent target, ParentingChildTarget is the child
+                    if (IsDescendantOf(ParentingChildTarget, current))
+                    {
+                        ShowNotification("Cannot parent: Cyclic loop detected.");
+                        ParentingChildTarget = null;
+                        return;
+                    }
+
+                    GameObject oldParent = ParentingChildTarget.transform.parent != null ? ParentingChildTarget.transform.parent.gameObject : null;
+                    ParentingChildTarget.transform.SetParent(current.transform, true);
+
+                    if (oldParent != null) RecalculateParentChildCount(oldParent);
+                    RecalculateParentChildCount(current);
+
+                    StudioGizmoController.InvalidateCachedCenter(ParentingChildTarget);
+
+                    UndoHistory.Push(new HistoryRecord
+                    {
+                        ActionType = HistoryActionType.Parenting,
+                        TargetObject = ParentingChildTarget,
+                        PreviousParent = oldParent,
+                        NewParent = current
+                    });
+
+                    RedoHistory.Clear();
+                    ShowNotification($"Parented '{ParentingChildTarget.name}' under '{current.name}' [Ctrl+P]");
+                    ParentingChildTarget = null;
+                    StudioUIManager.RefreshHierarchy();
+                }
+            }
+        }
+
+        public static void UnparentSelectedObjects()
+        {
+            if (SelectedObjects == null || SelectedObjects.Count == 0)
+            {
+                ShowNotification("Nothing selected to unparent.");
+                return;
+            }
+
+            int count = 0;
+            for (int i = 0; i < SelectedObjects.Count; i++)
+            {
+                GameObject child = SelectedObjects[i];
+                if (child == null || child.transform.parent == null) continue;
+                if (IsWaypointMarker(child, out _, out _)) continue;
+
+                GameObject oldParent = child.transform.parent.gameObject;
+                child.transform.SetParent(null, true);
+
+                RecalculateParentChildCount(oldParent);
+                StudioGizmoController.InvalidateCachedCenter(child);
+
+                UndoHistory.Push(new HistoryRecord
+                {
+                    ActionType = HistoryActionType.Parenting,
+                    TargetObject = child,
+                    PreviousParent = oldParent,
+                    NewParent = null
+                });
+
+                count++;
+            }
+
+            ParentingChildTarget = null;
+            RedoHistory.Clear();
+            StudioUIManager.RefreshHierarchy();
+            ShowNotification(count > 0 ? $"Unparented {count} object(s) to root [Alt+P]" : "Selected objects are already at root.");
+        }
+
         public static void SetTurretSimulationActive(bool active)
         {
             for (int i = 0; i < PlacedObjects.Count; i++)
@@ -179,6 +337,84 @@ namespace DeadCoreEditor
                         }
                     }
                 }
+            }
+        }
+
+        // Tracks per-jumper active state (for Inspector toggling)
+        public static Dictionary<GameObject, bool> JumperActiveStates = new Dictionary<GameObject, bool>();
+
+        public static void SetJumperSimulationActive(bool active)
+        {
+            for (int i = 0; i < PlacedJumpers.Count; i++)
+            {
+                GameObject obj = PlacedJumpers[i];
+                if (obj == null) continue;
+
+                // Check if this specific pad was manually toggled off in the inspector
+                bool isPadEnabled = true;
+                if (JumperActiveStates.TryGetValue(obj, out bool padState))
+                {
+                    isPadEnabled = padState;
+                }
+
+                bool shouldBeActive = active && isPadEnabled;
+
+                // 1. Toggle Jumper script and FX
+                Jumper[] jumpers = obj.GetComponentsInChildren<Jumper>(true);
+                for (int j = 0; j < jumpers.Length; j++)
+                {
+                    if (jumpers[j] != null)
+                    {
+                        jumpers[j].enabled = shouldBeActive;
+                        if (jumpers[j].Fx != null) jumpers[j].Fx.SetActive(shouldBeActive);
+                    }
+                }
+
+                // 2. Disable trigger colliders so Unity doesn't execute OnTriggerEnter
+                Collider[] cols = obj.GetComponentsInChildren<Collider>(true);
+                for (int c = 0; c < cols.Length; c++)
+                {
+                    if (cols[c] != null && cols[c].isTrigger && cols[c].gameObject.name != "Editor_Snapping_Proxy")
+                    {
+                        cols[c].enabled = shouldBeActive;
+                    }
+                }
+            }
+        }
+
+        public static void ApplyJumperActive(GameObject jumperObj, bool active)
+        {
+            if (jumperObj == null) return;
+            JumperActiveStates[jumperObj] = active;
+
+            // Only activate if not currently in Edit Mode
+            bool effectiveActive = active && !IsEditModeActive;
+
+            Jumper[] jumpers = jumperObj.GetComponentsInChildren<Jumper>(true);
+            foreach (var jc in jumpers)
+            {
+                if (jc == null) continue;
+                jc.enabled = effectiveActive;
+                if (jc.Fx != null) jc.Fx.SetActive(effectiveActive);
+            }
+
+            Collider[] cols = jumperObj.GetComponentsInChildren<Collider>(true);
+            foreach (var col in cols)
+            {
+                if (col != null && col.isTrigger && col.gameObject.name != "Editor_Snapping_Proxy")
+                {
+                    col.enabled = effectiveActive;
+                }
+            }
+        }
+
+        public static void SetSnappingProxiesActive(bool active)
+        {
+            for (int i = 0; i < PlacedObjects.Count; i++)
+            {
+                if (PlacedObjects[i] == null) continue;
+                Transform proxy = PlacedObjects[i].transform.Find("Editor_Snapping_Proxy");
+                if (proxy != null) proxy.gameObject.SetActive(active);
             }
         }
 
@@ -450,7 +686,7 @@ namespace DeadCoreEditor
                     AssetName = rawName,
                     RelativeOffset = obj.transform.position - groupCenter,
                     Rotation = obj.transform.rotation,
-                    Scale = obj.transform.localScale.x,
+                    Scale = obj.transform.localScale, // Saves full Vector3 scale
                     CustomParameter = param,
                     LightCfg = lCfg,
                     MotionPath = mPath
@@ -512,6 +748,8 @@ namespace DeadCoreEditor
                             PointA = spawnPos,
                             PointB = item.MotionPath.PointB + delta,
                             Speed = item.MotionPath.Speed,
+                            RotationSpeed = item.MotionPath.RotationSpeed,
+                            RotationAxis = item.MotionPath.RotationAxis,
                             IsActive = true
                         };
                     }
@@ -526,7 +764,8 @@ namespace DeadCoreEditor
                         AssetName = item.AssetName,
                         Position = spawnPos,
                         Rotation = item.Rotation,
-                        Scale = item.Scale,
+                        Scale = item.Scale.x,
+                        ScaleVector = item.Scale,
                         CustomParameter = item.CustomParameter
                     });
                 }
@@ -605,7 +844,8 @@ namespace DeadCoreEditor
                         AssetName = item.AssetName,
                         Position = spawnPos,
                         Rotation = item.Rotation,
-                        Scale = item.Scale,
+                        Scale = item.Scale.x,
+                        ScaleVector = item.Scale, // Guarda el Vector3 completo
                         CustomParameter = item.CustomParameter
                     });
                 }
@@ -665,6 +905,8 @@ namespace DeadCoreEditor
 
             GameObject player = FindPlayerEntity();
             SetTurretSimulationActive(!IsEditModeActive);
+            SetSnappingProxiesActive(IsEditModeActive);
+            SetJumperSimulationActive(!IsEditModeActive);
 
             if (IsEditModeActive)
             {
@@ -756,7 +998,7 @@ namespace DeadCoreEditor
             ActiveTurbineSpeed = 35.0f;
             ActiveTurretFireDelay = 1.0f;
             ActivePlacementScale = 1.0f;
-            CurrentGridSnap = 1.0f;
+            CurrentGridSnap = 0.0f;
             AutoAlignToSurface = false;
             InteractionMode = EditorInteractionMode.SelectMode;
         }
@@ -864,9 +1106,17 @@ namespace DeadCoreEditor
                     DeleteSelectedObjects();
                 }
 
+                bool isShift = Input.GetKey(KeyCode.LeftShift) || Input.GetKey(KeyCode.RightShift);
+                bool isAlt = Input.GetKey(KeyCode.LeftAlt) || Input.GetKey(KeyCode.RightAlt);
+
                 if (isCtrl && GUIUtility.keyboardControl == 0)
                 {
-                    if (Input.GetKeyDown(KeyCode.D))
+                    if (Input.GetKeyDown(KeyCode.P))
+                    {
+                        if (isShift) UnparentSelectedObjects();
+                        else ParentSelectedObjects();
+                    }
+                    else if (Input.GetKeyDown(KeyCode.D))
                     {
                         DuplicateSelectedObjects();
                     }
@@ -880,13 +1130,19 @@ namespace DeadCoreEditor
                     }
                     else if (Input.GetKeyDown(KeyCode.Z))
                     {
-                        if (Input.GetKey(KeyCode.LeftShift)) PerformRedo();
+                        if (isShift) PerformRedo();
                         else PerformUndo();
                     }
                     else if (Input.GetKeyDown(KeyCode.Y))
                     {
                         PerformRedo();
                     }
+                }
+
+                // Alt + P to Unparent (standard Blender shortcut)
+                if (isAlt && Input.GetKeyDown(KeyCode.P) && GUIUtility.keyboardControl == 0)
+                {
+                    UnparentSelectedObjects();
                 }
             }
 
@@ -900,7 +1156,7 @@ namespace DeadCoreEditor
         // SOLID OBJECT SPAWNING: PRESERVES MESH COLLIDERS & NATIVE GAMEPLAY HITBOXES
         // =========================================================================
 
-        public static GameObject SpawnAssetByName(string partialName, Vector3 position, float scale, Quaternion? customRotation = null)
+        public static GameObject SpawnAssetByName(string partialName, Vector3 position, Vector3 scale, Quaternion? customRotation = null)
         {
             if (string.IsNullOrEmpty(partialName)) return null;
 
@@ -940,7 +1196,12 @@ namespace DeadCoreEditor
             return null;
         }
 
-        public static GameObject SpawnCatalogObject(CatalogAsset asset, Vector3 position, float scale, Quaternion? customRotation = null)
+        public static GameObject SpawnAssetByName(string partialName, Vector3 position, float uniformScale, Quaternion? customRotation = null)
+        {
+            return SpawnAssetByName(partialName, position, Vector3.one * uniformScale, customRotation);
+        }
+
+        public static GameObject SpawnCatalogObject(CatalogAsset asset, Vector3 position, Vector3 scale, Quaternion? customRotation = null)
         {
             if (asset == null || asset.SourceTemplate == null) return null;
 
@@ -948,7 +1209,7 @@ namespace DeadCoreEditor
             obj.name = "Custom_" + asset.DisplayName.Replace(" ", "_");
             obj.transform.position = position;
             obj.transform.rotation = customRotation ?? GetCurrentCombinedRotation(asset);
-            obj.transform.localScale = Vector3.one * scale;
+            obj.transform.localScale = scale; // Applies true 3D scale (X, Y, Z)
             obj.SetActive(true);
 
             bool isHazard = asset.IsLaser || asset.IsRotatingLaser;
@@ -1096,6 +1357,10 @@ namespace DeadCoreEditor
             return obj;
         }
 
+        public static GameObject SpawnCatalogObject(CatalogAsset asset, Vector3 position, float uniformScale, Quaternion? customRotation = null)
+        {
+            return SpawnCatalogObject(asset, position, Vector3.one * uniformScale, customRotation);
+        }
         public static void AttachEditorSnappingProxy(GameObject obj)
         {
             if (obj == null) return;
@@ -1283,7 +1548,7 @@ namespace DeadCoreEditor
                     AssetName = target.name.StartsWith("Custom_") ? target.name.Substring(7) : target.name,
                     Position = target.transform.position,
                     Rotation = target.transform.rotation,
-                    Scale = target.transform.localScale.x,
+                    ScaleVector = target.transform.localScale, // Saves full Vector3 scale
                     CustomParameter = param
                 });
                 RedoHistory.Clear();
@@ -1394,6 +1659,20 @@ namespace DeadCoreEditor
                 RedoHistory.Push(record);
                 ShowNotification($"Restored deleted {record.AssetName}");
             }
+            else if (record.ActionType == HistoryActionType.Parenting)
+            {
+                if (record.TargetObject != null)
+                {
+                    Transform prevT = record.PreviousParent != null ? record.PreviousParent.transform : null;
+                    record.TargetObject.transform.SetParent(prevT, true);
+
+                    if (record.NewParent != null) RecalculateParentChildCount(record.NewParent);
+                    if (record.PreviousParent != null) RecalculateParentChildCount(record.PreviousParent);
+                    StudioGizmoController.InvalidateCachedCenter(record.TargetObject);
+                }
+                RedoHistory.Push(record);
+                ShowNotification("Undid Parenting");
+            }
             else if (record.ActionType == HistoryActionType.Reposition)
             {
                 if (record.TargetObject != null)
@@ -1439,6 +1718,20 @@ namespace DeadCoreEditor
                 }
                 UndoHistory.Push(record);
                 ShowNotification($"Re-deleted {record.AssetName}");
+            }
+            else if (record.ActionType == HistoryActionType.Parenting)
+            {
+                if (record.TargetObject != null)
+                {
+                    Transform newT = record.NewParent != null ? record.NewParent.transform : null;
+                    record.TargetObject.transform.SetParent(newT, true);
+
+                    if (record.PreviousParent != null) RecalculateParentChildCount(record.PreviousParent);
+                    if (record.NewParent != null) RecalculateParentChildCount(record.NewParent);
+                    StudioGizmoController.InvalidateCachedCenter(record.TargetObject);
+                }
+                UndoHistory.Push(record);
+                ShowNotification("Redid Parenting");
             }
             else if (record.ActionType == HistoryActionType.Reposition)
             {
@@ -1886,6 +2179,7 @@ namespace DeadCoreEditor
 
             bool canPushPlayer = (player != null && !IsEditModeActive && cc != null && cc.isGrounded);
             Vector3 playerFeetPos = canPushPlayer ? player.transform.position : Vector3.zero;
+            float dt = Time.deltaTime;
 
             foreach (var kvp in MotionPaths)
             {
@@ -1927,8 +2221,54 @@ namespace DeadCoreEditor
 
                 HideWaypointVisual(obj);
 
+                // 1. Detect if player is standing on this platform
+                bool playerOnPlatform = false;
+                if (canPushPlayer)
+                {
+                    if (path.CachedColliders == null || path.CachedColliders.Length == 0)
+                        path.CachedColliders = obj.GetComponentsInChildren<Collider>(true);
+
+                    for (int c = 0; c < path.CachedColliders.Length; c++)
+                    {
+                        Collider col = path.CachedColliders[c];
+                        if (col != null && col.bounds.Contains(playerFeetPos + Vector3.down * 0.2f))
+                        {
+                            playerOnPlatform = true;
+                            break;
+                        }
+                    }
+                }
+
+                // 2. Continuous rotation & player tangential momentum
+                if (Mathf.Abs(path.RotationSpeed) > 0.01f)
+                {
+                    Vector3 localAxis = (path.RotationAxis == 0) ? Vector3.right :
+                                        (path.RotationAxis == 2 ? Vector3.forward : Vector3.up);
+
+                    float rotAngle = path.RotationSpeed * dt;
+                    Vector3 worldAxis = obj.transform.TransformDirection(localAxis);
+                    Quaternion rotDelta = Quaternion.AngleAxis(rotAngle, worldAxis);
+
+                    // If player is on the platform, rotate them with the surface
+                    if (playerOnPlatform)
+                    {
+                        Vector3 offset = player.transform.position - obj.transform.position;
+                        Vector3 newOffset = rotDelta * offset;
+                        Vector3 rotPush = newOffset - offset;
+                        cc.Move(rotPush);
+
+                        if (path.RotationAxis == 1) // Apply yaw directly to player view
+                        {
+                            player.transform.rotation = rotDelta * player.transform.rotation;
+                        }
+                    }
+
+                    obj.transform.Rotate(localAxis, rotAngle, Space.Self);
+                }
+
+                // 3. Linear movement between Point A and Point B
                 float dist = path.TotalDistance;
-                if (dist < 0.05f) continue;
+                if (dist < 0.05f || path.Speed < 0.01f) continue; // Standalone rotation mode
 
                 float speed = Mathf.Max(0.1f, path.Speed);
                 float duration = dist / speed;
@@ -1938,24 +2278,12 @@ namespace DeadCoreEditor
 
                 obj.transform.position = targetPos;
 
-                if (canPushPlayer && deltaPos.sqrMagnitude > 0.00001f)
+                if (playerOnPlatform && deltaPos.sqrMagnitude > 0.00001f)
                 {
-                    if (path.CachedColliders == null || path.CachedColliders.Length == 0)
-                        path.CachedColliders = obj.GetComponentsInChildren<Collider>(true);
-
-                    for (int c = 0; c < path.CachedColliders.Length; c++)
-                    {
-                        Collider col = path.CachedColliders[c];
-                        if (col != null && col.bounds.Contains(playerFeetPos + Vector3.down * 0.15f))
-                        {
-                            cc.Move(deltaPos);
-                            break;
-                        }
-                    }
+                    cc.Move(deltaPos);
                 }
             }
         }
-
         public static void UpdateWaypointVisuals(GameObject obj, ObjectMotionPath path)
         {
             if (obj == null || path == null) return;
@@ -2359,6 +2687,7 @@ namespace DeadCoreEditor
 
             LevelTimer = 0f;
             IsLevelCompleted = false;
+            SetSnappingProxiesActive(false);
             _lightRefreshTimer = 0.35f;
             SetSpotlightMeshesVisible(false);
 
@@ -2594,28 +2923,20 @@ namespace DeadCoreEditor
                     : obj.transform.position;
 
                 Quaternion rot = obj.transform.rotation;
-                float scale = obj.transform.localScale.x;
+                Vector3 scl = obj.transform.localScale; // Full 3D scale
                 string name = obj.name.StartsWith("Custom_") ? obj.name.Substring(7) : obj.name;
 
                 float param = 0f;
                 string extraParams = "";
 
                 if (EditorSessionManager.JumperForces.ContainsKey(obj))
-                {
                     param = EditorSessionManager.JumperForces[obj];
-                }
                 else if (EditorSessionManager.TurbineSpeeds.ContainsKey(obj))
-                {
                     param = EditorSessionManager.TurbineSpeeds[obj];
-                }
                 else if (EditorSessionManager.TurretFireDelays.ContainsKey(obj))
-                {
                     param = EditorSessionManager.TurretFireDelays[obj];
-                }
                 else if (EditorSessionManager.LaserRotationSpeeds.ContainsKey(obj))
-                {
                     param = EditorSessionManager.LaserRotationSpeeds[obj];
-                }
                 else if (EditorSessionManager.PlacedLights.ContainsKey(obj))
                 {
                     LightConfig cfg = EditorSessionManager.PlacedLights[obj];
@@ -2628,7 +2949,7 @@ namespace DeadCoreEditor
                 if (EditorSessionManager.MotionPaths.ContainsKey(obj))
                 {
                     var mp = EditorSessionManager.MotionPaths[obj];
-                    pathParams = $";PATH:1:{mp.Speed.ToString("F2", inv)}:{mp.PointA.x.ToString("F4", inv)}:{mp.PointA.y.ToString("F4", inv)}:{mp.PointA.z.ToString("F4", inv)}:{mp.PointB.x.ToString("F4", inv)}:{mp.PointB.y.ToString("F4", inv)}:{mp.PointB.z.ToString("F4", inv)}";
+                    pathParams = $";PATH:1:{mp.Speed.ToString("F2", inv)}:{mp.PointA.x.ToString("F4", inv)}:{mp.PointA.y.ToString("F4", inv)}:{mp.PointA.z.ToString("F4", inv)}:{mp.PointB.x.ToString("F4", inv)}:{mp.PointB.y.ToString("F4", inv)}:{mp.PointB.z.ToString("F4", inv)}:{mp.RotationSpeed.ToString("F2", inv)}:{mp.RotationAxis}";
                 }
 
                 int parentIdx = -1;
@@ -2638,7 +2959,10 @@ namespace DeadCoreEditor
                 }
                 string parentParams = $";PARENT:{parentIdx}";
 
-                lines.Add($"{name};{pos.x.ToString("F4", inv)};{pos.y.ToString("F4", inv)};{pos.z.ToString("F4", inv)};{scale.ToString("F4", inv)};{rot.x.ToString("F4", inv)};{rot.y.ToString("F4", inv)};{rot.z.ToString("F4", inv)};{rot.w.ToString("F4", inv)};{param.ToString("F2", inv)}{extraParams}{pathParams}{parentParams}");
+                // Exact 3D scale tag
+                string scale3Params = $";SCALE3:{scl.x.ToString("F4", inv)}:{scl.y.ToString("F4", inv)}:{scl.z.ToString("F4", inv)}";
+
+                lines.Add($"{name};{pos.x.ToString("F4", inv)};{pos.y.ToString("F4", inv)};{pos.z.ToString("F4", inv)};{scl.x.ToString("F4", inv)};{rot.x.ToString("F4", inv)};{rot.y.ToString("F4", inv)};{rot.z.ToString("F4", inv)};{rot.w.ToString("F4", inv)};{param.ToString("F2", inv)}{extraParams}{pathParams}{parentParams}{scale3Params}");
             }
 
             File.WriteAllLines(path, lines.ToArray());
@@ -2694,8 +3018,28 @@ namespace DeadCoreEditor
 
                 string rawName = p[0];
                 Vector3 pos = new Vector3(ParseFloat(p[1]), ParseFloat(p[2]), ParseFloat(p[3]));
-                float scale = ParseFloat(p[4]);
-                if (scale <= 0.0001f) scale = 0.55f;
+
+                // Default uniform scale fallback
+                float uniformScale = ParseFloat(p[4]);
+                if (uniformScale <= 0.0001f) uniformScale = 0.55f;
+                Vector3 scaleVec = Vector3.one * uniformScale;
+
+                // Check for exact 3D non-uniform scale tag
+                int scale3TagIdx = trimmed.IndexOf(";SCALE3:", StringComparison.OrdinalIgnoreCase);
+                if (scale3TagIdx != -1)
+                {
+                    string scaleSub = trimmed.Substring(scale3TagIdx + 8).Split(';')[0];
+                    string[] sParts = scaleSub.Split(':');
+                    if (sParts.Length >= 3)
+                    {
+                        scaleVec = new Vector3(ParseFloat(sParts[0]), ParseFloat(sParts[1]), ParseFloat(sParts[2]));
+                    }
+                }
+
+                // Prevent 0-scale invisible objects
+                scaleVec.x = Mathf.Max(0.01f, scaleVec.x);
+                scaleVec.y = Mathf.Max(0.01f, scaleVec.y);
+                scaleVec.z = Mathf.Max(0.01f, scaleVec.z);
 
                 Quaternion rot = Quaternion.identity;
                 if (p.Length >= 9)
@@ -2706,9 +3050,10 @@ namespace DeadCoreEditor
 
                 float customParam = (p.Length >= 10) ? ParseFloat(p[9]) : 0f;
 
-                GameObject obj = EditorSessionManager.SpawnAssetByName(rawName, pos, scale, rot);
+                GameObject obj = EditorSessionManager.SpawnAssetByName(rawName, pos, scaleVec, rot);
                 if (obj != null)
                 {
+                    obj.transform.localScale = scaleVec; // Ensures non-uniform scale is applied
                     string lowName = rawName.ToLower();
 
                     if (customParam > 0f)
@@ -2754,12 +3099,17 @@ namespace DeadCoreEditor
                             Vector3 pA = new Vector3(ParseFloat(pathParts[2]), ParseFloat(pathParts[3]), ParseFloat(pathParts[4]));
                             Vector3 pB = new Vector3(ParseFloat(pathParts[5]), ParseFloat(pathParts[6]), ParseFloat(pathParts[7]));
 
+                            float rotSpd = (pathParts.Length >= 9) ? ParseFloat(pathParts[8]) : 0f;
+                            int rotAxis = (pathParts.Length >= 10 && int.TryParse(pathParts[9], out int ra)) ? ra : 1;
+
                             obj.transform.position = pA;
                             EditorSessionManager.MotionPaths[obj] = new ObjectMotionPath
                             {
                                 PointA = pA,
                                 PointB = pB,
-                                Speed = spd > 0.1f ? spd : 3.5f,
+                                Speed = spd > 0.01f ? spd : 3.5f,
+                                RotationSpeed = rotSpd,
+                                RotationAxis = rotAxis,
                                 IsActive = true
                             };
                         }

@@ -45,6 +45,11 @@ namespace DeadCoreEditor
         private static readonly List<GameObject> _hierarchyRows = new List<GameObject>();
         private static readonly HashSet<GameObject> _collapsedParents = new HashSet<GameObject>();
 
+        private static Slider _motionPathRotSlider = null;
+        private static TMP_Text _motionPathRotValText = null;
+        private static Button _motionPathAxisBtn = null;
+        private static TMP_Text _motionPathAxisBtnText = null;
+
         // Hierarchy Drag & Drop Mapping
         private static readonly Dictionary<GameObject, GameObject> _targetToRowMap = new Dictionary<GameObject, GameObject>();
         private static readonly Dictionary<GameObject, GameObject> _rowToTargetMap = new Dictionary<GameObject, GameObject>();
@@ -70,7 +75,9 @@ namespace DeadCoreEditor
         private static TMP_InputField _rotXInput = null;
         private static TMP_InputField _rotYInput = null;
         private static TMP_InputField _rotZInput = null;
-        private static TMP_InputField _scaleInput = null;
+        private static TMP_InputField _scaleXInput = null;
+        private static TMP_InputField _scaleYInput = null;
+        private static TMP_InputField _scaleZInput = null;
 
         // Section Cards
         private static GameObject _jumperSection = null;
@@ -116,11 +123,14 @@ namespace DeadCoreEditor
         private static GameObject _motionPathCreateBtnObj = null;
         private static GameObject _motionPathActiveControlsObj = null;
 
-        // Docked Bottom Asset Browser
+        // Docked Bottom Asset Browser state
         private static GameObject _assetBrowserPanel = null;
         private static RectTransform _browserContent = null;
         private static TMP_InputField _browserSearchInput = null;
         private static string _activeBrowserCategory = "Architecture";
+        private static AssetSizeTier _activeSizeFilter = AssetSizeTier.All;
+        private static bool _sortSizeAscending = true;
+        private static TMP_Text _sortSizeBtnText = null;
         private static readonly List<GameObject> _browserCards = new List<GameObject>();
 
         // Toast Notification Banner
@@ -588,7 +598,7 @@ namespace DeadCoreEditor
                 }
             });
 
-            CreateSingleFloatRow(transCard.transform, "Scale", out _scaleInput, OnTransformInputChanged);
+            CreateVector3Row(transCard.transform, "Scale", out _scaleXInput, out _scaleYInput, out _scaleZInput, OnTransformInputChanged);
 
             // 2. Gameplay Cards
             _jumperSection = CreateSectionCard(_inspectorContent, "Jumper", "Jumper Launch Pad");
@@ -717,24 +727,34 @@ namespace DeadCoreEditor
 
             CreateButton(_motionPathCreateBtnObj.transform, "Btn_CreateMotionPath", "[+ Create Motion Path]", 240f, () =>
             {
-                if (EditorSessionManager.SelectedObject == null) return;
-                GameObject obj = EditorSessionManager.SelectedObject;
-                Vector3 startPos = obj.transform.position;
-                Vector3 endPos = startPos + obj.transform.forward * 8f;
+                GameObject target = EditorSessionManager.SelectedObject;
+                if (target == null) return;
 
-                EditorSessionManager.MotionPaths[obj] = new ObjectMotionPath
+                if (EditorSessionManager.IsWaypointMarker(target, out GameObject owner, out _))
+                    target = owner;
+
+                Vector3 startPos = target.transform.position;
+                Vector3 endPos = startPos + new Vector3(10f, 0f, 0f);
+
+                ObjectMotionPath newPath = new ObjectMotionPath
                 {
                     PointA = startPos,
                     PointB = endPos,
-                    Speed = 3.5f,
+                    Speed = 4.0f,
                     IsActive = true
                 };
 
+                EditorSessionManager.MotionPaths[target] = newPath;
+
+                var rb = target.GetComponent<Rigidbody>();
+                if (rb == null) rb = target.AddComponent<Rigidbody>();
+                rb.isKinematic = true;
+
+                EditorSessionManager.UpdateWaypointVisuals(target, newPath);
                 RefreshInspectorValues();
-                EditorSessionManager.ShowNotification("Created motion path! Point B placed 8m forward.");
+                EditorSessionManager.ShowNotification("Created Motion Path! Drag the orange sphere (Point B).");
             }, new Color(0.2f, 0.65f, 0.95f, 1f));
 
-            // 3. ActiveControls created with native RectTransform
             _motionPathActiveControlsObj = new GameObject("ActiveControls", Il2CppType.Of<RectTransform>());
             _motionPathActiveControlsObj.transform.SetParent(_motionPathSection.transform, false);
 
@@ -749,64 +769,124 @@ namespace DeadCoreEditor
             ContentSizeFitter mpcCsf = _motionPathActiveControlsObj.AddComponent<ContentSizeFitter>();
             mpcCsf.verticalFit = ContentSizeFitter.FitMode.PreferredSize;
 
-            LayoutElement mpcLe = _motionPathActiveControlsObj.AddComponent<LayoutElement>();
-            mpcLe.flexibleWidth = 1f;
-
-            _motionPathStatusText = CreateText(_motionPathActiveControlsObj.transform, "Path Active", new Vector2(0f, 0f), new Vector2(1f, 1f), Vector2.zero, Vector2.zero, 11f, FontStyles.Normal, Color.cyan, TextAlignmentOptions.MidlineLeft);
+            _motionPathStatusText = CreateText(_motionPathActiveControlsObj.transform, "Path Active", Vector2.zero, Vector2.one, Vector2.zero, Vector2.zero, 11f, FontStyles.Normal, Color.cyan, TextAlignmentOptions.MidlineLeft);
             if (_motionPathStatusText != null)
             {
                 LayoutElement mple = _motionPathStatusText.gameObject.AddComponent<LayoutElement>();
                 mple.preferredHeight = 18f;
             }
 
-            CreateInspectorSliderRow(_motionPathActiveControlsObj.transform, "Move Speed", out _motionPathSpeedSlider, out _motionPathSpeedValText, 0.2f, 25f, (val) =>
+            // Move Speed Slider
+            CreateInspectorSliderRow(_motionPathActiveControlsObj.transform, "Speed (m/s)", out _motionPathSpeedSlider, out _motionPathSpeedValText, 0.0f, 25f, (val) =>
             {
-                if (_suppressInspectorCallbacks || EditorSessionManager.SelectedObject == null) return;
-                if (EditorSessionManager.MotionPaths.TryGetValue(EditorSessionManager.SelectedObject, out var path))
+                if (_suppressInspectorCallbacks) return;
+                GameObject target = EditorSessionManager.SelectedObject;
+                if (target == null) return;
+                if (EditorSessionManager.IsWaypointMarker(target, out GameObject owner, out _)) target = owner;
+
+                ObjectMotionPath motionPath = null;
+                if (EditorSessionManager.MotionPaths.TryGetValue(target, out motionPath) && motionPath != null)
                 {
-                    path.Speed = val;
+                    motionPath.Speed = val;
                     if (_motionPathSpeedValText != null) _motionPathSpeedValText.text = $"{val:F1} m/s";
                 }
             });
 
-            GameObject motionBtnRow1 = CreateRowContainer(_motionPathActiveControlsObj.transform, "Row_MotionButtons1", 26f);
-            SetupRowHorizontalLayout(motionBtnRow1, 6f);
-
-            CreateButton(motionBtnRow1.transform, "Btn_SetA", "Lock Point A", 120f, () =>
+            // Rotation Speed Slider (-150 to +150 deg/s)
+            CreateInspectorSliderRow(_motionPathActiveControlsObj.transform, "Spin (deg/s)", out _motionPathRotSlider, out _motionPathRotValText, -150f, 150f, (val) =>
             {
-                if (EditorSessionManager.SelectedObject == null) return;
-                GameObject obj = EditorSessionManager.SelectedObject;
-                if (EditorSessionManager.MotionPaths.TryGetValue(obj, out var path))
+                if (_suppressInspectorCallbacks) return;
+                GameObject target = EditorSessionManager.SelectedObject;
+                if (target == null) return;
+                if (EditorSessionManager.IsWaypointMarker(target, out GameObject owner, out _)) target = owner;
+
+                ObjectMotionPath motionPath = null;
+                if (EditorSessionManager.MotionPaths.TryGetValue(target, out motionPath) && motionPath != null)
                 {
-                    path.PointA = obj.transform.position;
-                    EditorSessionManager.ShowNotification("Locked Point A to object position!");
-                    RefreshInspectorValues();
+                    motionPath.RotationSpeed = Mathf.Round(val);
+                    if (_motionPathRotValText != null) _motionPathRotValText.text = $"{motionPath.RotationSpeed:F0} d/s";
                 }
             });
 
-            CreateButton(motionBtnRow1.transform, "Btn_SetB", "Lock Point B", 120f, () =>
+            // Rotation Axis Toggle & Zero Reset Buttons
+            GameObject rotRow = CreateRowContainer(_motionPathActiveControlsObj.transform, "Row_RotControls", 24f);
+            SetupRowHorizontalLayout(rotRow, 4f);
+
+            _motionPathAxisBtn = CreateButton(rotRow.transform, "Btn_ToggleAxis", "Axis: [Y - Turntable]", 140f, () =>
             {
-                if (EditorSessionManager.SelectedObject == null) return;
-                GameObject obj = EditorSessionManager.SelectedObject;
-                if (EditorSessionManager.MotionPaths.TryGetValue(obj, out var path))
+                GameObject target = EditorSessionManager.SelectedObject;
+                if (target == null) return;
+                if (EditorSessionManager.IsWaypointMarker(target, out GameObject owner, out _)) target = owner;
+
+                ObjectMotionPath motionPath = null;
+                if (EditorSessionManager.MotionPaths.TryGetValue(target, out motionPath) && motionPath != null)
                 {
-                    path.PointB = obj.transform.position;
-                    EditorSessionManager.ShowNotification("Locked Point B to object position!");
-                    RefreshInspectorValues();
+                    motionPath.RotationAxis = (motionPath.RotationAxis + 1) % 3;
+                    string axisName = (motionPath.RotationAxis == 0) ? "X - Tumble" :
+                                      (motionPath.RotationAxis == 1 ? "Y - Turntable" : "Z - Roll");
+
+                    if (_motionPathAxisBtnText != null) _motionPathAxisBtnText.text = $"Axis: [{axisName}]";
+                    EditorSessionManager.ShowNotification($"Rotation Axis: {axisName}");
                 }
-            });
+            }, new Color(0.18f, 0.28f, 0.40f, 1f));
+            _motionPathAxisBtnText = _motionPathAxisBtn.GetComponentInChildren<TMP_Text>();
 
-            GameObject motionBtnRow2 = CreateRowContainer(_motionPathActiveControlsObj.transform, "Row_MotionButtons2", 26f);
-            SetupRowHorizontalLayout(motionBtnRow2, 6f);
-
-            CreateButton(motionBtnRow2.transform, "Btn_RemovePath", "[- Remove Path]", 120f, () =>
+            CreateButton(rotRow.transform, "Btn_ResetSpin", "Stop Spin (0)", 95f, () =>
             {
-                if (EditorSessionManager.SelectedObject == null) return;
-                GameObject obj = EditorSessionManager.SelectedObject;
-                EditorSessionManager.MotionPaths.Remove(obj);
+                GameObject target = EditorSessionManager.SelectedObject;
+                if (target == null) return;
+                if (EditorSessionManager.IsWaypointMarker(target, out GameObject owner, out _)) target = owner;
+
+                ObjectMotionPath motionPath = null;
+                if (EditorSessionManager.MotionPaths.TryGetValue(target, out motionPath) && motionPath != null)
+                {
+                    motionPath.RotationSpeed = 0f;
+                    if (_motionPathRotSlider != null) _motionPathRotSlider.value = 0f;
+                    if (_motionPathRotValText != null) _motionPathRotValText.text = "0 d/s";
+                    EditorSessionManager.ShowNotification("Rotation stopped.");
+                }
+            }, new Color(0.25f, 0.28f, 0.32f, 1f));
+
+            // Direction Offset Buttons
+            GameObject dirBtnRow = CreateRowContainer(_motionPathActiveControlsObj.transform, "Row_DirButtons", 24f);
+            SetupRowHorizontalLayout(dirBtnRow, 4f);
+
+            CreateButton(dirBtnRow.transform, "Btn_X", "+10m X", 60f, () => ApplyPointBOffset(new Vector3(10f, 0f, 0f)));
+            CreateButton(dirBtnRow.transform, "Btn_Y", "+10m Y", 60f, () => ApplyPointBOffset(new Vector3(0f, 10f, 0f)));
+            CreateButton(dirBtnRow.transform, "Btn_Z", "+10m Z", 60f, () => ApplyPointBOffset(new Vector3(0f, 0f, 10f)));
+            CreateButton(dirBtnRow.transform, "Btn_NegX", "-10m X", 60f, () => ApplyPointBOffset(new Vector3(-10f, 0f, 0f)));
+
+            // Remove Path Button
+            GameObject removeBtnRow = CreateRowContainer(_motionPathActiveControlsObj.transform, "Row_Remove", 24f);
+            SetupRowHorizontalLayout(removeBtnRow, 0f);
+
+            CreateButton(removeBtnRow.transform, "Btn_RemovePath", "[- Remove Motion Path]", 240f, () =>
+            {
+                GameObject target = EditorSessionManager.SelectedObject;
+                if (target == null) return;
+                if (EditorSessionManager.IsWaypointMarker(target, out GameObject owner, out _)) target = owner;
+
+                EditorSessionManager.MotionPaths.Remove(target);
+                EditorSessionManager.DestroyWaypointVisuals(target);
                 RefreshInspectorValues();
                 EditorSessionManager.ShowNotification("Motion path removed.");
             }, new Color(0.7f, 0.25f, 0.25f, 1f));
+        }
+
+        private static void ApplyPointBOffset(Vector3 offset)
+        {
+            GameObject target = EditorSessionManager.SelectedObject;
+            if (target == null) return;
+            if (EditorSessionManager.IsWaypointMarker(target, out GameObject owner, out _)) target = owner;
+
+            ObjectMotionPath motionPath = null;
+            if (EditorSessionManager.MotionPaths.TryGetValue(target, out motionPath) && motionPath != null)
+            {
+                motionPath.PointB = motionPath.PointA + offset;
+                EditorSessionManager.UpdateWaypointVisuals(target, motionPath);
+                RefreshInspectorValues();
+                EditorSessionManager.ShowNotification($"Moved Point B by {offset}");
+            }
         }
 
         private static void OnLightRGBChanged()
@@ -863,6 +943,21 @@ namespace DeadCoreEditor
             }
         }
 
+        private static void OffsetPointB(Vector3 offset)
+        {
+            GameObject target = EditorSessionManager.SelectedObject;
+            if (target == null) return;
+            if (EditorSessionManager.IsWaypointMarker(target, out GameObject owner, out _)) target = owner;
+
+            if (EditorSessionManager.MotionPaths.TryGetValue(target, out var path))
+            {
+                path.PointB = path.PointA + offset;
+                EditorSessionManager.UpdateWaypointVisuals(target, path);
+                RefreshInspectorValues();
+                EditorSessionManager.ShowNotification($"Point B offset to {offset}");
+            }
+        }
+
         // =========================================================================
         // ASSET BROWSER (BOTTOM DOCKED BETWEEN HIERARCHY & INSPECTOR)
         // =========================================================================
@@ -877,48 +972,86 @@ namespace DeadCoreEditor
             abrt.anchorMax = new Vector2(1f, 0f);
             abrt.pivot = new Vector2(0.5f, 0f);
             abrt.offsetMin = new Vector2(265f, 0f);
-            abrt.offsetMax = new Vector2(-290f, 210f);
+            abrt.offsetMax = new Vector2(-290f, 300f);
 
             Image abImg = _assetBrowserPanel.AddComponent<Image>();
             abImg.color = new Color(0.10f, 0.11f, 0.13f, 0.98f);
 
-            GameObject topTabs = new GameObject("Browser_Tabs");
+            // 1. Top Category Tabs
+            GameObject topTabs = new GameObject("Browser_CategoryTabs");
             topTabs.transform.SetParent(_assetBrowserPanel.transform, false);
             RectTransform ttrt = topTabs.AddComponent<RectTransform>();
             ttrt.anchorMin = new Vector2(0f, 1f);
             ttrt.anchorMax = new Vector2(1f, 1f);
             ttrt.pivot = new Vector2(0.5f, 1f);
-            ttrt.sizeDelta = new Vector2(0f, 32f);
-            ttrt.anchoredPosition = new Vector2(0f, 0f);
+            ttrt.sizeDelta = new Vector2(0f, 30f);
+            ttrt.anchoredPosition = new Vector2(0f, -2f);
 
             HorizontalLayoutGroup thlg = topTabs.AddComponent<HorizontalLayoutGroup>();
-            thlg.padding = new RectOffset(8, 8, 4, 4);
-            thlg.spacing = 6f;
+            thlg.padding = new RectOffset(6, 6, 2, 2);
+            thlg.spacing = 4f;
             thlg.childControlWidth = true;
             thlg.childControlHeight = true;
             thlg.childForceExpandWidth = false;
             thlg.childForceExpandHeight = true;
 
-            string[] categories = new string[] { "Architecture", "Gameplay", "Hazards", "All" };
+            string[] categories = new string[] { "Architecture", "Platforms", "Gameplay", "Hazards", "All" };
             for (int i = 0; i < categories.Length; i++)
             {
                 string cat = categories[i];
-                CreateButton(topTabs.transform, "Tab_" + cat, cat, 120f, () =>
+                CreateButton(topTabs.transform, "Tab_" + cat, cat, 100f, () =>
                 {
                     _activeBrowserCategory = cat;
                     RefreshAssetBrowser();
                 });
             }
 
-            _browserSearchInput = CreateInputField(_assetBrowserPanel.transform, "BrowserSearch", new Vector2(1f, 1f), new Vector2(1f, 1f), new Vector2(-105f, -16f), new Vector2(190f, 24f), "Filter catalog...", (s) => RefreshAssetBrowser());
+            _browserSearchInput = CreateInputField(_assetBrowserPanel.transform, "BrowserSearch",
+                new Vector2(1f, 1f), new Vector2(1f, 1f),
+                new Vector2(-105f, -16f), new Vector2(180f, 24f),
+                "Search models...", (s) => RefreshAssetBrowser());
 
+            // 2. Secondary Size Tier & Sort Row
+            GameObject sizeBar = new GameObject("Browser_SizeBar");
+            sizeBar.transform.SetParent(_assetBrowserPanel.transform, false);
+            RectTransform sbrt = sizeBar.AddComponent<RectTransform>();
+            sbrt.anchorMin = new Vector2(0f, 1f);
+            sbrt.anchorMax = new Vector2(1f, 1f);
+            sbrt.pivot = new Vector2(0.5f, 1f);
+            sbrt.sizeDelta = new Vector2(0f, 24f);
+            sbrt.anchoredPosition = new Vector2(0f, -34f);
+
+            HorizontalLayoutGroup shlg = sizeBar.AddComponent<HorizontalLayoutGroup>();
+            shlg.padding = new RectOffset(6, 6, 2, 2);
+            shlg.spacing = 4f;
+            shlg.childControlWidth = true;
+            shlg.childControlHeight = true;
+            shlg.childForceExpandWidth = false;
+            shlg.childForceExpandHeight = true;
+
+            CreateSizeFilterButton(sizeBar.transform, "ALL SIZES", AssetSizeTier.All, 85f);
+            CreateSizeFilterButton(sizeBar.transform, "SMALL <4m", AssetSizeTier.Small, 90f);
+            CreateSizeFilterButton(sizeBar.transform, "MEDIUM 4-15m", AssetSizeTier.Medium, 105f);
+            CreateSizeFilterButton(sizeBar.transform, "LARGE 15-45m", AssetSizeTier.Large, 105f);
+            CreateSizeFilterButton(sizeBar.transform, "GIANT >45m", AssetSizeTier.Giant, 95f);
+
+            Button sortBtn = CreateButton(sizeBar.transform, "Btn_ToggleSortOrder", "SIZE: ▲ ASC", 100f, () =>
+            {
+                _sortSizeAscending = !_sortSizeAscending;
+                if (_sortSizeBtnText != null)
+                    _sortSizeBtnText.text = _sortSizeAscending ? "SIZE: ▲ ASC" : "SIZE: ▼ DESC";
+                RefreshAssetBrowser();
+            }, new Color(0.18f, 0.28f, 0.40f, 1f));
+            _sortSizeBtnText = sortBtn.GetComponentInChildren<TMP_Text>();
+
+            // 3. Scrollable Grid Area
             GameObject scrollObj = new GameObject("Browser_Scroll");
             scrollObj.transform.SetParent(_assetBrowserPanel.transform, false);
             RectTransform srt = scrollObj.AddComponent<RectTransform>();
             srt.anchorMin = Vector2.zero;
             srt.anchorMax = new Vector2(1f, 1f);
             srt.offsetMin = new Vector2(8f, 6f);
-            srt.offsetMax = new Vector2(-8f, -34f);
+            srt.offsetMax = new Vector2(-8f, -62f);
 
             ScrollRect sr = scrollObj.AddComponent<ScrollRect>();
             sr.horizontal = false;
@@ -940,10 +1073,9 @@ namespace DeadCoreEditor
             _browserContent.anchorMax = new Vector2(1f, 1f);
             _browserContent.pivot = new Vector2(0.5f, 1f);
             _browserContent.sizeDelta = new Vector2(0f, 0f);
-            _browserContent.anchoredPosition = Vector2.zero;
 
             GridLayoutGroup glg = content.AddComponent<GridLayoutGroup>();
-            glg.cellSize = new Vector2(95f, 100f);
+            glg.cellSize = new Vector2(100f, 106f);
             glg.spacing = new Vector2(6f, 6f);
             glg.padding = new RectOffset(8, 8, 6, 6);
             glg.startCorner = GridLayoutGroup.Corner.UpperLeft;
@@ -959,6 +1091,15 @@ namespace DeadCoreEditor
             sr.content = _browserContent;
         }
 
+        private static void CreateSizeFilterButton(Transform parent, string label, AssetSizeTier tier, float width)
+        {
+            CreateButton(parent, "BtnSize_" + tier, label, width, () =>
+            {
+                _activeSizeFilter = tier;
+                RefreshAssetBrowser();
+            }, new Color(0.14f, 0.17f, 0.22f, 0.95f));
+        }
+
         public static void RefreshAssetBrowser()
         {
             if (_browserContent == null) return;
@@ -969,71 +1110,95 @@ namespace DeadCoreEditor
             }
             _browserCards.Clear();
 
-            string filter = (_browserSearchInput != null && !string.IsNullOrEmpty(_browserSearchInput.text))
+            string search = (_browserSearchInput != null && !string.IsNullOrEmpty(_browserSearchInput.text))
                 ? _browserSearchInput.text.ToLower() : "";
+
+            // 1. Gather all assets matching the category tab and search text
+            List<CatalogAsset> matchedAssets = new List<CatalogAsset>();
 
             for (int i = 0; i < EditorSessionManager.AllAssets.Count; i++)
             {
                 CatalogAsset asset = EditorSessionManager.AllAssets[i];
                 if (asset == null || asset.SourceTemplate == null) continue;
 
-                if (!string.IsNullOrEmpty(filter) && !asset.DisplayName.ToLower().Contains(filter))
+                if (!string.IsNullOrEmpty(search) && !asset.DisplayName.ToLower().Contains(search))
                     continue;
 
+                // Category filtering
                 if (_activeBrowserCategory == "Architecture")
                 {
-                    bool isArch = asset.Category == AssetCategory.Building ||
-                                  asset.SubCategory.Equals("Architecture", StringComparison.OrdinalIgnoreCase) ||
-                                  asset.SubCategory.Equals("Platforms", StringComparison.OrdinalIgnoreCase);
-
+                    bool isArch = asset.Category == AssetCategory.Building;
                     if (asset.IsJumper || asset.IsCheckPoint || asset.IsSpawnGate || asset.IsGoalGate ||
                         asset.IsLaser || asset.IsRotatingLaser || asset.IsTurret || asset.IsHelix)
                     {
                         isArch = false;
                     }
-
                     if (!isArch) continue;
+                }
+                else if (_activeBrowserCategory == "Platforms")
+                {
+                    bool isPlat = asset.SubCategory.Equals("Platforms", StringComparison.OrdinalIgnoreCase) ||
+                                  asset.DisplayName.ToLower().Contains("platform") ||
+                                  asset.DisplayName.ToLower().Contains("floor") ||
+                                  asset.DisplayName.ToLower().Contains("16x16");
+                    if (!isPlat) continue;
                 }
                 else if (_activeBrowserCategory == "Gameplay")
                 {
                     bool isGame = asset.IsJumper || asset.IsCheckPoint || asset.IsSpawnGate || asset.IsGoalGate ||
                                   asset.IsSpotlight || asset.IsSunlight ||
-                                  asset.SubCategory.Equals("Gameplay", StringComparison.OrdinalIgnoreCase);
-
+                                  asset.SubCategory.Equals("Lighting", StringComparison.OrdinalIgnoreCase);
                     if (!isGame) continue;
                 }
                 else if (_activeBrowserCategory == "Hazards")
                 {
                     bool isHazard = asset.IsLaser || asset.IsRotatingLaser || asset.IsTurret || asset.IsHelix ||
                                     asset.SubCategory.Equals("Hazards", StringComparison.OrdinalIgnoreCase);
-
                     if (!isHazard) continue;
                 }
+
+                // Size Tier filter
+                if (_activeSizeFilter != AssetSizeTier.All && asset.SizeTier != _activeSizeFilter)
+                    continue;
+
+                matchedAssets.Add(asset);
+            }
+
+            // 2. Sort systematically by physical size in every tab
+            matchedAssets.Sort((a, b) =>
+            {
+                int cmp = a.MaxDimension.CompareTo(b.MaxDimension);
+                return _sortSizeAscending ? cmp : -cmp;
+            });
+
+            // 3. Render cards with color-coded size tags
+            for (int i = 0; i < matchedAssets.Count; i++)
+            {
+                CatalogAsset asset = matchedAssets[i];
 
                 GameObject card = new GameObject("Card_" + asset.DisplayName);
                 card.transform.SetParent(_browserContent, false);
                 RectTransform crt = card.AddComponent<RectTransform>();
-                crt.sizeDelta = new Vector2(95f, 100f);
+                crt.sizeDelta = new Vector2(100f, 106f);
 
                 Image bg = card.AddComponent<Image>();
-                bg.color = new Color(0.16f, 0.18f, 0.22f, 0.95f);
+                bg.color = new Color(0.15f, 0.17f, 0.21f, 0.95f);
 
                 Button btn = card.AddComponent<Button>();
                 CatalogAsset capturedAsset = asset;
                 btn.onClick.AddListener((Action)(() => EditorSessionManager.EquipAsset(capturedAsset)));
 
+                // Thumbnail Container
                 GameObject preview = new GameObject("Thumbnail");
                 preview.transform.SetParent(card.transform, false);
                 RectTransform prt = preview.AddComponent<RectTransform>();
-                prt.anchorMin = new Vector2(0.08f, 0.28f);
-                prt.anchorMax = new Vector2(0.92f, 0.95f);
+                prt.anchorMin = new Vector2(0.06f, 0.28f);
+                prt.anchorMax = new Vector2(0.94f, 0.95f);
                 prt.sizeDelta = Vector2.zero;
                 Image pImg = preview.AddComponent<Image>();
 
                 if (asset.ThumbnailSprite == null)
-                {
                     asset.ThumbnailSprite = AssetThumbnailRenderer.GenerateThumbnail(asset);
-                }
 
                 if (asset.ThumbnailSprite != null)
                 {
@@ -1048,11 +1213,31 @@ namespace DeadCoreEditor
                                  (asset.IsJumper ? Color.green : new Color(0.25f, 0.35f, 0.45f))));
                 }
 
+                // Color-coded Size Badge Overlay (Top-Right)
+                GameObject badgeObj = new GameObject("SizeBadge");
+                badgeObj.transform.SetParent(card.transform, false);
+                RectTransform bdrt = badgeObj.AddComponent<RectTransform>();
+                bdrt.anchorMin = new Vector2(0.52f, 0.76f);
+                bdrt.anchorMax = new Vector2(0.96f, 0.96f);
+                bdrt.sizeDelta = Vector2.zero;
+
+                Color badgeColor = asset.SizeTier == AssetSizeTier.Small ? new Color(0.2f, 0.85f, 0.4f, 0.85f) :
+                                  (asset.SizeTier == AssetSizeTier.Medium ? new Color(0.1f, 0.7f, 1.0f, 0.85f) :
+                                  (asset.SizeTier == AssetSizeTier.Large ? new Color(1.0f, 0.6f, 0.1f, 0.85f) :
+                                   new Color(0.9f, 0.25f, 0.25f, 0.85f)));
+
+                badgeObj.AddComponent<Image>().color = badgeColor;
+                TMP_Text badgeTmp = CreateText(badgeObj.transform, asset.GetSizeBadgeText(),
+                    Vector2.zero, Vector2.one, Vector2.zero, Vector2.zero,
+                    9f, FontStyles.Bold, Color.white, TextAlignmentOptions.Center);
+                badgeTmp.enableWordWrapping = false;
+
+                // Title Label (Bottom)
                 GameObject labelObj = new GameObject("Label");
                 labelObj.transform.SetParent(card.transform, false);
                 RectTransform lrt = labelObj.AddComponent<RectTransform>();
                 lrt.anchorMin = Vector2.zero;
-                lrt.anchorMax = new Vector2(1f, 0.3f);
+                lrt.anchorMax = new Vector2(1f, 0.28f);
                 lrt.offsetMin = new Vector2(3f, 2f);
                 lrt.offsetMax = new Vector2(-3f, -2f);
 
@@ -1066,10 +1251,9 @@ namespace DeadCoreEditor
                 _browserCards.Add(card);
             }
         }
-
         private static void BuildToastOverlay()
         {
-            GameObject toastObj = CreatePanel(_canvasRoot.transform, "Toast_Overlay", new Vector2(0.5f, 0f), new Vector2(0.5f, 0f), new Vector2(0f, 225f), new Vector2(480f, 26f), new Color(0.08f, 0.10f, 0.12f, 0.90f));
+            GameObject toastObj = CreatePanel(_canvasRoot.transform, "Toast_Overlay", new Vector2(0.5f, 0f), new Vector2(0.5f, 0f), new Vector2(0f, 310f), new Vector2(480f, 26f), new Color(0.08f, 0.10f, 0.12f, 0.90f));
             _toastText = CreateText(toastObj.transform, "Studio Editor Ready", new Vector2(0f, 0f), new Vector2(1f, 1f), Vector2.zero, Vector2.zero, 12f, FontStyles.Bold, new Color(0.2f, 0.9f, 1.0f), TextAlignmentOptions.Center);
         }
 
@@ -1601,7 +1785,9 @@ namespace DeadCoreEditor
                 if (_rotXInput != null) _rotXInput.text = "0";
                 if (_rotYInput != null) _rotYInput.text = "0";
                 if (_rotZInput != null) _rotZInput.text = "0";
-                if (_scaleInput != null) _scaleInput.text = "1";
+                if (_scaleXInput != null) _scaleXInput.text = "1";
+                if (_scaleYInput != null) _scaleYInput.text = "1";
+                if (_scaleZInput != null) _scaleZInput.text = "1";
 
                 if (_jumperSection != null) _jumperSection.SetActive(false);
                 if (_turbineSection != null) _turbineSection.SetActive(false);
@@ -1626,7 +1812,9 @@ namespace DeadCoreEditor
             if (_rotYInput != null) _rotYInput.text = rot.y.ToString("F1", CultureInfo.InvariantCulture);
             if (_rotZInput != null) _rotZInput.text = rot.z.ToString("F1", CultureInfo.InvariantCulture);
 
-            if (_scaleInput != null) _scaleInput.text = scl.x.ToString("F2", CultureInfo.InvariantCulture);
+            if (_scaleXInput != null) _scaleXInput.text = scl.x.ToString("F2", CultureInfo.InvariantCulture);
+            if (_scaleYInput != null) _scaleYInput.text = scl.y.ToString("F2", CultureInfo.InvariantCulture);
+            if (_scaleZInput != null) _scaleZInput.text = scl.z.ToString("F2", CultureInfo.InvariantCulture);
 
             EditorSessionManager.PlacedObjectTypes.TryGetValue(obj, out PlacedObjectType type);
 
@@ -1709,19 +1897,47 @@ namespace DeadCoreEditor
 
             if (_motionPathSection != null)
             {
-                _motionPathSection.SetActive(true);
-                bool hasPath = EditorSessionManager.MotionPaths.TryGetValue(obj, out var path);
+                GameObject pathOwner = obj;
+                if (EditorSessionManager.IsWaypointMarker(obj, out GameObject resolvedOwner, out _))
+                {
+                    pathOwner = resolvedOwner;
+                }
+
+                ObjectMotionPath motionPath = null;
+                bool hasPath = false;
+                if (pathOwner != null)
+                {
+                    hasPath = EditorSessionManager.MotionPaths.TryGetValue(pathOwner, out motionPath);
+                }
+
+                _motionPathSection.SetActive(hasPath || pathOwner == obj);
 
                 if (_motionPathCreateBtnObj != null) _motionPathCreateBtnObj.SetActive(!hasPath);
                 if (_motionPathActiveControlsObj != null) _motionPathActiveControlsObj.SetActive(hasPath);
 
-                if (hasPath && path != null)
+                if (hasPath && motionPath != null)
                 {
-                    if (_motionPathStatusText != null) _motionPathStatusText.text = $"Kinematic Loop ({path.Speed:F1} m/s)";
+                    float dist = motionPath.TotalDistance;
+                    if (_motionPathStatusText != null)
+                        _motionPathStatusText.text = $"Distance: {dist:F1}m ({motionPath.Speed:F1} m/s)";
+
                     if (_motionPathSpeedSlider != null)
                     {
-                        _motionPathSpeedSlider.value = path.Speed;
-                        if (_motionPathSpeedValText != null) _motionPathSpeedValText.text = $"{path.Speed:F1} m/s";
+                        _motionPathSpeedSlider.value = motionPath.Speed;
+                        if (_motionPathSpeedValText != null) _motionPathSpeedValText.text = $"{motionPath.Speed:F1} m/s";
+                    }
+
+                    if (_motionPathRotSlider != null)
+                    {
+                        _motionPathRotSlider.value = motionPath.RotationSpeed;
+                        if (_motionPathRotValText != null) _motionPathRotValText.text = $"{motionPath.RotationSpeed:F0} d/s";
+                    }
+
+                    if (_motionPathAxisBtnText != null)
+                    {
+                        string axisName = (motionPath.RotationAxis == 0) ? "X - Tumble" :
+                                          (motionPath.RotationAxis == 1 ? "Y - Turntable" : "Z - Roll");
+                        _motionPathAxisBtnText.text = $"Axis: [{axisName}]";
                     }
                 }
             }
@@ -1742,11 +1958,14 @@ namespace DeadCoreEditor
             float ry = ParseFloat(_rotYInput?.text, obj.transform.eulerAngles.y);
             float rz = ParseFloat(_rotZInput?.text, obj.transform.eulerAngles.z);
 
-            float sc = ParseFloat(_scaleInput?.text, obj.transform.localScale.x);
+            // Read X, Y, and Z scales independently
+            float sx = ParseFloat(_scaleXInput?.text, obj.transform.localScale.x);
+            float sy = ParseFloat(_scaleYInput?.text, obj.transform.localScale.y);
+            float sz = ParseFloat(_scaleZInput?.text, obj.transform.localScale.z);
 
             obj.transform.position = new Vector3(x, y, z);
             obj.transform.rotation = Quaternion.Euler(rx, ry, rz);
-            obj.transform.localScale = Vector3.one * Mathf.Max(0.01f, sc);
+            obj.transform.localScale = new Vector3(Mathf.Max(0.01f, sx), Mathf.Max(0.01f, sy), Mathf.Max(0.01f, sz));
 
             StudioGizmoController.InvalidateCachedCenter(obj);
             EditorSessionManager.UpdateSelectionHighlight();

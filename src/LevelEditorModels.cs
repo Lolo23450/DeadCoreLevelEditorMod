@@ -40,6 +40,8 @@ namespace DeadCoreEditor
         ParameterChange
     }
 
+    public enum AssetSizeTier { All = 0, Small = 1, Medium = 2, Large = 3, Giant = 4 }
+
     public class CatalogAsset
     {
         public string DisplayName;
@@ -50,6 +52,11 @@ namespace DeadCoreEditor
 
         public Sprite ThumbnailSprite = null;
         public Texture2D ThumbnailTexture = null;
+
+        // Size metrics & classification
+        public Vector3 Dimensions = Vector3.one * 2f;
+        public float MaxDimension = 2f;
+        public AssetSizeTier SizeTier = AssetSizeTier.Medium;
 
         public bool IsJumper;
         public bool IsCheckPoint;
@@ -76,6 +83,32 @@ namespace DeadCoreEditor
             }
             return new Bounds(Vector3.zero, Vector3.one * 2f);
         }
+
+        public void ComputeSizeMetrics()
+        {
+            Bounds b = GetEstimatedBounds();
+            Dimensions = b.size;
+            MaxDimension = Mathf.Max(Dimensions.x, Mathf.Max(Dimensions.y, Dimensions.z));
+
+            if (MaxDimension < 4.0f)
+                SizeTier = AssetSizeTier.Small;
+            else if (MaxDimension < 15.0f)
+                SizeTier = AssetSizeTier.Medium;
+            else if (MaxDimension < 45.0f)
+                SizeTier = AssetSizeTier.Large;
+            else
+                SizeTier = AssetSizeTier.Giant;
+        }
+
+        public string GetSizeBadgeText()
+        {
+            if (DisplayName.Contains("16x16") || DisplayName.Contains("16x2x16"))
+                return "16x2x16";
+
+            if (MaxDimension >= 10f)
+                return $"{MaxDimension:F0}m";
+            return $"{MaxDimension:F1}m";
+        }
     }
 
     public class ObjectMotionPath
@@ -83,6 +116,8 @@ namespace DeadCoreEditor
         public Vector3 PointA;
         public Vector3 PointB;
         public float Speed = 3.5f;
+        public float RotationSpeed = 0f; // -150 to 150 deg/s (default 0 = no rotation)
+        public int RotationAxis = 1;      // 0 = X (Tumble), 1 = Y (Turntable), 2 = Z (Roll)
         public bool IsActive = true;
         public Collider[] CachedColliders = null;
 
@@ -96,6 +131,8 @@ namespace DeadCoreEditor
                 PointA = this.PointA,
                 PointB = this.PointB,
                 Speed = this.Speed,
+                RotationSpeed = this.RotationSpeed,
+                RotationAxis = this.RotationAxis,
                 IsActive = this.IsActive,
                 CachedColliders = null
             };
@@ -117,7 +154,8 @@ namespace DeadCoreEditor
 
         public Vector3 Position;
         public Quaternion Rotation;
-        public float Scale;
+        public float Scale;                       
+        public Vector3 ScaleVector = Vector3.one;
         public float CustomParameter;
 
         public GameObject PreviousParent;
