@@ -5,6 +5,7 @@ using System.Collections.Generic;
 using MelonLoader;
 using HarmonyLib;
 using UnityEngine;
+using UnityEngine.SceneManagement;
 using SceneManager = UnityEngine.SceneManagement.SceneManager;
 using Il2Cpp;
 using Il2CppInterop.Runtime;
@@ -22,26 +23,34 @@ namespace DeadCoreEditor
 
         private static readonly List<Mesh> _proceduralMeshes = new List<Mesh>();
         private static readonly List<Material> _proceduralMaterials = new List<Material>();
+        private static readonly List<GameObject> _proceduralTemplates = new List<GameObject>();
+        private static GameObject _harvesterVault = null;
 
         public static void CleanupProceduralResources()
         {
             for (int i = 0; i < _proceduralMeshes.Count; i++)
             {
-                if (_proceduralMeshes[i] != null)
-                {
-                    GameObject.Destroy(_proceduralMeshes[i]);
-                }
+                if (_proceduralMeshes[i] != null) GameObject.Destroy(_proceduralMeshes[i]);
             }
             _proceduralMeshes.Clear();
 
             for (int i = 0; i < _proceduralMaterials.Count; i++)
             {
-                if (_proceduralMaterials[i] != null)
-                {
-                    GameObject.Destroy(_proceduralMaterials[i]);
-                }
+                if (_proceduralMaterials[i] != null) GameObject.Destroy(_proceduralMaterials[i]);
             }
             _proceduralMaterials.Clear();
+
+            for (int i = 0; i < _proceduralTemplates.Count; i++)
+            {
+                if (_proceduralTemplates[i] != null) GameObject.Destroy(_proceduralTemplates[i]);
+            }
+            _proceduralTemplates.Clear();
+
+            if (_harvesterVault != null)
+            {
+                GameObject.Destroy(_harvesterVault);
+                _harvesterVault = null;
+            }
         }
 
         public static void DebugDumpSceneLighting()
@@ -138,10 +147,24 @@ namespace DeadCoreEditor
         public static void HarvestAllSceneModels()
         {
             EditorSessionManager.AllAssets.Clear();
-            HashSet<string> seenMeshFingerprints = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            HashSet<Material> seenMaterials = new HashSet<Material>();
+            CleanupProceduralResources();
 
-            // Cache standard level material and enable GPU instancing across all scene materials
+            // Create a persistent template vault that survives additive scene unloads
+            if (_harvesterVault == null)
+            {
+                _harvesterVault = new GameObject("Studio_Harvester_Vault");
+                GameObject.DontDestroyOnLoad(_harvesterVault);
+                _harvesterVault.SetActive(false);
+            }
+
+            // Deduplication Trackers
+            HashSet<int> seenMeshInstanceIDs = new HashSet<int>();
+            HashSet<string> seenGeometrySignatures = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            HashSet<Material> seenMaterials = new HashSet<Material>();
+            Dictionary<int, Material> meshToOriginalMaterial = new Dictionary<int, Material>();
+            Dictionary<string, int> displayNameCounts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+
+            // 1. CACHE STANDARD LEVEL MATERIAL & ENABLE GPU INSTANCING
             MeshRenderer[] renderers = Resources.FindObjectsOfTypeAll<MeshRenderer>();
             for (int i = 0; i < renderers.Length; i++)
             {
@@ -154,7 +177,6 @@ namespace DeadCoreEditor
                     Material mat = mats[m];
                     if (mat != null && seenMaterials.Add(mat))
                     {
-                        // Enables GPU instancing for platforms, architecture, and scenery
                         EnableGPUInstancingOnMaterial(mat);
 
                         if (EditorSessionManager.CachedSceneMaterial == null && !mat.name.ToLower().Contains("laser"))
@@ -163,11 +185,19 @@ namespace DeadCoreEditor
                         }
                     }
                 }
+
+                MeshFilter rmf = r.GetComponent<MeshFilter>();
+                if (rmf != null && rmf.sharedMesh != null && r.sharedMaterial != null)
+                {
+                    int mId = rmf.sharedMesh.GetInstanceID();
+                    if (!meshToOriginalMaterial.ContainsKey(mId))
+                    {
+                        meshToOriginalMaterial[mId] = r.sharedMaterial;
+                    }
+                }
             }
 
-            GameObject ld = GameObject.Find("_LD") ?? GameObject.Find("L_D") ?? GameObject.Find("l_d");
-
-            // 1. GAMEPLAY ENTITIES
+            // 2. HARVEST NATIVE GAMEPLAY ENTITIES
             try
             {
                 EditorSessionManager.PrefabJumper = GameObject.FindObjectOfType<Jumper>();
@@ -196,7 +226,6 @@ namespace DeadCoreEditor
                 EditorSessionManager.AllAssets.Add(jAsset);
             }
 
-            // Gates & Checkpoints
             try
             {
                 CheckPointScript nativeCp = GameObject.FindObjectOfType<CheckPointScript>();
@@ -269,7 +298,7 @@ namespace DeadCoreEditor
             }
             catch { }
 
-            // Tech Spotlight
+            // 3. LIGHTING & PROCEDURAL HAZARDS
             GameObject spotTemplate = new GameObject("Template_Spotlight");
             Light spotLight = spotTemplate.AddComponent<Light>();
             spotLight.type = LightType.Spot;
@@ -355,7 +384,7 @@ namespace DeadCoreEditor
             sunAsset.ComputeSizeMetrics();
             EditorSessionManager.AllAssets.Add(sunAsset);
 
-            // Laser Barriers
+            // Laser Materials & Barriers
             Material laserMat = GameObject.FindObjectOfType<LaserManager>()?._sharedMaterial;
             if (laserMat != null)
             {
@@ -462,7 +491,7 @@ namespace DeadCoreEditor
             rotLaserAsset.ComputeSizeMetrics();
             EditorSessionManager.AllAssets.Add(rotLaserAsset);
 
-            // Turret & Helix
+            // Turrets & Fans
             try
             {
                 TurretScript nativeTurret = GameObject.FindObjectOfType<TurretScript>();
@@ -522,105 +551,335 @@ namespace DeadCoreEditor
                 EditorSessionManager.AllAssets.Add(helixAsset);
             }
 
-            // 2. ARCHITECTURAL & PLATFORM MODEL HARVESTING
-            List<MeshFilter> gatheredFilters = new List<MeshFilter>();
-            HashSet<MeshFilter> filterSet = new HashSet<MeshFilter>();
+            // =========================================================================
+            // 4. MULTI-SCENE ARCHITECTURE HARVESTING (ALL SCENES WITH "LEVEL")
+            // =========================================================================
 
-            for (int s = 0; s < SceneManager.sceneCount; s++)
+            string currentActiveSceneName = SceneManager.GetActiveScene().name;
+
+            // --- PASS A: HARVEST FROM CURRENT ACTIVE SCENE ---
+            HarvestMeshFiltersFromScene(SceneManager.GetActiveScene(), seenMeshInstanceIDs, seenGeometrySignatures, displayNameCounts, meshToOriginalMaterial);
+
+            // --- PASS B: ADDITIVELY LOAD & HARVEST ALL BUILD SCENES CONTAINING "LEVEL" ---
+            int buildSceneCount = SceneManager.sceneCountInBuildSettings;
+            for (int b = 0; b < buildSceneCount; b++)
             {
-                var scene = SceneManager.GetSceneAt(s);
-                if (!scene.isLoaded) continue;
+                string scenePath = SceneUtility.GetScenePathByBuildIndex(b);
+                string sceneName = Path.GetFileNameWithoutExtension(scenePath);
+                string sLow = sceneName.ToLower();
 
-                GameObject[] roots = scene.GetRootGameObjects();
-                for (int r = 0; r < roots.Length; r++)
+                // Skip non-level scenes or active scene
+                if (!sLow.Contains("level") || sLow.Contains("menu") || sLow.Contains("boot") ||
+                    sLow.Contains("title") || sLow.Contains("load") || sLow.Contains("transition") ||
+                    sceneName.Equals(currentActiveSceneName, StringComparison.OrdinalIgnoreCase))
                 {
-                    if (roots[r] == null) continue;
-                    MeshFilter[] childFilters = roots[r].GetComponentsInChildren<MeshFilter>(true);
-                    for (int c = 0; c < childFilters.Length; c++)
+                    continue;
+                }
+
+                try
+                {
+                    // Load scene additively in background to inspect its models
+                    SceneManager.LoadScene(sceneName, LoadSceneMode.Additive);
+                    Scene targetScene = SceneManager.GetSceneByName(sceneName);
+
+                    if (targetScene.isLoaded)
                     {
-                        if (childFilters[c] != null && filterSet.Add(childFilters[c]))
-                        {
-                            gatheredFilters.Add(childFilters[c]);
-                        }
+                        HarvestMeshFiltersFromScene(targetScene, seenMeshInstanceIDs, seenGeometrySignatures, displayNameCounts, meshToOriginalMaterial);
+                        SceneManager.UnloadSceneAsync(targetScene);
                     }
+                }
+                catch (Exception ex)
+                {
+                    MelonLogger.Warning($"[Harvest] Could not additively harvest scene '{sceneName}': {ex.Message}");
                 }
             }
 
-            for (int f = 0; f < gatheredFilters.Count; f++)
+            // --- PASS C: IN-MEMORY RESIDUAL RAM SWEEP (Any uninstantiated models) ---
+            Mesh[] allLoadedMeshes = Resources.FindObjectsOfTypeAll<Mesh>();
+            for (int m = 0; m < allLoadedMeshes.Length; m++)
             {
-                MeshFilter mf = gatheredFilters[f];
-                if (mf == null || mf.sharedMesh == null) continue;
+                Mesh mesh = allLoadedMeshes[m];
+                if (mesh == null) continue;
 
-                Mesh mesh = mf.sharedMesh;
+                int instanceID = mesh.GetInstanceID();
+                if (seenMeshInstanceIDs.Contains(instanceID)) continue;
+
                 string mName = mesh.name.Trim();
-                string goName = mf.gameObject.name.ToLower();
                 string mLow = mName.ToLower();
 
-                if (goName.Contains("helice") || goName.Contains("tourelle") || goName.Contains("laser") ||
-                    goName.Contains("jumper") || goName.Contains("checkpoint") || goName.Contains("gizmo") ||
-                    goName.Contains("proxy") || goName.Contains("wireframe")) continue;
+                if (IsCombinedOrBatchedMesh(mLow, "") || IsImpostorOrArtifact(mesh, mLow, ""))
+                    continue;
 
-                Vector3 boundsSize = mesh.bounds.size;
-                float maxDim = Mathf.Max(boundsSize.x, Mathf.Max(boundsSize.y, boundsSize.z));
-
-                if (maxDim > 40f || maxDim < 1.5f) continue;
-                if (mesh.vertexCount < 4) continue;
-
-                if (mLow.Contains("skybox") || mLow.Contains("horizon") || mLow.Contains("fog") ||
-                    mLow.Contains("dome") || mLow.Contains("cloud") || mLow.Contains("backdrop") ||
-                    mLow.Contains("ambiance") || mLow.Contains("dust")) continue;
-
-                if (mLow.Contains("impostor") || mLow.Contains("shadow") || mLow.Contains("hole") ||
-                    mLow.Contains("lod1") || mLow.Contains("lod2") || mLow.Contains("lod3")) continue;
-
-                string fingerprint = $"{mName}_{mesh.vertexCount}_{boundsSize.x:F1}x{boundsSize.y:F1}x{boundsSize.z:F1}";
-                if (seenMeshFingerprints.Contains(fingerprint)) continue;
-                seenMeshFingerprints.Add(fingerprint);
-
-                bool isPlatform = goName.Contains("16x2x16") || mLow.Contains("16x2x16") ||
-                                  goName.Contains("platform") || mLow.Contains("platform") ||
-                                  goName.Contains("plateforme") || mLow.Contains("plateforme") ||
-                                  goName.Contains("floor") || mLow.Contains("sol") || goName.Contains("step");
-
-                bool isWall = (boundsSize.y > boundsSize.z * 2f || boundsSize.y > boundsSize.x * 2f) &&
-                              (boundsSize.x > 3f || boundsSize.z > 3f);
-
-                bool isColumn = boundsSize.y > (Mathf.Max(boundsSize.x, boundsSize.z) * 2.5f);
-
-                // All platforms, floors, walls, columns, and architectural pieces live under Architecture
-                string subCat = "Architecture";
-                if (isPlatform) subCat = "Architecture";
-                else if (isWall) subCat = "Walls";
-                else if (isColumn) subCat = "Columns";
-                else if (maxDim < 4.0f) subCat = "Details";
-                else if (maxDim > 45.0f) subCat = "Structures";
-
-                string friendlyName = (goName.Contains("16x2x16") || mLow.Contains("16x2x16"))
-                    ? "Floor Platform 16x16"
-                    : mName.Replace("Mesh", "").Replace("_", " ").Trim();
-
-                if (string.IsNullOrWhiteSpace(friendlyName) || friendlyName.Length < 2)
-                    friendlyName = mf.gameObject.name.Replace("_", " ").Trim();
-
-                var asset = new CatalogAsset
+                if (string.IsNullOrWhiteSpace(mName) || mLow.Contains("font") || mLow.Contains("text") ||
+                    mLow.Contains("ui-") || mLow.Contains("tmp") || mLow.Contains("cursor") ||
+                    mLow.Contains("sprite") || mLow.Contains("sky") || mLow.Contains("cloud") ||
+                    mLow.Contains("fog") || mLow.Contains("dome") || mLow.Contains("horizon") ||
+                    mLow.Contains("backdrop") || mesh.vertexCount < 4)
                 {
-                    DisplayName = friendlyName,
-                    SourceTemplate = mf.gameObject,
-                    FilterMesh = mesh,
-                    Category = AssetCategory.Building,
-                    SubCategory = subCat,
-                    DefaultScale = isPlatform ? 0.55f : 1.0f,
-                    VerticalOffset = 0f,
-                    BaseRotation = (isPlatform && (friendlyName.Contains("16x16") || friendlyName.Contains("Platform")))
-                        ? Quaternion.Euler(0f, 0f, 90f)
-                        : Quaternion.identity
-                };
+                    continue;
+                }
 
-                asset.ComputeSizeMetrics();
-                EditorSessionManager.AllAssets.Add(asset);
+                Vector3 bSize = mesh.bounds.size;
+                float maxDim = Mathf.Max(bSize.x, Mathf.Max(bSize.y, bSize.z));
+                if (maxDim < 2.5f || maxDim > 45.0f) continue;
+
+                // Check geometry signature to delete cross-scene duplicates
+                string geomSig = GetGeometrySignature(mesh, mName);
+                if (seenGeometrySignatures.Contains(geomSig)) continue;
+
+                seenMeshInstanceIDs.Add(instanceID);
+                seenGeometrySignatures.Add(geomSig);
+
+                // Create persistent template in vault
+                GameObject templateGo = new GameObject($"Template_Mesh_{mName}");
+                templateGo.transform.SetParent(_harvesterVault.transform, false);
+                templateGo.transform.position = new Vector3(8500f, 8500f, 8500f);
+                templateGo.SetActive(false);
+
+                MeshFilter nmf = templateGo.AddComponent<MeshFilter>();
+                nmf.sharedMesh = mesh;
+
+                MeshRenderer nmr = templateGo.AddComponent<MeshRenderer>();
+                Material assignedMat = null;
+                if (meshToOriginalMaterial.TryGetValue(instanceID, out Material origMat) && origMat != null)
+                    assignedMat = origMat;
+                else
+                    assignedMat = EditorSessionManager.CachedSceneMaterial;
+                nmr.sharedMaterial = assignedMat;
+
+                _proceduralTemplates.Add(templateGo);
+                RegisterHarvestedModel(templateGo, mesh, mName, mName, displayNameCounts);
             }
 
-            MelonLogger.Msg($">> [Harvest] Successfully harvested {EditorSessionManager.AllAssets.Count} unique models with GPU Instancing enabled!");
+            // --- PASS D: POST-HARVEST CATALOG DEDUPLICATION PASS ---
+            PurgeCatalogDuplicates();
+
+            MelonLogger.Msg($">> [Harvest] Successfully harvested {EditorSessionManager.AllAssets.Count} unique models from all level scenes (>= 2.5m, duplicates deleted)!");
+        }
+
+        private static void HarvestMeshFiltersFromScene(Scene scene, HashSet<int> seenMeshInstanceIDs, HashSet<string> seenGeometrySignatures, Dictionary<string, int> displayNameCounts, Dictionary<int, Material> meshToOriginalMaterial)
+        {
+            if (!scene.isLoaded) return;
+
+            GameObject[] roots = scene.GetRootGameObjects();
+            for (int r = 0; r < roots.Length; r++)
+            {
+                if (roots[r] == null) continue;
+                MeshFilter[] filters = roots[r].GetComponentsInChildren<MeshFilter>(true);
+
+                for (int f = 0; f < filters.Length; f++)
+                {
+                    MeshFilter mf = filters[f];
+                    if (mf == null || mf.sharedMesh == null || mf.gameObject == null) continue;
+
+                    Mesh mesh = mf.sharedMesh;
+                    int instanceID = mesh.GetInstanceID();
+
+                    if (seenMeshInstanceIDs.Contains(instanceID)) continue;
+
+                    // Skip gameplay controllers
+                    if (mf.GetComponent<Jumper>() != null || mf.GetComponent<TurretScript>() != null ||
+                        mf.GetComponent<LaserScript>() != null || mf.GetComponent<Helix>() != null)
+                    {
+                        continue;
+                    }
+
+                    string mName = mesh.name.Trim();
+                    string goName = mf.gameObject.name.Trim();
+                    string mLow = mName.ToLower();
+                    string gLow = goName.ToLower();
+
+                    if (IsCombinedOrBatchedMesh(mLow, gLow) || IsImpostorOrArtifact(mesh, mLow, gLow))
+                        continue;
+
+                    // Skip editor gizmos and proxy colliders
+                    if (gLow.Contains("gizmo") || gLow.Contains("proxy") || gLow.Contains("wireframe") ||
+                        gLow.Contains("highlight") || gLow.Contains("beacon"))
+                    {
+                        continue;
+                    }
+
+                    // Skip atmosphere and skybox
+                    if (mLow.Contains("skybox") || mLow.Contains("horizon") || mLow.Contains("fog") ||
+                        mLow.Contains("dome") || mLow.Contains("cloud") || mLow.Contains("backdrop") ||
+                        mLow.Contains("ambiance") || mLow.Contains("dust"))
+                    {
+                        continue;
+                    }
+
+                    if (mesh.vertexCount < 4) continue;
+
+                    // Strict 2.5m minimum scale
+                    Vector3 boundsSize = mesh.bounds.size;
+                    float maxDim = Mathf.Max(boundsSize.x, Mathf.Max(boundsSize.y, boundsSize.z));
+                    if (maxDim < 2.5f || maxDim > 45.0f) continue;
+
+                    // Duplicate Check: Check geometry signature across all scenes
+                    string geomSig = GetGeometrySignature(mesh, goName);
+                    if (seenGeometrySignatures.Contains(geomSig)) continue;
+
+                    seenMeshInstanceIDs.Add(instanceID);
+                    seenGeometrySignatures.Add(geomSig);
+
+                    // Create independent persistent template in the vault so unloading scenes won't destroy it
+                    GameObject vaultTemplate = new GameObject($"Template_Vault_{goName}");
+                    vaultTemplate.transform.SetParent(_harvesterVault.transform, false);
+                    vaultTemplate.transform.position = new Vector3(8500f, 8500f, 8500f);
+                    vaultTemplate.SetActive(false);
+
+                    MeshFilter vmf = vaultTemplate.AddComponent<MeshFilter>();
+                    vmf.sharedMesh = mesh;
+
+                    MeshRenderer vmr = vaultTemplate.AddComponent<MeshRenderer>();
+                    MeshRenderer sourceMr = mf.GetComponent<MeshRenderer>();
+                    Material mat = (sourceMr != null && sourceMr.sharedMaterial != null) ? sourceMr.sharedMaterial : EditorSessionManager.CachedSceneMaterial;
+                    vmr.sharedMaterial = mat;
+
+                    _proceduralTemplates.Add(vaultTemplate);
+                    RegisterHarvestedModel(vaultTemplate, mesh, goName, mName, displayNameCounts);
+                }
+            }
+        }
+
+        private static string GetGeometrySignature(Mesh mesh, string baseName)
+        {
+            if (mesh == null) return string.Empty;
+            Vector3 size = mesh.bounds.size;
+            // Combines vertex count, submesh count, and dimensions rounded to 2 decimal places
+            return $"{mesh.vertexCount}_{mesh.subMeshCount}_{size.x:F2}x{size.y:F2}x{size.z:F2}";
+        }
+
+        private static void PurgeCatalogDuplicates()
+        {
+            HashSet<string> uniqueSignatures = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+            for (int i = EditorSessionManager.AllAssets.Count - 1; i >= 0; i--)
+            {
+                CatalogAsset asset = EditorSessionManager.AllAssets[i];
+                if (asset == null || asset.IsPrefabInstance || asset.IsJumper || asset.IsCheckPoint ||
+                    asset.IsSpawnGate || asset.IsGoalGate || asset.IsTurret || asset.IsHelix || asset.IsLaser)
+                {
+                    continue;
+                }
+
+                if (asset.FilterMesh != null)
+                {
+                    string sig = GetGeometrySignature(asset.FilterMesh, asset.DisplayName);
+                    if (!uniqueSignatures.Add(sig))
+                    {
+                        // Duplicate found across multiple scenes: remove it from the catalog
+                        EditorSessionManager.AllAssets.RemoveAt(i);
+                    }
+                }
+            }
+        }
+
+        private static bool IsCombinedOrBatchedMesh(string mLow, string gLow)
+        {
+            return mLow.Contains("combine") || gLow.Contains("combine") ||
+                   mLow.StartsWith("combined mesh") || gLow.StartsWith("combined mesh") ||
+                   mLow.Contains("batch") || gLow.Contains("batch");
+        }
+
+        private static bool IsImpostorOrArtifact(Mesh mesh, string mLow, string gLow)
+        {
+            if (mLow.Contains("impostor") || mLow.Contains("imposter") ||
+                gLow.Contains("impostor") || gLow.Contains("imposter") ||
+                mLow.Contains("billboard") || gLow.Contains("billboard") ||
+                mLow.StartsWith("bb_") || mLow.EndsWith("_bb") ||
+                gLow.StartsWith("bb_") || gLow.EndsWith("_bb") ||
+                mLow.Contains("_card") || gLow.Contains("_card") ||
+                mLow.Contains("lod1") || mLow.Contains("lod2") || mLow.Contains("lod3") ||
+                mLow.Contains("shadow") || mLow.Contains("hole") ||
+                mLow.Contains("collision") || mLow.Contains("collider") ||
+                mLow.StartsWith("ucx_") || mLow.StartsWith("ubx_") || mLow.StartsWith("usp_"))
+            {
+                return true;
+            }
+
+            // Flat 2D billboard card detection: very low thickness (< 0.05m) and <= 12 vertices
+            Vector3 size = mesh.bounds.size;
+            float minDim = Mathf.Min(size.x, Mathf.Min(size.y, size.z));
+            float maxDim = Mathf.Max(size.x, Mathf.Max(size.y, size.z));
+
+            if (minDim < 0.05f && maxDim >= 2.5f && mesh.vertexCount <= 12)
+            {
+                return true;
+            }
+
+            return false;
+        }
+
+        private static void RegisterHarvestedModel(GameObject templateGo, Mesh mesh, string goName, string mName, Dictionary<string, int> displayNameCounts)
+        {
+            Vector3 boundsSize = mesh.bounds.size;
+            float maxDim = Mathf.Max(boundsSize.x, Mathf.Max(boundsSize.y, boundsSize.z));
+
+            if (maxDim < 2.5f || maxDim > 45.0f) return;
+
+            string gLow = goName.ToLower();
+            string mLow = mName.ToLower();
+
+            bool isPlatform = gLow.Contains("16x2x16") || mLow.Contains("16x2x16") ||
+                              gLow.Contains("platform") || mLow.Contains("platform") ||
+                              gLow.Contains("plateforme") || mLow.Contains("plateforme") ||
+                              gLow.Contains("floor") || mLow.Contains("sol") || gLow.Contains("step");
+
+            bool isWall = (boundsSize.y > boundsSize.z * 1.8f || boundsSize.y > boundsSize.x * 1.8f) &&
+                          (boundsSize.x > 3f || boundsSize.z > 3f);
+
+            bool isColumn = boundsSize.y > (Mathf.Max(boundsSize.x, boundsSize.z) * 2.2f);
+
+            string subCat = "Architecture";
+            if (isWall) subCat = "Walls";
+            else if (isColumn) subCat = "Columns";
+            else if (maxDim > 45.0f) subCat = "Structures";
+
+            string baseName;
+            if (gLow.Contains("16x2x16") || mLow.Contains("16x2x16"))
+                baseName = "Floor Platform 16x16";
+            else
+            {
+                baseName = !string.IsNullOrWhiteSpace(mName) && !mLow.StartsWith("mesh") && !mLow.StartsWith("polysurface")
+                    ? mName.Replace("Mesh", "").Replace("_", " ").Trim()
+                    : goName.Replace("_", " ").Trim();
+            }
+
+            if (baseName.StartsWith("SM ", StringComparison.OrdinalIgnoreCase)) baseName = baseName.Substring(3);
+            if (baseName.StartsWith("m ", StringComparison.OrdinalIgnoreCase)) baseName = baseName.Substring(2);
+            if (baseName.StartsWith("geo ", StringComparison.OrdinalIgnoreCase)) baseName = baseName.Substring(4);
+
+            if (string.IsNullOrWhiteSpace(baseName) || baseName.Length < 2)
+                baseName = isPlatform ? "Platform Slab" : (isWall ? "Modular Wall" : (isColumn ? "Pillar Column" : "Architecture Block"));
+
+            string finalName = baseName;
+            if (displayNameCounts.TryGetValue(baseName, out int count))
+            {
+                count++;
+                displayNameCounts[baseName] = count;
+                finalName = $"{baseName} ({count})";
+            }
+            else
+            {
+                displayNameCounts[baseName] = 1;
+            }
+
+            var asset = new CatalogAsset
+            {
+                DisplayName = finalName,
+                SourceTemplate = templateGo,
+                FilterMesh = mesh,
+                Category = AssetCategory.Building,
+                SubCategory = subCat,
+                DefaultScale = isPlatform ? 0.55f : 1.0f,
+                VerticalOffset = 0f,
+                BaseRotation = (isPlatform && (finalName.Contains("16x16") || finalName.Contains("Platform")))
+                    ? Quaternion.Euler(0f, 0f, 90f)
+                    : Quaternion.identity
+            };
+
+            asset.ComputeSizeMetrics();
+            EditorSessionManager.AllAssets.Add(asset);
         }
 
         public static void HideVanillaLevelGeometry()
@@ -785,6 +1044,10 @@ namespace DeadCoreEditor
 
             // Sky, clouds, and atmosphere
             if (IsAtmosphereOrSkyObject(go))
+                return true;
+
+            // Vault container and templates
+            if (_harvesterVault != null && (go == _harvesterVault || go.transform.IsChildOf(_harvesterVault.transform)))
                 return true;
 
             // Custom editor entities AND harvested templates

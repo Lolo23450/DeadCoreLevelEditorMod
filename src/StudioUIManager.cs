@@ -1207,8 +1207,13 @@ namespace DeadCoreEditor
             }
             _browserCards.Clear();
 
-            string search = (_browserSearchInput != null && !string.IsNullOrEmpty(_browserSearchInput.text))
-                ? _browserSearchInput.text.ToLower() : "";
+            // Split search string into separate query tokens (order-independent)
+            string rawSearch = (_browserSearchInput != null && !string.IsNullOrEmpty(_browserSearchInput.text))
+                ? _browserSearchInput.text.Trim().ToLower() : "";
+
+            string[] searchTokens = !string.IsNullOrEmpty(rawSearch)
+                ? rawSearch.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries)
+                : null;
 
             List<CatalogAsset> matchedAssets = new List<CatalogAsset>();
 
@@ -1217,47 +1222,62 @@ namespace DeadCoreEditor
                 CatalogAsset asset = EditorSessionManager.AllAssets[i];
                 if (asset == null || asset.SourceTemplate == null) continue;
 
-                if (!string.IsNullOrEmpty(search) && !asset.DisplayName.ToLower().Contains(search))
-                    continue;
+                // MULTI-TOKEN SMART SEARCH: Every keyword typed must match either title, category, or size
+                if (searchTokens != null && searchTokens.Length > 0)
+                {
+                    string dName = asset.DisplayName.ToLower();
+                    string subCat = (asset.SubCategory ?? "").ToLower();
+                    string badge = asset.GetSizeBadgeText().ToLower();
+                    string tier = asset.SizeTier.ToString().ToLower();
 
-                // 1. Architecture: Includes all building blocks, floors, platforms, walls, and columns
+                    bool allTokensMatched = true;
+                    for (int t = 0; t < searchTokens.Length; t++)
+                    {
+                        string token = searchTokens[t];
+                        bool tokenFound = dName.Contains(token) ||
+                                          subCat.Contains(token) ||
+                                          badge.Contains(token) ||
+                                          tier.Contains(token);
+
+                        if (!tokenFound)
+                        {
+                            allTokensMatched = false;
+                            break;
+                        }
+                    }
+
+                    if (!allTokensMatched) continue;
+                }
+
+                // Tab Categories
                 if (_activeBrowserCategory == "Architecture")
                 {
                     bool isArch = asset.Category == AssetCategory.Building;
-
-                    // Ensure gameplay entities and hazards never leak into Architecture
                     if (asset.IsJumper || asset.IsCheckPoint || asset.IsSpawnGate || asset.IsGoalGate ||
                         asset.IsLaser || asset.IsRotatingLaser || asset.IsTurret || asset.IsHelix)
                     {
                         isArch = false;
                     }
-
                     if (!isArch) continue;
                 }
-                // 2. Gameplay: Launch pads, checkpoints, gates, and lighting
                 else if (_activeBrowserCategory == "Gameplay")
                 {
                     bool isGame = asset.IsJumper || asset.IsCheckPoint || asset.IsSpawnGate || asset.IsGoalGate ||
                                   asset.IsSpotlight || asset.IsSunlight ||
                                   asset.SubCategory.Equals("Gameplay", StringComparison.OrdinalIgnoreCase) ||
                                   asset.SubCategory.Equals("Lighting", StringComparison.OrdinalIgnoreCase);
-
                     if (!isGame) continue;
                 }
-                // 3. Hazards: Lasers, turrets, and fans
                 else if (_activeBrowserCategory == "Hazards")
                 {
                     bool isHazard = asset.IsLaser || asset.IsRotatingLaser || asset.IsTurret || asset.IsHelix ||
                                     asset.SubCategory.Equals("Hazards", StringComparison.OrdinalIgnoreCase);
-
                     if (!isHazard) continue;
                 }
-                // 4. Instances: Saved custom prefabs
                 else if (_activeBrowserCategory == "Instances")
                 {
                     bool isInst = asset.SubCategory.Equals("Instances", StringComparison.OrdinalIgnoreCase) ||
                                   asset.DisplayName.StartsWith("[Prefab]");
-
                     if (!isInst) continue;
                 }
 
