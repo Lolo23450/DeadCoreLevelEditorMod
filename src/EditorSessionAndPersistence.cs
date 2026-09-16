@@ -1477,35 +1477,6 @@ namespace DeadCoreEditor
                     obj.transform.Rotate(Vector3.up, speed * dt, Space.Self);
                 }
 
-                // ADD THIS: Dedicated autonomous turbine update loop
-                for (int i = 0; i < PlacedTurbines.Count; i++)
-                {
-                    GameObject obj = PlacedTurbines[i];
-                    if (obj == null || !obj.activeSelf) continue;
-
-                    float speed = TurbineSpeeds.ContainsKey(obj) ? TurbineSpeeds[obj] : ActiveTurbineSpeed;
-
-                    if (!_cachedHelixScripts.TryGetValue(obj, out Helix helixScript) || helixScript == null)
-                    {
-                        helixScript = obj.GetComponentInChildren<Helix>();
-                        _cachedHelixScripts[obj] = helixScript;
-                    }
-
-                    if (helixScript != null && helixScript._hingeJoint != null)
-                    {
-                        Rigidbody bladeRb = helixScript._hingeJoint.GetComponent<Rigidbody>();
-
-                        // If native physics motor isn't spinning, apply smooth kinematic rotation
-                        if (bladeRb == null || bladeRb.isKinematic)
-                        {
-                            Transform bladeT = helixScript._hingeJoint.transform;
-                            Vector3 spinAxis = helixScript._hingeJoint.axis;
-                            if (spinAxis.sqrMagnitude < 0.001f) spinAxis = Vector3.forward;
-                            bladeT.Rotate(spinAxis, (speed * 15f) * dt, Space.Self);
-                        }
-                    }
-                }
-
                 if (player != null)
                 {
                     CheckVoidFall(player);
@@ -2902,10 +2873,8 @@ namespace DeadCoreEditor
                     _cachedHelixScripts[obj] = helixScript;
                 }
 
-                if (helixScript != null && helixScript._hingeJoint != null)
-                {
-                    helixScript._hingeJoint.transform.Rotate(Vector3.forward, (speed * 12f) * dt, Space.Self);
-                }
+                // NOTE: DO NOT call transform.Rotate here! 
+                // DeadCore's native Helix component rotates the blade automatically via its HingeJoint.
 
                 Vector3 hPos = obj.transform.position;
                 Vector3 forward = obj.transform.forward;
