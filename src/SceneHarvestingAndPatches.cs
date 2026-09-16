@@ -520,7 +520,7 @@ namespace DeadCoreEditor
                 Vector3 boundsSize = mesh.bounds.size;
                 float maxDim = Mathf.Max(boundsSize.x, Mathf.Max(boundsSize.y, boundsSize.z));
 
-                if (maxDim > 100f || maxDim < 3f) continue;
+                if (maxDim > 40f || maxDim < 1.5f) continue;
                 if (mesh.vertexCount < 4) continue;
 
                 if (mLow.Contains("skybox") || mLow.Contains("horizon") || mLow.Contains("fog") ||
