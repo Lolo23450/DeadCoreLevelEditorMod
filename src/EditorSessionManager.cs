@@ -23,335 +23,6 @@ namespace DeadCoreEditor
     // SECTION 1: EDITOR SESSION & LIFECYCLE MANAGER
     // =========================================================================
 
-    public class ClipboardItem
-    {
-        public string AssetName;
-        public Vector3 RelativeOffset;
-        public Quaternion Rotation;
-        public Vector3 Scale = Vector3.one; // Full 3D scale (X, Y, Z)
-        public float CustomParameter;
-        public LightConfig LightCfg;
-        public ObjectMotionPath MotionPath;
-    }
-
-    public static class PrefabInstanceManager
-    {
-        public static List<CustomPrefabTemplate> SavedPrefabs = new List<CustomPrefabTemplate>();
-        public static string PrefabsDir => Path.Combine(Directory.GetCurrentDirectory(), "UserData", "MyPrefabs");
-
-        public static void EnsureDirectories()
-        {
-            if (!Directory.Exists(PrefabsDir)) Directory.CreateDirectory(PrefabsDir);
-        }
-
-        /// <summary>
-        /// Computes the exact 3D geometric centroid of selected objects and saves an instance to UserData/MyPrefabs.
-        /// </summary>
-        public static void CreateInstanceTemplateFromSelection(string templateName = "")
-        {
-            if (EditorSessionManager.SelectedObjects == null || EditorSessionManager.SelectedObjects.Count == 0)
-            {
-                EditorSessionManager.ShowNotification("Select objects first to create an Instance.");
-                return;
-            }
-
-            EnsureDirectories();
-
-            if (string.IsNullOrWhiteSpace(templateName))
-            {
-                int idx = SavedPrefabs.Count + 1;
-                templateName = $"Instance_{idx}";
-                while (File.Exists(Path.Combine(PrefabsDir, $"{templateName}.prefab.txt")))
-                {
-                    idx++;
-                    templateName = $"Instance_{idx}";
-                }
-            }
-
-            // 1. COMPUTE TRUE GEOMETRIC CENTROID
-            Bounds collectiveBounds = new Bounds();
-            bool boundsInit = false;
-
-            for (int i = 0; i < EditorSessionManager.SelectedObjects.Count; i++)
-            {
-                GameObject obj = EditorSessionManager.SelectedObjects[i];
-                if (obj == null) continue;
-                if (EditorSessionManager.IsWaypointMarker(obj, out _, out _)) continue;
-
-                Bounds b = StudioGizmoController.GetObjectWorldBounds(obj);
-                if (!boundsInit)
-                {
-                    collectiveBounds = b;
-                    boundsInit = true;
-                }
-                else
-                {
-                    collectiveBounds.Encapsulate(b);
-                }
-            }
-
-            Vector3 collectiveCenter = boundsInit ? collectiveBounds.center : EditorSessionManager.SelectedObject.transform.position;
-            CustomPrefabTemplate template = new CustomPrefabTemplate
-            {
-                Name = templateName,
-                TotalBounds = collectiveBounds,
-                FilePath = Path.Combine(PrefabsDir, $"{templateName}.prefab.txt")
-            };
-
-            // 2. STORE EACH OBJECT RELATIVE TO THE COLLECTIVE CENTER
-            for (int i = 0; i < EditorSessionManager.SelectedObjects.Count; i++)
-            {
-                GameObject obj = EditorSessionManager.SelectedObjects[i];
-                if (obj == null) continue;
-                if (EditorSessionManager.IsWaypointMarker(obj, out _, out _)) continue;
-
-                float param = 0f;
-                if (EditorSessionManager.JumperForces.TryGetValue(obj, out float jf)) param = jf;
-                else if (EditorSessionManager.TurbineSpeeds.TryGetValue(obj, out float ts)) param = ts;
-                else if (EditorSessionManager.TurretFireDelays.TryGetValue(obj, out float fd)) param = fd;
-                else if (EditorSessionManager.LaserRotationSpeeds.TryGetValue(obj, out float lrs)) param = lrs;
-
-                LightConfig lCfg = EditorSessionManager.PlacedLights.TryGetValue(obj, out var lc) ? lc.Clone() : null;
-                ObjectMotionPath mPath = EditorSessionManager.MotionPaths.TryGetValue(obj, out var mp) ? mp.Clone() : null;
-
-                string rawName = obj.name.StartsWith("Custom_") ? obj.name.Substring(7) : obj.name;
-
-                template.Items.Add(new PrefabInstanceItem
-                {
-                    AssetName = rawName,
-                    LocalPosition = obj.transform.position - collectiveCenter,
-                    LocalRotation = obj.transform.rotation,
-                    LocalScale = obj.transform.localScale,
-                    CustomParameter = param,
-                    LightCfg = lCfg,
-                    MotionPath = mPath
-                });
-            }
-
-            // 3. BUILD VISUAL TEMPLATE SO HOLOGRAMS AND THUMBNAILS RENDER PROPERLY
-            BuildVisualTemplateObject(template);
-
-            // 4. WRITE PREFAB FILE TO DISK IN USERDATA/MYPREFABS/
-            SavePrefabToDisk(template);
-
-            // 5. REGISTER IN CATALOG & REFRESH BROWSER
-            RegisterTemplateAsCatalogAsset(template);
-            SavedPrefabs.Add(template);
-
-            EditorSessionManager.ShowNotification($"Saved Instance in folder: '{templateName}' ({template.Items.Count} objects)");
-            StudioUIManager.RefreshAssetBrowser();
-        }
-
-        public static void BuildVisualTemplateObject(CustomPrefabTemplate template)
-        {
-            if (template.SourceTemplate != null)
-                GameObject.Destroy(template.SourceTemplate);
-
-            GameObject root = new GameObject($"Template_Instance_{template.Name}");
-            root.transform.position = new Vector3(8500f, 8500f, 8500f);
-            root.SetActive(false);
-
-            for (int i = 0; i < template.Items.Count; i++)
-            {
-                PrefabInstanceItem item = template.Items[i];
-                GameObject child = EditorSessionManager.SpawnAssetByName(item.AssetName, item.LocalPosition, item.LocalScale, item.LocalRotation);
-                if (child != null)
-                {
-                    child.name = item.AssetName;
-                    child.transform.SetParent(root.transform, false);
-                    child.transform.localPosition = item.LocalPosition;
-                    child.transform.localRotation = item.LocalRotation;
-                    child.transform.localScale = item.LocalScale;
-                }
-            }
-
-            template.SourceTemplate = root;
-        }
-
-        public static GameObject SpawnInstance(CustomPrefabTemplate template, Vector3 position, Quaternion rotation, Vector3 scale)
-        {
-            if (template == null || template.Items.Count == 0) return null;
-
-            GameObject instanceRoot = new GameObject($"Custom_Instance_{template.Name}");
-            instanceRoot.transform.position = position;
-            instanceRoot.transform.rotation = rotation;
-            instanceRoot.transform.localScale = scale;
-
-            for (int i = 0; i < template.Items.Count; i++)
-            {
-                PrefabInstanceItem item = template.Items[i];
-                Vector3 worldPos = position + (rotation * Vector3.Scale(item.LocalPosition, scale));
-                Quaternion worldRot = rotation * item.LocalRotation;
-                Vector3 worldScale = Vector3.Scale(item.LocalScale, scale);
-
-                GameObject child = EditorSessionManager.SpawnAssetByName(item.AssetName, worldPos, worldScale, worldRot);
-                if (child != null)
-                {
-                    child.transform.SetParent(instanceRoot.transform, true);
-                    child.transform.localScale = worldScale; // Stop scale shrinkage
-
-                    string low = item.AssetName.ToLower();
-                    if (item.CustomParameter > 0f)
-                    {
-                        if (low.Contains("jumper")) EditorSessionManager.ApplyJumperForce(child, item.CustomParameter);
-                        else if (low.Contains("helix")) EditorSessionManager.ApplyTurbineSpeed(child, item.CustomParameter);
-                        else if (low.Contains("turret")) EditorSessionManager.ApplyTurretSettings(child, item.CustomParameter);
-                    }
-                    if (low.Contains("rotating") && item.CustomParameter != 0f)
-                    {
-                        EditorSessionManager.LaserRotationSpeeds[child] = item.CustomParameter;
-                    }
-                    if (item.LightCfg != null)
-                    {
-                        EditorSessionManager.ApplyLightConfig(child, item.LightCfg);
-                    }
-                    if (item.MotionPath != null)
-                    {
-                        Vector3 delta = worldPos - item.MotionPath.PointA;
-                        EditorSessionManager.MotionPaths[child] = new ObjectMotionPath
-                        {
-                            PointA = worldPos,
-                            PointB = item.MotionPath.PointB + delta,
-                            Speed = item.MotionPath.Speed,
-                            RotationSpeed = item.MotionPath.RotationSpeed,
-                            RotationAxis = item.MotionPath.RotationAxis,
-                            CustomAxis = item.MotionPath.CustomAxis,
-                            IsActive = true
-                        };
-                    }
-
-                    EditorSessionManager.RegisterPlacedObject(child);
-                }
-            }
-
-            EditorSessionManager.RegisterPlacedObject(instanceRoot);
-            return instanceRoot;
-        }
-
-        public static void DeleteInstance(CustomPrefabTemplate template)
-        {
-            if (template == null) return;
-
-            // 1. Delete .prefab.txt and .png from UserData/MyPrefabs/
-            if (File.Exists(template.FilePath))
-            {
-                try { File.Delete(template.FilePath); } catch { }
-            }
-
-            string pngPath = Path.ChangeExtension(template.FilePath, ".png");
-            if (File.Exists(pngPath))
-            {
-                try { File.Delete(pngPath); } catch { }
-            }
-
-            // 2. Remove catalog asset
-            CatalogAsset catAsset = EditorSessionManager.AllAssets.Find(a => a.PrefabTemplate == template);
-            if (catAsset != null)
-            {
-                EditorSessionManager.AllAssets.Remove(catAsset);
-            }
-
-            // 3. Destroy visual template
-            if (template.SourceTemplate != null)
-            {
-                GameObject.Destroy(template.SourceTemplate);
-            }
-
-            SavedPrefabs.Remove(template);
-
-            EditorSessionManager.ShowNotification($"Deleted Instance: '{template.Name}' from folder");
-            StudioUIManager.RefreshAssetBrowser();
-        }
-
-        public static void RegisterTemplateAsCatalogAsset(CustomPrefabTemplate template)
-        {
-            if (template.SourceTemplate == null)
-                BuildVisualTemplateObject(template);
-
-            CatalogAsset asset = new CatalogAsset
-            {
-                DisplayName = $"[Prefab] {template.Name}",
-                SourceTemplate = template.SourceTemplate,
-                Category = AssetCategory.Building,
-                SubCategory = "Instances",
-                DefaultScale = 1.0f,
-                IsPrefabInstance = true,
-                PrefabTemplate = template
-            };
-
-            asset.ComputeSizeMetrics();
-            EditorSessionManager.AllAssets.Add(asset);
-        }
-
-        public static void SavePrefabToDisk(CustomPrefabTemplate template)
-        {
-            EnsureDirectories();
-            List<string> lines = new List<string>();
-            var inv = CultureInfo.InvariantCulture;
-
-            lines.Add($"#PREFAB: {template.Name}");
-            for (int i = 0; i < template.Items.Count; i++)
-            {
-                var it = template.Items[i];
-                lines.Add($"{it.AssetName};{it.LocalPosition.x.ToString("F4", inv)};{it.LocalPosition.y.ToString("F4", inv)};{it.LocalPosition.z.ToString("F4", inv)};" +
-                          $"{it.LocalRotation.x.ToString("F4", inv)};{it.LocalRotation.y.ToString("F4", inv)};{it.LocalRotation.z.ToString("F4", inv)};{it.LocalRotation.w.ToString("F4", inv)};" +
-                          $"{it.LocalScale.x.ToString("F4", inv)};{it.LocalScale.y.ToString("F4", inv)};{it.LocalScale.z.ToString("F4", inv)};{it.CustomParameter.ToString("F2", inv)}");
-            }
-
-            File.WriteAllLines(template.FilePath, lines.ToArray());
-        }
-
-        public static void LoadAllPrefabsFromDisk()
-        {
-            EnsureDirectories();
-            string[] files = Directory.GetFiles(PrefabsDir, "*.prefab.txt");
-
-            for (int f = 0; f < files.Length; f++)
-            {
-                string path = files[f];
-                string name = Path.GetFileNameWithoutExtension(path).Replace(".prefab", "");
-
-                if (SavedPrefabs.Exists(p => p.Name == name)) continue;
-
-                string[] lines = File.ReadAllLines(path);
-                CustomPrefabTemplate template = new CustomPrefabTemplate
-                {
-                    Name = name,
-                    FilePath = path
-                };
-
-                for (int l = 0; l < lines.Length; l++)
-                {
-                    string line = lines[l].Trim();
-                    if (string.IsNullOrWhiteSpace(line) || line.StartsWith("#")) continue;
-
-                    string[] p = line.Split(';');
-                    if (p.Length < 11) continue;
-
-                    template.Items.Add(new PrefabInstanceItem
-                    {
-                        AssetName = p[0],
-                        LocalPosition = new Vector3(ParseFloat(p[1]), ParseFloat(p[2]), ParseFloat(p[3])),
-                        LocalRotation = new Quaternion(ParseFloat(p[4]), ParseFloat(p[5]), ParseFloat(p[6]), ParseFloat(p[7])),
-                        LocalScale = new Vector3(ParseFloat(p[8]), ParseFloat(p[9]), ParseFloat(p[10])),
-                        CustomParameter = (p.Length >= 12) ? ParseFloat(p[11]) : 0f
-                    });
-                }
-
-                BuildVisualTemplateObject(template);
-                RegisterTemplateAsCatalogAsset(template);
-                SavedPrefabs.Add(template);
-            }
-        }
-
-        private static float ParseFloat(string str)
-        {
-            if (string.IsNullOrWhiteSpace(str)) return 0f;
-            float.TryParse(str.Trim().Replace(',', '.'), NumberStyles.Float, CultureInfo.InvariantCulture, out float v);
-            return v;
-        }
-    }
-
     public static class EditorSessionManager
     {
         // Session and State Tracking
@@ -360,10 +31,8 @@ namespace DeadCoreEditor
         public static bool IsEditModeActive = false;
         public static bool IsLevelInitialized = false;
 
-        // Trigger Visualization State
         public static bool AreTriggersVisible = false;
 
-        // Interaction State: Select Mode vs Placement Mode
         public static EditorInteractionMode InteractionMode = EditorInteractionMode.SelectMode;
         public static EditorGizmoMode CurrentGizmoMode = EditorGizmoMode.Select;
 
@@ -384,7 +53,7 @@ namespace DeadCoreEditor
         public static List<GameObject> SelectedObjects = new List<GameObject>();
         public static GameObject LastPlacedObject = null;
 
-        // Clipboard System (Ctrl+C / Ctrl+V / Ctrl+D)
+        // Unified Clipboard System
         public static List<ClipboardItem> Clipboard = new List<ClipboardItem>();
 
         // Placement & Snapping Settings
@@ -405,6 +74,9 @@ namespace DeadCoreEditor
         public static float ActiveLaserRotationSpeed = 45.0f;
         public static float DefaultPathSpeed = 3.5f;
 
+        // Unified Entity Component Registry
+        public static readonly Dictionary<GameObject, EditorEntityData> EntityRegistry = new Dictionary<GameObject, EditorEntityData>();
+
         // Motion Path & In-Scene Waypoint Tracking
         public static Dictionary<GameObject, ObjectMotionPath> MotionPaths = new Dictionary<GameObject, ObjectMotionPath>();
         public static readonly Dictionary<GameObject, GameObject> WaypointMarkersA = new Dictionary<GameObject, GameObject>();
@@ -416,7 +88,7 @@ namespace DeadCoreEditor
         public static GameObject RepositionTarget = null;
         public static Vector3 RepositionStartPosition = Vector3.zero;
 
-        // Property Dictionaries for Placed Entities
+        // Tracking Lists & Fast Lookups
         public static List<GameObject> PlacedObjects = new List<GameObject>();
         public static Dictionary<GameObject, PlacedObjectType> PlacedObjectTypes = new Dictionary<GameObject, PlacedObjectType>();
         public static Dictionary<GameObject, int> PlacedParentChildCounts = new Dictionary<GameObject, int>();
@@ -428,13 +100,15 @@ namespace DeadCoreEditor
         public static List<GameObject> PlacedRotatingLasers = new List<GameObject>();
         public static List<CheckPointScript> PlacedCheckpoints = new List<CheckPointScript>();
         public static GameObject PlacedGoalGate = null;
-        private static readonly Dictionary<GameObject, Helix> _cachedHelixScripts = new Dictionary<GameObject, Helix>();
+        public static readonly Dictionary<GameObject, Helix> CachedHelixScripts = new Dictionary<GameObject, Helix>();
 
+        // Synchronized Component Dictionaries
         public static Dictionary<GameObject, float> JumperForces = new Dictionary<GameObject, float>();
         public static Dictionary<GameObject, float> TurbineSpeeds = new Dictionary<GameObject, float>();
         public static Dictionary<GameObject, float> TurretFireDelays = new Dictionary<GameObject, float>();
         public static Dictionary<GameObject, float> LaserRotationSpeeds = new Dictionary<GameObject, float>();
         public static Dictionary<GameObject, LightConfig> PlacedLights = new Dictionary<GameObject, LightConfig>();
+        public static Dictionary<GameObject, bool> JumperActiveStates = new Dictionary<GameObject, bool>();
 
         // History Undo/Redo Stacks
         public static Stack<HistoryRecord> UndoHistory = new Stack<HistoryRecord>();
@@ -458,20 +132,180 @@ namespace DeadCoreEditor
 
         // Visual Selection Highlight Pool
         private static readonly List<GameObject> _highlightBoxes = new List<GameObject>();
-        private static readonly List<GameObject> _selectionBeacons = new List<GameObject>();
 
+        // Snapshot Structure
         public struct PlaytestTransformSnapshot
         {
-            public Vector3 LocalPosition;
-            public Quaternion LocalRotation;
+            public Vector3 Position;
+            public Quaternion Rotation;
             public Vector3 LocalScale;
         }
 
         public static readonly Dictionary<GameObject, PlaytestTransformSnapshot> PlaytestSnapshots = new Dictionary<GameObject, PlaytestTransformSnapshot>();
 
-        /// <summary>
-        /// Captures the exact design-time local transforms of all placed objects and their sub-components.
-        /// </summary>
+        // =========================================================================
+        // SECTION 2: ENTITY DATA BINDING & CONVERSION
+        // =========================================================================
+
+        public static EditorEntityData ExtractEntityData(GameObject obj)
+        {
+            if (obj == null) return new EditorEntityData();
+
+            if (EntityRegistry.TryGetValue(obj, out var existing))
+            {
+                SyncDictionariesToEntityData(obj, existing);
+                return existing.Clone();
+            }
+
+            var data = new EditorEntityData();
+            SyncDictionariesToEntityData(obj, data);
+            EntityRegistry[obj] = data;
+            return data.Clone();
+        }
+
+        private static void SyncDictionariesToEntityData(GameObject obj, EditorEntityData data)
+        {
+            if (JumperForces.TryGetValue(obj, out float jf))
+            {
+                var jc = data.GetOrCreate<JumperConfig>();
+                jc.Force = jf;
+                if (JumperActiveStates.TryGetValue(obj, out bool ja)) jc.IsActive = ja;
+            }
+
+            if (TurbineSpeeds.TryGetValue(obj, out float ts))
+            {
+                var tc = data.GetOrCreate<TurbineConfig>();
+                tc.Speed = ts;
+            }
+
+            if (TurretFireDelays.TryGetValue(obj, out float fd))
+            {
+                var tc = data.GetOrCreate<TurretConfig>();
+                tc.FireDelay = fd;
+            }
+
+            if (LaserRotationSpeeds.TryGetValue(obj, out float lrs))
+            {
+                var lc = data.GetOrCreate<LaserConfig>();
+                lc.RotationSpeed = lrs;
+                lc.IsRotating = Mathf.Abs(lrs) > 0.01f;
+            }
+
+            if (PlacedLights.TryGetValue(obj, out var lcCfg))
+            {
+                data.Set(lcCfg.Clone());
+            }
+
+            if (MotionPaths.TryGetValue(obj, out var mp))
+            {
+                data.Set(mp.Clone());
+            }
+
+            if (SwitchService.PlacedSwitches.TryGetValue(obj, out var swCfg))
+            {
+                data.Set(swCfg.Clone());
+            }
+
+            if (PlacedObjectTypes.TryGetValue(obj, out var pType))
+            {
+                if (pType == PlacedObjectType.SpawnGate || pType == PlacedObjectType.GoalGate || pType == PlacedObjectType.Checkpoint)
+                {
+                    var gc = data.GetOrCreate<GateConfig>();
+                    gc.IsSpawn = (pType == PlacedObjectType.SpawnGate);
+                    gc.IsGoal = (pType == PlacedObjectType.GoalGate);
+                    CheckPointScript cp = obj.GetComponentInChildren<CheckPointScript>();
+                    if (cp != null) gc.CheckpointId = cp._id;
+                }
+                else if (pType == PlacedObjectType.SkyboxController)
+                {
+                    data.Set(SkyboxControllerService.ActiveConfig.Clone());
+                }
+            }
+        }
+
+        public static void ApplyEntityData(GameObject obj, EditorEntityData data)
+        {
+            if (obj == null || data == null) return;
+
+            EntityRegistry[obj] = data.Clone();
+
+            if (data.TryGetComponent<JumperConfig>(out var jc))
+            {
+                ApplyJumperForce(obj, jc.Force);
+                ApplyJumperActive(obj, jc.IsActive);
+            }
+
+            if (data.TryGetComponent<TurbineConfig>(out var tc))
+            {
+                ApplyTurbineSpeed(obj, tc.Speed);
+            }
+
+            if (data.TryGetComponent<TurretConfig>(out var turC))
+            {
+                ApplyTurretSettings(obj, turC.FireDelay, turC.FirePower);
+            }
+
+            if (data.TryGetComponent<LaserConfig>(out var lc))
+            {
+                LaserRotationSpeeds[obj] = lc.RotationSpeed;
+            }
+
+            if (data.TryGetComponent<LightConfig>(out var lightC))
+            {
+                ApplyLightConfig(obj, lightC.Clone());
+            }
+
+            if (data.TryGetComponent<ObjectMotionPath>(out var mp) && mp.IsActive && (mp.TotalDistance > 0.05f || Mathf.Abs(mp.RotationSpeed) > 0.01f))
+            {
+                MotionPaths[obj] = mp.Clone();
+                var rb = obj.GetComponent<Rigidbody>();
+                if (rb == null) rb = obj.AddComponent<Rigidbody>();
+                rb.isKinematic = true;
+                rb.useGravity = false;
+            }
+            else
+            {
+                MotionPaths.Remove(obj);
+            }
+
+            if (data.TryGetComponent<SkyboxConfig>(out var sc))
+            {
+                SkyboxControllerService.Initialize(obj, sc.Clone());
+            }
+
+            if (data.TryGetComponent<SwitchConfig>(out var swc))
+            {
+                SwitchService.ApplySwitchConfig(obj, swc.Clone());
+            }
+
+            if (data.TryGetComponent<GateConfig>(out var gc))
+            {
+                CheckPointScript cp = obj.GetComponentInChildren<CheckPointScript>();
+                if (gc.IsSpawn)
+                {
+                    PlacedObjectTypes[obj] = PlacedObjectType.SpawnGate;
+                    ApplyGateVisualTint(obj, new Color(1.0f, 0.45f, 0.05f));
+                    if (cp != null) cp._id = 0;
+                }
+                else if (gc.IsGoal)
+                {
+                    PlacedObjectTypes[obj] = PlacedObjectType.GoalGate;
+                    PlacedGoalGate = obj;
+                    ApplyGateVisualTint(obj, new Color(0.1f, 0.65f, 1.0f));
+                    if (cp != null) cp._id = 9999;
+                }
+                else
+                {
+                    PlacedObjectTypes[obj] = PlacedObjectType.Checkpoint;
+                    if (cp != null && gc.CheckpointId != 0) cp._id = gc.CheckpointId;
+                }
+            }
+        }
+
+        // =========================================================================
+        // SECTION 3: PLAYTEST SNAPSHOTS & RESTORATION
+        // =========================================================================
+
         public static void CapturePlaytestSnapshots()
         {
             PlaytestSnapshots.Clear();
@@ -480,93 +314,73 @@ namespace DeadCoreEditor
                 GameObject obj = PlacedObjects[i];
                 if (obj == null) continue;
 
-                // Don't snapshot the turbine's moving rotor/joint
-                bool isHelix = PlacedObjectTypes.TryGetValue(obj, out var t) && t == PlacedObjectType.Turbine;
-
-                Transform[] allTransforms = obj.GetComponentsInChildren<Transform>(true);
-                for (int tIdx = 0; tIdx < allTransforms.Length; tIdx++)
+                PlaytestSnapshots[obj] = new PlaytestTransformSnapshot
                 {
-                    Transform tr = allTransforms[tIdx];
-                    if (tr == null || tr.name == "Editor_Snapping_Proxy") continue;
-
-                    // Skip the blade joint so its rotation is never frozen
-                    if (isHelix && tr != obj.transform) continue;
-
-                    PlaytestSnapshots[tr.gameObject] = new PlaytestTransformSnapshot
-                    {
-                        LocalPosition = tr.localPosition,
-                        LocalRotation = tr.localRotation,
-                        LocalScale = tr.localScale
-                    };
-                }
+                    Position = obj.transform.position,
+                    Rotation = obj.transform.rotation,
+                    LocalScale = obj.transform.localScale
+                };
             }
         }
 
-        /// <summary>
-        /// Restores all objects back to their pre-playtest positions, rotations, scales, and physics states.
-        /// </summary>
         public static void RestorePlaytestSnapshots()
         {
             if (PlaytestSnapshots.Count == 0) return;
 
-            foreach (var kvp in PlaytestSnapshots)
-            {
-                GameObject go = kvp.Key;
-                if (go == null) continue;
-
-                PlaytestTransformSnapshot snap = kvp.Value;
-                Transform tr = go.transform;
-
-                // 1. Freeze rigidbodies to prevent physics fights during reset
-                Rigidbody rb = go.GetComponent<Rigidbody>();
-                if (rb != null)
-                {
-                    rb.velocity = Vector3.zero;
-                    rb.angularVelocity = Vector3.zero;
-                    if (IsEditModeActive)
-                    {
-                        rb.isKinematic = true;
-                    }
-                }
-
-                // 2. Restore exact local transform
-                tr.localPosition = snap.LocalPosition;
-                tr.localRotation = snap.LocalRotation;
-                tr.localScale = snap.LocalScale;
-
-                if (rb != null)
-                {
-                    rb.position = tr.position;
-                    rb.rotation = tr.rotation;
-                }
-
-                // 3. Reactivate if deactivated during playtest
-                if (!go.activeSelf && PlacedObjects.Contains(go))
-                {
-                    go.SetActive(true);
-                }
-            }
-
-            // 4. Ensure motion path targets cleanly match Point A
             for (int i = 0; i < PlacedObjects.Count; i++)
             {
                 GameObject obj = PlacedObjects[i];
                 if (obj == null) continue;
 
-                StudioGizmoController.InvalidateCachedCenter(obj);
-
-                if (MotionPaths.TryGetValue(obj, out var path) && path != null)
+                if (PlaytestSnapshots.TryGetValue(obj, out PlaytestTransformSnapshot snap))
                 {
-                    obj.transform.position = path.PointA;
+                    Rigidbody rb = obj.GetComponent<Rigidbody>();
+                    if (rb != null)
+                    {
+                        rb.isKinematic = true;
+                        rb.useGravity = false;
+                        rb.velocity = Vector3.zero;
+                        rb.angularVelocity = Vector3.zero;
+                    }
+
+                    if (MotionPaths.TryGetValue(obj, out var mp))
+                    {
+                        if (mp.PointA != Vector3.zero || obj.transform.position == Vector3.zero)
+                            obj.transform.position = mp.PointA;
+                    }
+                    else if (obj.transform.parent == null)
+                    {
+                        if (snap.Position != Vector3.zero || obj.transform.position == Vector3.zero)
+                        {
+                            obj.transform.position = snap.Position;
+                            obj.transform.rotation = snap.Rotation;
+                            obj.transform.localScale = snap.LocalScale;
+                        }
+                    }
+
+                    if (rb != null)
+                    {
+                        rb.position = obj.transform.position;
+                        rb.rotation = obj.transform.rotation;
+                    }
                 }
+
+                if (!obj.activeSelf) obj.SetActive(true);
+
+                Renderer[] rends = obj.GetComponentsInChildren<Renderer>(true);
+                for (int r = 0; r < rends.Length; r++)
+                {
+                    if (rends[r] != null) rends[r].enabled = true;
+                }
+
+                StudioGizmoController.InvalidateCachedCenter(obj);
             }
 
             UpdateSelectionHighlight();
-            StudioUIManager.RefreshInspectorValues();
         }
 
         // =========================================================================
-        // KEYBIND PARENTING WORKFLOW (Ctrl + P / Alt + P)
+        // SECTION 4: SELECTION, PARENTING & CLIPBOARD
         // =========================================================================
 
         public static bool IsDescendantOf(GameObject parentNode, GameObject potentialChild)
@@ -589,7 +403,6 @@ namespace DeadCoreEditor
                 return;
             }
 
-            // 1. Multi-Selection Mode: Parent all objects to the last selected object
             if (SelectedObjects.Count >= 2)
             {
                 GameObject parentTarget = SelectedObject;
@@ -602,7 +415,6 @@ namespace DeadCoreEditor
                     if (child == null || child == parentTarget) continue;
                     if (IsWaypointMarker(child, out _, out _)) continue;
 
-                    // Prevent cyclic parenting loops
                     if (IsDescendantOf(child, parentTarget))
                     {
                         ShowNotification($"Cannot parent '{child.name}': Cyclic loop detected.");
@@ -634,7 +446,6 @@ namespace DeadCoreEditor
                 StudioUIManager.RefreshHierarchy();
                 ShowNotification($"Parented {count} object(s) under '{parentTarget.name}' [Ctrl+P]");
             }
-            // 2. Two-Step Mode: Single object selection
             else
             {
                 GameObject current = SelectedObject;
@@ -651,7 +462,6 @@ namespace DeadCoreEditor
                 }
                 else
                 {
-                    // Current is the parent target, ParentingChildTarget is the child
                     if (IsDescendantOf(ParentingChildTarget, current))
                     {
                         ShowNotification("Cannot parent: Cyclic loop detected.");
@@ -721,134 +531,182 @@ namespace DeadCoreEditor
             ShowNotification(count > 0 ? $"Unparented {count} object(s) to root [Alt+P]" : "Selected objects are already at root.");
         }
 
-        public static void SetSimulationActive(bool active)
+        public static void CopySelectedObjects()
         {
-            for (int i = 0; i < PlacedObjects.Count; i++)
+            if (SelectedObjects.Count == 0)
             {
-                GameObject obj = PlacedObjects[i];
-                if (obj == null) continue;
+                ShowNotification("Nothing selected to copy.");
+                return;
+            }
 
-                // Do not touch Helix - let native DeadCore handle it (like in Class1.cs)
-                if (PlacedObjectTypes.TryGetValue(obj, out var objType) && objType == PlacedObjectType.Turbine)
+            Clipboard.Clear();
+            Vector3 groupCenter = StudioGizmoController.GetObjectCenter(SelectedObject);
+
+            for (int i = 0; i < SelectedObjects.Count; i++)
+            {
+                GameObject obj = SelectedObjects[i];
+                if (obj == null || IsWaypointMarker(obj, out _, out _)) continue;
+
+                string rawName = obj.name.StartsWith("Custom_") ? obj.name.Substring(7) : obj.name;
+                EditorEntityData entityData = ExtractEntityData(obj);
+
+                Clipboard.Add(new ClipboardItem
+                {
+                    AssetName = rawName,
+                    RelativeOffset = obj.transform.position - groupCenter,
+                    Rotation = obj.transform.rotation,
+                    Scale = obj.transform.localScale,
+                    EntityData = entityData
+                });
+            }
+
+            ShowNotification($"Copied {Clipboard.Count} object(s) [Ctrl+C]");
+        }
+
+        public static void PasteClipboardObjects()
+        {
+            if (Clipboard.Count == 0)
+            {
+                ShowNotification("Clipboard empty. Press Ctrl+C to copy objects.");
+                return;
+            }
+
+            Vector3 pasteOrigin = (InteractionMode == EditorInteractionMode.PlacementMode)
+                ? PlacementHologramController.TargetPosition
+                : ((SelectedObject != null) ? SelectedObject.transform.position : LevelSpawnPosition) + new Vector3(2.5f, 0f, 2.5f);
+
+            SelectedObjects.Clear();
+
+            for (int i = 0; i < Clipboard.Count; i++)
+            {
+                ClipboardItem item = Clipboard[i];
+                Vector3 spawnPos = pasteOrigin + item.RelativeOffset;
+
+                GameObject pasted = SpawnAssetByName(item.AssetName, spawnPos, item.Scale, item.Rotation);
+                if (pasted != null)
+                {
+                    if (item.EntityData != null)
+                    {
+                        ApplyEntityData(pasted, item.EntityData.Clone());
+                    }
+
+                    RegisterPlacedObject(pasted);
+                    SelectedObjects.Add(pasted);
+
+                    UndoHistory.Push(new HistoryRecord
+                    {
+                        ActionType = HistoryActionType.Placement,
+                        TargetObject = pasted,
+                        AssetName = item.AssetName,
+                        Position = spawnPos,
+                        Rotation = item.Rotation,
+                        Scale = item.Scale.x,
+                        ScaleVector = item.Scale,
+                        EntityDataSnapshot = item.EntityData?.Clone()
+                    });
+                }
+            }
+
+            RedoHistory.Clear();
+            SelectedObject = SelectedObjects.Count > 0 ? SelectedObjects[SelectedObjects.Count - 1] : null;
+
+            UpdateSelectionHighlight();
+            StudioUIManager.NotifyObjectSelected(SelectedObject);
+            StudioUIManager.RefreshHierarchy();
+            ShowNotification($"Pasted {SelectedObjects.Count} object(s) [Ctrl+V]");
+        }
+
+        public static void DuplicateSelectedObjects()
+        {
+            if (SelectedObjects.Count == 0)
+            {
+                ShowNotification("Nothing selected to duplicate.");
+                return;
+            }
+
+            CopySelectedObjects();
+            float step = CurrentGridSnap > 0.01f ? CurrentGridSnap : 1.5f;
+            Vector3 offset = new Vector3(step, 0f, step);
+
+            List<ClipboardItem> dupList = new List<ClipboardItem>(Clipboard);
+            Vector3 basePos = (SelectedObject != null) ? SelectedObject.transform.position : LevelSpawnPosition;
+            Vector3 pasteOrigin = basePos + offset;
+
+            SelectedObjects.Clear();
+
+            for (int i = 0; i < dupList.Count; i++)
+            {
+                ClipboardItem item = dupList[i];
+                Vector3 spawnPos = pasteOrigin + item.RelativeOffset;
+
+                GameObject pasted = SpawnAssetByName(item.AssetName, spawnPos, item.Scale, item.Rotation);
+                if (pasted != null)
+                {
+                    if (item.EntityData != null)
+                    {
+                        ApplyEntityData(pasted, item.EntityData.Clone());
+                    }
+
+                    RegisterPlacedObject(pasted);
+                    SelectedObjects.Add(pasted);
+
+                    UndoHistory.Push(new HistoryRecord
+                    {
+                        ActionType = HistoryActionType.Placement,
+                        TargetObject = pasted,
+                        AssetName = item.AssetName,
+                        Position = spawnPos,
+                        Rotation = item.Rotation,
+                        Scale = item.Scale.x,
+                        ScaleVector = item.Scale,
+                        EntityDataSnapshot = item.EntityData?.Clone()
+                    });
+                }
+            }
+
+            RedoHistory.Clear();
+            SelectedObject = SelectedObjects.Count > 0 ? SelectedObjects[SelectedObjects.Count - 1] : null;
+
+            UpdateSelectionHighlight();
+            StudioUIManager.NotifyObjectSelected(SelectedObject);
+            StudioUIManager.RefreshHierarchy();
+            ShowNotification($"Duplicated {SelectedObjects.Count} object(s) [Ctrl+D]");
+        }
+
+        public static void DeleteSelectedObjects()
+        {
+            if (SelectedObjects.Count == 0) return;
+
+            var toDelete = new List<GameObject>(SelectedObjects);
+            for (int i = 0; i < toDelete.Count; i++)
+            {
+                GameObject target = toDelete[i];
+                if (target == null) continue;
+
+                if (IsWaypointMarker(target, out GameObject owner, out _))
+                {
+                    if (owner != null)
+                    {
+                        MotionPaths.Remove(owner);
+                        DestroyWaypointVisuals(owner);
+                        ShowNotification($"Removed motion path from '{owner.name}'");
+                    }
                     continue;
-
-                // 1. Turret scripts
-                TurretScript[] ts = obj.GetComponentsInChildren<TurretScript>(true);
-                for (int s = 0; s < ts.Length; s++)
-                {
-                    if (ts[s] != null) ts[s].enabled = active;
                 }
 
-                // 2. Animators & Animations
-                Animator[] animators = obj.GetComponentsInChildren<Animator>(true);
-                for (int a = 0; a < animators.Length; a++)
-                {
-                    if (animators[a] != null) animators[a].enabled = active;
-                }
-
-                Animation[] animations = obj.GetComponentsInChildren<Animation>(true);
-                for (int a = 0; a < animations.Length; a++)
-                {
-                    if (animations[a] != null) animations[a].enabled = active;
-                }
-
-                // 3. Static/Platform Rigidbodies only
-                Rigidbody[] rbs = obj.GetComponentsInChildren<Rigidbody>(true);
-                for (int r = 0; r < rbs.Length; r++)
-                {
-                    if (rbs[r] != null)
-                    {
-                        rbs[r].isKinematic = !active;
-                        if (!active)
-                        {
-                            rbs[r].velocity = Vector3.zero;
-                            rbs[r].angularVelocity = Vector3.zero;
-                        }
-                    }
-                }
-            }
-        }
-
-        // Tracks per-jumper active state (for Inspector toggling)
-        public static Dictionary<GameObject, bool> JumperActiveStates = new Dictionary<GameObject, bool>();
-
-        public static void SetJumperSimulationActive(bool active)
-        {
-            for (int i = 0; i < PlacedJumpers.Count; i++)
-            {
-                GameObject obj = PlacedJumpers[i];
-                if (obj == null) continue;
-
-                // Check if this specific pad was manually toggled off in the inspector
-                bool isPadEnabled = true;
-                if (JumperActiveStates.TryGetValue(obj, out bool padState))
-                {
-                    isPadEnabled = padState;
-                }
-
-                bool shouldBeActive = active && isPadEnabled;
-
-                // 1. Toggle Jumper script and FX
-                Jumper[] jumpers = obj.GetComponentsInChildren<Jumper>(true);
-                for (int j = 0; j < jumpers.Length; j++)
-                {
-                    if (jumpers[j] != null)
-                    {
-                        jumpers[j].enabled = shouldBeActive;
-                        if (jumpers[j].Fx != null) jumpers[j].Fx.SetActive(shouldBeActive);
-                    }
-                }
-
-                // 2. Disable trigger colliders so Unity doesn't execute OnTriggerEnter
-                Collider[] cols = obj.GetComponentsInChildren<Collider>(true);
-                for (int c = 0; c < cols.Length; c++)
-                {
-                    if (cols[c] != null && cols[c].isTrigger && cols[c].gameObject.name != "Editor_Snapping_Proxy")
-                    {
-                        cols[c].enabled = shouldBeActive;
-                    }
-                }
-            }
-        }
-
-        public static void ApplyJumperActive(GameObject jumperObj, bool active)
-        {
-            if (jumperObj == null) return;
-            JumperActiveStates[jumperObj] = active;
-
-            // Only activate if not currently in Edit Mode
-            bool effectiveActive = active && !IsEditModeActive;
-
-            Jumper[] jumpers = jumperObj.GetComponentsInChildren<Jumper>(true);
-            foreach (var jc in jumpers)
-            {
-                if (jc == null) continue;
-                jc.enabled = effectiveActive;
-                if (jc.Fx != null) jc.Fx.SetActive(effectiveActive);
+                DeleteSpecifiedObject(target);
             }
 
-            Collider[] cols = jumperObj.GetComponentsInChildren<Collider>(true);
-            foreach (var col in cols)
-            {
-                if (col != null && col.isTrigger && col.gameObject.name != "Editor_Snapping_Proxy")
-                {
-                    col.enabled = effectiveActive;
-                }
-            }
-        }
-
-        public static void SetSnappingProxiesActive(bool active)
-        {
-            for (int i = 0; i < PlacedObjects.Count; i++)
-            {
-                if (PlacedObjects[i] == null) continue;
-                Transform proxy = PlacedObjects[i].transform.Find("Editor_Snapping_Proxy");
-                if (proxy != null) proxy.gameObject.SetActive(active);
-            }
+            SelectedObjects.Clear();
+            SelectedObject = null;
+            UpdateSelectionHighlight();
+            StudioUIManager.NotifyObjectSelected(null);
+            StudioUIManager.RefreshHierarchy();
+            ShowNotification($"Deleted {toDelete.Count} object(s) [Supr]");
         }
 
         // =========================================================================
-        // MODE TOGGLING & MULTI-SELECTION WORKFLOW
+        // SECTION 5: MODES & SELECTION LOGIC
         // =========================================================================
 
         public static void SetInteractionMode(EditorInteractionMode mode)
@@ -919,68 +777,34 @@ namespace DeadCoreEditor
             ShowNotification($"Equipped: {asset.DisplayName} (Scale: {ActivePlacementScale:F2}x)");
         }
 
-        private static Material _cachedHighlightMat = null;
-        private static Material GetHighlightMaterial()
-        {
-            if (_cachedHighlightMat == null)
-            {
-                Shader s = Shader.Find("Unlit/Color") ?? Shader.Find("Particles/Standard Unlit") ?? Shader.Find("Sprites/Default");
-                _cachedHighlightMat = new Material(s);
-                _cachedHighlightMat.color = new Color(0.1f, 0.85f, 1f, 0.45f);
-            }
-            return _cachedHighlightMat;
-        }
-
-        private static Material _cachedSiblingHighlightMat = null;
-        private static Material GetSiblingHighlightMaterial()
-        {
-            if (_cachedSiblingHighlightMat == null)
-            {
-                Shader s = Shader.Find("Unlit/Color") ?? Shader.Find("Particles/Standard Unlit") ?? Shader.Find("Sprites/Default");
-                _cachedSiblingHighlightMat = new Material(s);
-                _cachedSiblingHighlightMat.color = new Color(0.04f, 0.22f, 0.48f, 0.35f);
-            }
-            return _cachedSiblingHighlightMat;
-        }
-
-        // =========================================================================
-        // PURE 12-LINE HOLLOW WIREFRAME (ZERO SOLID FACES, ZERO COLLIDERS)
-        // =========================================================================
         public static void UpdateSelectionHighlight()
         {
             CleanHighlightPool();
 
             if (SelectedObjects.Count == 0 || !IsEditModeActive || InteractionMode != EditorInteractionMode.SelectMode)
-            {
                 return;
-            }
 
-            Material primaryMat = GetHighlightMaterial();
+            Material primaryMat = GizmoMaterialCache.Red;
 
             for (int i = 0; i < SelectedObjects.Count; i++)
             {
                 GameObject obj = SelectedObjects[i];
-                if (obj == null || !obj.activeSelf) continue;
-                if (IsWaypointMarker(obj, out _, out _)) continue;
+                if (obj == null || !obj.activeSelf || IsWaypointMarker(obj, out _, out _)) continue;
 
                 Bounds b = PlacementHologramController.CalculateOptimizedProxyBounds(obj);
                 Vector3 worldCenter = obj.transform.TransformPoint(b.center);
 
-                // Creates a clean, hollow, 12-line wireframe box with no solid faces or colliders
                 GameObject wireBox = CreateHollowWireframeBox(worldCenter, obj.transform.rotation, Vector3.Scale(b.size * 1.02f, obj.transform.lossyScale), primaryMat);
                 _highlightBoxes.Add(wireBox);
             }
         }
 
-        // =========================================================================
-        // THICK VOLUMETRIC 3D WIREFRAME (12 SEAMLESS BEAMS, ZERO COLLIDERS)
-        // =========================================================================
         private static GameObject CreateHollowWireframeBox(Vector3 pos, Quaternion rot, Vector3 size, Material mat)
         {
             GameObject wireObj = new GameObject("Studio_Selection_Wireframe");
             wireObj.transform.position = pos;
             wireObj.transform.rotation = rot;
-            wireObj.layer = 2; // Ignore Raycast
+            wireObj.layer = 2;
 
             MeshFilter mf = wireObj.AddComponent<MeshFilter>();
             MeshRenderer mr = wireObj.AddComponent<MeshRenderer>();
@@ -988,7 +812,6 @@ namespace DeadCoreEditor
             mr.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
             mr.receiveShadows = false;
 
-            // Dynamically scale beam thickness: at least 0.10m thick on small props, up to 0.40m on large platforms
             float maxDim = Mathf.Max(size.x, Mathf.Max(size.y, size.z));
             float t = Mathf.Clamp(maxDim * 0.025f, 0.10f, 0.40f);
 
@@ -997,28 +820,27 @@ namespace DeadCoreEditor
             List<Vector3> verts = new List<Vector3>(96);
             List<int> tris = new List<int>(144);
 
-            // 4 Beams along X
             AddBeam(new Vector3(0f, -h.y, -h.z), new Vector3(size.x + t, t, t), verts, tris);
             AddBeam(new Vector3(0f, h.y, -h.z), new Vector3(size.x + t, t, t), verts, tris);
             AddBeam(new Vector3(0f, -h.y, h.z), new Vector3(size.x + t, t, t), verts, tris);
             AddBeam(new Vector3(0f, h.y, h.z), new Vector3(size.x + t, t, t), verts, tris);
 
-            // 4 Beams along Y (Vertical pillars)
             AddBeam(new Vector3(-h.x, 0f, -h.z), new Vector3(t, size.y + t, t), verts, tris);
             AddBeam(new Vector3(h.x, 0f, -h.z), new Vector3(t, size.y + t, t), verts, tris);
             AddBeam(new Vector3(-h.x, 0f, h.z), new Vector3(t, size.y + t, t), verts, tris);
             AddBeam(new Vector3(h.x, 0f, h.z), new Vector3(t, size.y + t, t), verts, tris);
 
-            // 4 Beams along Z
             AddBeam(new Vector3(-h.x, -h.y, 0f), new Vector3(t, t, size.z + t), verts, tris);
             AddBeam(new Vector3(h.x, -h.y, 0f), new Vector3(t, t, size.z + t), verts, tris);
             AddBeam(new Vector3(-h.x, h.y, 0f), new Vector3(t, t, size.z + t), verts, tris);
             AddBeam(new Vector3(h.x, h.y, 0f), new Vector3(t, t, size.z + t), verts, tris);
 
-            Mesh m = new Mesh();
-            m.name = "Thick_Wireframe_Box_Mesh";
-            m.vertices = verts.ToArray();
-            m.triangles = tris.ToArray();
+            Mesh m = new Mesh
+            {
+                name = "Thick_Wireframe_Box_Mesh",
+                vertices = verts.ToArray(),
+                triangles = tris.ToArray()
+            };
             m.RecalculateNormals();
             m.RecalculateBounds();
             mf.sharedMesh = m;
@@ -1031,25 +853,23 @@ namespace DeadCoreEditor
             int baseIdx = verts.Count;
             Vector3 bh = beamSize * 0.5f;
 
-            // 8 vertices per beam
             verts.Add(center + new Vector3(-bh.x, -bh.y, -bh.z));
             verts.Add(center + new Vector3(bh.x, -bh.y, -bh.z));
             verts.Add(center + new Vector3(bh.x, bh.y, -bh.z));
             verts.Add(center + new Vector3(-bh.x, bh.y, -bh.z));
-            verts.Add(center + new Vector3(-bh.x, -bh.y, bh.z));
-            verts.Add(center + new Vector3(bh.x, -bh.y, bh.z));
-            verts.Add(center + new Vector3(bh.x, bh.y, bh.z));
-            verts.Add(center + new Vector3(-bh.x, bh.y, bh.z));
+            verts.Add(center + new Vector3(-bh.x, -bh.y, -bh.z));
+            verts.Add(center + new Vector3(bh.x, -bh.y, -bh.z));
+            verts.Add(center + new Vector3(bh.x, bh.y, -bh.z));
+            verts.Add(center + new Vector3(-bh.x, bh.y, -bh.z));
 
-            // 12 triangles (6 faces)
             int[] f = new int[]
             {
-                0, 2, 1, 0, 3, 2, // Front
-                5, 6, 4, 4, 6, 7, // Back
-                0, 7, 3, 0, 4, 7, // Left
-                1, 2, 6, 1, 6, 5, // Right
-                3, 6, 2, 3, 7, 6, // Top
-                0, 1, 5, 0, 5, 4  // Bottom
+                0, 2, 1, 0, 3, 2,
+                5, 6, 4, 4, 6, 7,
+                0, 7, 3, 0, 4, 7,
+                1, 2, 6, 1, 6, 5,
+                3, 6, 2, 3, 7, 6,
+                0, 1, 5, 0, 5, 4
             };
 
             for (int i = 0; i < f.Length; i++)
@@ -1065,12 +885,6 @@ namespace DeadCoreEditor
                 if (_highlightBoxes[i] != null) GameObject.Destroy(_highlightBoxes[i]);
             }
             _highlightBoxes.Clear();
-
-            for (int i = 0; i < _selectionBeacons.Count; i++)
-            {
-                if (_selectionBeacons[i] != null) GameObject.Destroy(_selectionBeacons[i]);
-            }
-            _selectionBeacons.Clear();
         }
 
         public static void ShowNotification(string msg)
@@ -1079,253 +893,7 @@ namespace DeadCoreEditor
         }
 
         // =========================================================================
-        // COPY, PASTE, DUPLICATE & DELETE WORKFLOW
-        // =========================================================================
-
-        public static void CopySelectedObjects()
-        {
-            if (SelectedObjects.Count == 0)
-            {
-                ShowNotification("Nothing selected to copy.");
-                return;
-            }
-
-            Clipboard.Clear();
-            Vector3 groupCenter = StudioGizmoController.GetObjectCenter(SelectedObject);
-
-            for (int i = 0; i < SelectedObjects.Count; i++)
-            {
-                GameObject obj = SelectedObjects[i];
-                if (obj == null) continue;
-                if (IsWaypointMarker(obj, out _, out _)) continue;
-
-                float param = 0f;
-                if (JumperForces.ContainsKey(obj)) param = JumperForces[obj];
-                else if (TurbineSpeeds.ContainsKey(obj)) param = TurbineSpeeds[obj];
-                else if (TurretFireDelays.ContainsKey(obj)) param = TurretFireDelays[obj];
-                else if (LaserRotationSpeeds.ContainsKey(obj)) param = LaserRotationSpeeds[obj];
-
-                LightConfig lCfg = PlacedLights.ContainsKey(obj) ? PlacedLights[obj].Clone() : null;
-                ObjectMotionPath mPath = MotionPaths.ContainsKey(obj) ? MotionPaths[obj].Clone() : null;
-
-                string rawName = obj.name.StartsWith("Custom_") ? obj.name.Substring(7) : obj.name;
-
-                Clipboard.Add(new ClipboardItem
-                {
-                    AssetName = rawName,
-                    RelativeOffset = obj.transform.position - groupCenter,
-                    Rotation = obj.transform.rotation,
-                    Scale = obj.transform.localScale, // Saves full Vector3 scale
-                    CustomParameter = param,
-                    LightCfg = lCfg,
-                    MotionPath = mPath
-                });
-            }
-
-            ShowNotification($"Copied {Clipboard.Count} object(s) [Ctrl+C]");
-        }
-
-        public static void PasteClipboardObjects()
-        {
-            if (Clipboard.Count == 0)
-            {
-                ShowNotification("Clipboard empty. Press Ctrl+C to copy objects.");
-                return;
-            }
-
-            Vector3 pasteOrigin;
-            if (InteractionMode == EditorInteractionMode.PlacementMode)
-            {
-                pasteOrigin = PlacementHologramController.TargetPosition;
-            }
-            else
-            {
-                Vector3 basePos = (SelectedObject != null) ? SelectedObject.transform.position : LevelSpawnPosition;
-                pasteOrigin = basePos + new Vector3(2.5f, 0f, 2.5f);
-            }
-
-            SelectedObjects.Clear();
-
-            for (int i = 0; i < Clipboard.Count; i++)
-            {
-                ClipboardItem item = Clipboard[i];
-                Vector3 spawnPos = pasteOrigin + item.RelativeOffset;
-
-                GameObject pasted = SpawnAssetByName(item.AssetName, spawnPos, item.Scale, item.Rotation);
-                if (pasted != null)
-                {
-                    string low = item.AssetName.ToLower();
-                    if (item.CustomParameter > 0f)
-                    {
-                        if (low.Contains("jumper")) ApplyJumperForce(pasted, item.CustomParameter);
-                        else if (low.Contains("helix")) ApplyTurbineSpeed(pasted, item.CustomParameter);
-                        else if (low.Contains("turret")) ApplyTurretSettings(pasted, item.CustomParameter);
-                    }
-                    if (low.Contains("rotating") && item.CustomParameter != 0f)
-                    {
-                        LaserRotationSpeeds[pasted] = item.CustomParameter;
-                    }
-                    if (item.LightCfg != null)
-                    {
-                        ApplyLightConfig(pasted, item.LightCfg);
-                    }
-                    if (item.MotionPath != null)
-                    {
-                        Vector3 delta = spawnPos - item.MotionPath.PointA;
-                        MotionPaths[pasted] = new ObjectMotionPath
-                        {
-                            PointA = spawnPos,
-                            PointB = item.MotionPath.PointB + delta,
-                            Speed = item.MotionPath.Speed,
-                            RotationSpeed = item.MotionPath.RotationSpeed,
-                            RotationAxis = item.MotionPath.RotationAxis,
-                            CustomAxis = item.MotionPath.CustomAxis,
-                            IsActive = true
-                        };
-                    }
-
-                    RegisterPlacedObject(pasted);
-                    SelectedObjects.Add(pasted);
-
-                    UndoHistory.Push(new HistoryRecord
-                    {
-                        ActionType = HistoryActionType.Placement,
-                        TargetObject = pasted,
-                        AssetName = item.AssetName,
-                        Position = spawnPos,
-                        Rotation = item.Rotation,
-                        Scale = item.Scale.x,
-                        ScaleVector = item.Scale,
-                        CustomParameter = item.CustomParameter
-                    });
-                }
-            }
-
-            RedoHistory.Clear();
-            SelectedObject = SelectedObjects.Count > 0 ? SelectedObjects[SelectedObjects.Count - 1] : null;
-
-            UpdateSelectionHighlight();
-            StudioUIManager.NotifyObjectSelected(SelectedObject);
-            StudioUIManager.RefreshHierarchy();
-
-            ShowNotification($"Pasted {SelectedObjects.Count} object(s) [Ctrl+V]");
-        }
-
-        public static void DuplicateSelectedObjects()
-        {
-            if (SelectedObjects.Count == 0)
-            {
-                ShowNotification("Nothing selected to duplicate.");
-                return;
-            }
-
-            CopySelectedObjects();
-            float step = CurrentGridSnap > 0.01f ? CurrentGridSnap : 1.5f;
-            Vector3 offset = new Vector3(step, 0f, step);
-
-            List<ClipboardItem> dupList = new List<ClipboardItem>(Clipboard);
-            Vector3 basePos = (SelectedObject != null) ? SelectedObject.transform.position : LevelSpawnPosition;
-            Vector3 pasteOrigin = basePos + offset;
-
-            SelectedObjects.Clear();
-
-            for (int i = 0; i < dupList.Count; i++)
-            {
-                ClipboardItem item = dupList[i];
-                Vector3 spawnPos = pasteOrigin + item.RelativeOffset;
-
-                GameObject pasted = SpawnAssetByName(item.AssetName, spawnPos, item.Scale, item.Rotation);
-                if (pasted != null)
-                {
-                    string low = item.AssetName.ToLower();
-                    if (item.CustomParameter > 0f)
-                    {
-                        if (low.Contains("jumper")) ApplyJumperForce(pasted, item.CustomParameter);
-                        else if (low.Contains("helix")) ApplyTurbineSpeed(pasted, item.CustomParameter);
-                        else if (low.Contains("turret")) ApplyTurretSettings(pasted, item.CustomParameter);
-                    }
-                    if (low.Contains("rotating") && item.CustomParameter != 0f)
-                    {
-                        LaserRotationSpeeds[pasted] = item.CustomParameter;
-                    }
-                    if (item.LightCfg != null)
-                    {
-                        ApplyLightConfig(pasted, item.LightCfg);
-                    }
-                    if (item.MotionPath != null)
-                    {
-                        Vector3 delta = spawnPos - item.MotionPath.PointA;
-                        MotionPaths[pasted] = new ObjectMotionPath
-                        {
-                            PointA = spawnPos,
-                            PointB = item.MotionPath.PointB + delta,
-                            Speed = item.MotionPath.Speed,
-                            IsActive = true
-                        };
-                    }
-
-                    RegisterPlacedObject(pasted);
-                    SelectedObjects.Add(pasted);
-
-                    UndoHistory.Push(new HistoryRecord
-                    {
-                        ActionType = HistoryActionType.Placement,
-                        TargetObject = pasted,
-                        AssetName = item.AssetName,
-                        Position = spawnPos,
-                        Rotation = item.Rotation,
-                        Scale = item.Scale.x,
-                        ScaleVector = item.Scale, // Guarda el Vector3 completo
-                        CustomParameter = item.CustomParameter
-                    });
-                }
-            }
-
-            RedoHistory.Clear();
-            SelectedObject = SelectedObjects.Count > 0 ? SelectedObjects[SelectedObjects.Count - 1] : null;
-
-            UpdateSelectionHighlight();
-            StudioUIManager.NotifyObjectSelected(SelectedObject);
-            StudioUIManager.RefreshHierarchy();
-
-            ShowNotification($"Duplicated {SelectedObjects.Count} object(s) [Ctrl+D]");
-        }
-
-        public static void DeleteSelectedObjects()
-        {
-            if (SelectedObjects.Count == 0) return;
-
-            var toDelete = new List<GameObject>(SelectedObjects);
-            for (int i = 0; i < toDelete.Count; i++)
-            {
-                GameObject target = toDelete[i];
-                if (target == null) continue;
-
-                if (IsWaypointMarker(target, out GameObject owner, out _))
-                {
-                    if (owner != null)
-                    {
-                        MotionPaths.Remove(owner);
-                        DestroyWaypointVisuals(owner);
-                        ShowNotification($"Removed motion path from '{owner.name}'");
-                    }
-                    continue;
-                }
-
-                DeleteSpecifiedObject(target);
-            }
-
-            SelectedObjects.Clear();
-            SelectedObject = null;
-            UpdateSelectionHighlight();
-            StudioUIManager.NotifyObjectSelected(null);
-            StudioUIManager.RefreshHierarchy();
-
-            ShowNotification($"Deleted {toDelete.Count} object(s) [Supr]");
-        }
-
-        // =========================================================================
-        // EDIT MODE LIFECYCLE & INPUT DISPATCH
+        // SECTION 6: SIMULATION & MODE LIFECYCLE
         // =========================================================================
 
         public static void ToggleEditMode()
@@ -1340,8 +908,8 @@ namespace DeadCoreEditor
 
             if (IsEditModeActive)
             {
-                // EXITING PLAYTEST -> Reset all objects to their original positions/rotations
                 RestorePlaytestSnapshots();
+                SwitchService.ResetAllSwitchesForPlaytest(enteringPlaytest: false);
 
                 if (player != null)
                 {
@@ -1350,7 +918,10 @@ namespace DeadCoreEditor
                     SetPlayerControlsActive(false);
                 }
 
-                PlayerCameraInstance = Camera.main;
+                if (PlayerCameraInstance == null || !PlayerCameraInstance.gameObject.activeInHierarchy)
+                {
+                    PlayerCameraInstance = Camera.main ?? GameObject.FindObjectOfType<Camera>();
+                }
 
                 EditorViewportCamera.InitializeCamera(PlayerCameraInstance);
                 StudioUIManager.InitializeUI();
@@ -1363,9 +934,9 @@ namespace DeadCoreEditor
             }
             else
             {
-                // ENTERING PLAYTEST -> Snapshot current state and reset timers
                 CapturePlaytestSnapshots();
-                LevelTimer = 0f;
+                SwitchService.ResetAllSwitchesForPlaytest(enteringPlaytest: true);
+
                 IsLevelCompleted = false;
 
                 EditorViewportCamera.DestroyCamera();
@@ -1389,6 +960,107 @@ namespace DeadCoreEditor
             }
         }
 
+        public static void SetSimulationActive(bool active)
+        {
+            for (int i = 0; i < PlacedObjects.Count; i++)
+            {
+                GameObject obj = PlacedObjects[i];
+                if (obj == null) continue;
+
+                if (PlacedObjectTypes.TryGetValue(obj, out var objType) && objType == PlacedObjectType.Turbine)
+                    continue;
+
+                TurretScript[] ts = obj.GetComponentsInChildren<TurretScript>(true);
+                for (int s = 0; s < ts.Length; s++) if (ts[s] != null) ts[s].enabled = active;
+
+                Animator[] animators = obj.GetComponentsInChildren<Animator>(true);
+                for (int a = 0; a < animators.Length; a++) if (animators[a] != null) animators[a].enabled = active;
+
+                Animation[] animations = obj.GetComponentsInChildren<Animation>(true);
+                for (int a = 0; a < animations.Length; a++) if (animations[a] != null) animations[a].enabled = active;
+
+                Rigidbody[] rbs = obj.GetComponentsInChildren<Rigidbody>(true);
+                for (int r = 0; r < rbs.Length; r++)
+                {
+                    if (rbs[r] != null)
+                    {
+                        rbs[r].isKinematic = true;
+                        rbs[r].useGravity = false;
+                        rbs[r].velocity = Vector3.zero;
+                        rbs[r].angularVelocity = Vector3.zero;
+                    }
+                }
+            }
+        }
+
+        public static void SetJumperSimulationActive(bool active)
+        {
+            for (int i = 0; i < PlacedJumpers.Count; i++)
+            {
+                GameObject obj = PlacedJumpers[i];
+                if (obj == null) continue;
+
+                bool isPadEnabled = true;
+                if (JumperActiveStates.TryGetValue(obj, out bool padState)) isPadEnabled = padState;
+
+                bool shouldBeActive = active && isPadEnabled;
+
+                Jumper[] jumpers = obj.GetComponentsInChildren<Jumper>(true);
+                for (int j = 0; j < jumpers.Length; j++)
+                {
+                    if (jumpers[j] != null)
+                    {
+                        jumpers[j].enabled = shouldBeActive;
+                        if (jumpers[j].Fx != null) jumpers[j].Fx.SetActive(shouldBeActive);
+                    }
+                }
+
+                Collider[] cols = obj.GetComponentsInChildren<Collider>(true);
+                for (int c = 0; c < cols.Length; c++)
+                {
+                    if (cols[c] != null && cols[c].isTrigger && cols[c].gameObject.name != "Editor_Snapping_Proxy")
+                    {
+                        cols[c].enabled = shouldBeActive;
+                    }
+                }
+            }
+        }
+
+        public static void ApplyJumperActive(GameObject jumperObj, bool active)
+        {
+            if (jumperObj == null) return;
+            JumperActiveStates[jumperObj] = active;
+
+            bool effectiveActive = active && !IsEditModeActive;
+
+            Jumper[] jumpers = jumperObj.GetComponentsInChildren<Jumper>(true);
+            foreach (var jc in jumpers)
+            {
+                if (jc == null) continue;
+                jc.enabled = effectiveActive;
+                if (jc.Fx != null) jc.Fx.SetActive(effectiveActive);
+            }
+
+            Collider[] cols = jumperObj.GetComponentsInChildren<Collider>(true);
+            foreach (var col in cols)
+            {
+                if (col != null && col.isTrigger && col.gameObject.name != "Editor_Snapping_Proxy")
+                {
+                    col.enabled = effectiveActive;
+                }
+            }
+        }
+
+        public static void SetSnappingProxiesActive(bool active)
+        {
+            for (int i = 0; i < PlacedObjects.Count; i++)
+            {
+                if (PlacedObjects[i] == null) continue;
+                Transform proxy = PlacedObjects[i].transform.Find("Editor_Snapping_Proxy");
+                if (proxy != null) proxy.gameObject.SetActive(active);
+            }
+        }
+
         public static void ResetSession()
         {
             IsCustomSessionActive = false;
@@ -1407,6 +1079,8 @@ namespace DeadCoreEditor
             StudioGizmoController.ClearAllCachedCentroids();
 
             SceneHarvestingService.CleanupProceduralResources();
+            SkyboxControllerService.ResetToSceneDefault();
+
             DestroyAllWaypointVisuals();
 
             PlayerCameraInstance = null;
@@ -1467,49 +1141,7 @@ namespace DeadCoreEditor
 
             if (!IsEditModeActive)
             {
-                float dt = Time.deltaTime;
-
-                for (int i = 0; i < PlacedRotatingLasers.Count; i++)
-                {
-                    GameObject obj = PlacedRotatingLasers[i];
-                    if (obj == null || !obj.activeSelf) continue;
-                    float speed = LaserRotationSpeeds.ContainsKey(obj) ? LaserRotationSpeeds[obj] : ActiveLaserRotationSpeed;
-                    obj.transform.Rotate(Vector3.up, speed * dt, Space.Self);
-                }
-
-                if (player != null)
-                {
-                    CheckVoidFall(player);
-                    CheckHelixWindPushing(player, cc);
-                    CheckLaserBarriers(player, cc);
-                    CheckGoalTriggerArrival(player);
-
-                    Vector3 pPos = player.transform.position;
-                    for (int i = 0; i < PlacedCheckpoints.Count; i++)
-                    {
-                        CheckPointScript cp = PlacedCheckpoints[i];
-                        if (cp != null && cp.gameObject.activeSelf)
-                        {
-                            if ((pPos - cp.transform.position).sqrMagnitude < 9.0f)
-                            {
-                                if (ActiveCustomCheckpoint != cp)
-                                {
-                                    ActiveCustomCheckpoint = cp;
-                                }
-                            }
-                        }
-                    }
-                }
-
-                if (!IsLevelCompleted)
-                {
-                    LevelTimer += Time.deltaTime;
-                }
-                else
-                {
-                    Cursor.lockState = CursorLockMode.None;
-                    Cursor.visible = true;
-                }
+                PlaytestSimulationEngine.RunPlaytestTick(player, cc, Time.deltaTime);
             }
             else
             {
@@ -1577,7 +1209,6 @@ namespace DeadCoreEditor
                     }
                 }
 
-                // Alt + P to Unparent (standard Blender shortcut)
                 if (isAlt && Input.GetKeyDown(KeyCode.P) && GUIUtility.keyboardControl == 0)
                 {
                     UnparentSelectedObjects();
@@ -1591,7 +1222,7 @@ namespace DeadCoreEditor
         }
 
         // =========================================================================
-        // SOLID OBJECT SPAWNING: PRESERVES MESH COLLIDERS & NATIVE GAMEPLAY HITBOXES
+        // SECTION 7: OBJECT SPAWNING & REGISTRATION
         // =========================================================================
 
         public static GameObject SpawnAssetByName(string partialName, Vector3 position, Vector3 scale, Quaternion? customRotation = null)
@@ -1600,17 +1231,20 @@ namespace DeadCoreEditor
 
             string clean = partialName.Replace("_", " ").Trim().ToLower();
             string raw = partialName.Trim().ToLower();
+            string normalized = PersistenceUtility.CleanAssetName(partialName).ToLower();
 
             CatalogAsset found = AllAssets.Find(a =>
                 a.DisplayName.ToLower() == clean ||
-                (a.FilterMesh != null && a.FilterMesh.name.ToLower() == raw) ||
-                (a.SourceTemplate != null && a.SourceTemplate.name.ToLower() == raw)
+                a.DisplayName.ToLower() == normalized ||
+                (a.FilterMesh != null && (a.FilterMesh.name.ToLower() == raw || a.FilterMesh.name.ToLower() == normalized)) ||
+                (a.SourceTemplate != null && (a.SourceTemplate.name.ToLower() == raw || a.SourceTemplate.name.ToLower() == normalized))
             );
 
             if (found == null)
             {
                 found = AllAssets.Find(a =>
                     a.DisplayName.ToLower().Contains(clean) || clean.Contains(a.DisplayName.ToLower()) ||
+                    a.DisplayName.ToLower().Contains(normalized) || normalized.Contains(a.DisplayName.ToLower()) ||
                     (a.FilterMesh != null && a.FilterMesh.name.ToLower().Contains(raw))
                 );
             }
@@ -1623,11 +1257,19 @@ namespace DeadCoreEditor
                 else if (clean.Contains("spotlight") || clean.Contains("light")) found = AllAssets.Find(a => a.IsSpotlight);
                 else if (clean.Contains("rotating") && clean.Contains("laser")) found = AllAssets.Find(a => a.IsRotatingLaser);
                 else if (clean.Contains("laser")) found = AllAssets.Find(a => a.IsLaser);
-                else if (clean.Contains("platform") || clean.Contains("floor")) found = AllAssets.Find(a => a.DisplayName.ToLower().Contains("platform") || a.DisplayName.ToLower().Contains("floor"));
+                else if (clean.Contains("platform") || clean.Contains("floor") || clean.Contains("plateforme") || clean.Contains("16x16"))
+                    found = AllAssets.Find(a => a.DisplayName.ToLower().Contains("platform") || a.DisplayName.ToLower().Contains("floor") || a.DisplayName.ToLower().Contains("16x16"));
                 else if (clean.Contains("jumper")) found = AllAssets.Find(a => a.IsJumper);
                 else if (clean.Contains("checkpoint")) found = AllAssets.Find(a => a.IsCheckPoint && !a.IsSpawnGate && !a.IsGoalGate);
                 else if (clean.Contains("turret")) found = AllAssets.Find(a => a.IsTurret);
+                else if (clean.Contains("skybox") || clean.Contains("sky")) found = AllAssets.Find(a => a.IsSkybox);
                 else if (clean.Contains("helix")) found = AllAssets.Find(a => a.IsHelix);
+                else if (clean.Contains("switch")) found = AllAssets.Find(a => a.IsSwitch);
+            }
+
+            if (found == null)
+            {
+                found = AllAssets.Find(a => !a.IsPrefabInstance && (a.Traits & AssetTrait.Architecture) != 0);
             }
 
             if (found != null) return SpawnCatalogObject(found, position, scale, customRotation);
@@ -1641,9 +1283,8 @@ namespace DeadCoreEditor
 
         public static GameObject SpawnCatalogObject(CatalogAsset asset, Vector3 position, Vector3 scale, Quaternion? customRotation = null)
         {
-            if (asset == null || asset.SourceTemplate == null) return null;
+            if (asset == null) return null;
 
-            // Handle Custom Prefab Instance Spawning
             if (asset.IsPrefabInstance && asset.PrefabTemplate != null)
             {
                 Quaternion rot = customRotation ?? GetCurrentCombinedRotation(asset);
@@ -1656,15 +1297,57 @@ namespace DeadCoreEditor
             obj.name = "Custom_" + asset.DisplayName.Replace(" ", "_");
             obj.transform.position = position;
             obj.transform.rotation = customRotation ?? GetCurrentCombinedRotation(asset);
-            obj.transform.localScale = scale; // Applies true 3D scale (X, Y, Z)
-            obj.SetActive(true);
+            obj.transform.localScale = scale;
+            obj.isStatic = false;
+
+            // 1. Remove native LODGroups on architecture so they never cull in flycam
+            LODGroup[] lods = obj.GetComponentsInChildren<LODGroup>(true);
+            for (int l = 0; l < lods.Length; l++)
+            {
+                if (lods[l] != null) GameObject.DestroyImmediate(lods[l]);
+            }
+
+            // 2. Strip stray rigidbodies and native animations ONLY from static architecture (PRESERVE checkpoints, jumpers, turrets, turbines)
+            if (!asset.IsHelix && !asset.IsTurret && !asset.IsJumper && !asset.IsCheckPoint && !asset.IsSpawnGate && !asset.IsGoalGate)
+            {
+                Rigidbody[] strayRbs = obj.GetComponentsInChildren<Rigidbody>(true);
+                for (int r = 0; r < strayRbs.Length; r++)
+                {
+                    if (strayRbs[r] != null) GameObject.DestroyImmediate(strayRbs[r]);
+                }
+
+                Animation[] strayAnims = obj.GetComponentsInChildren<Animation>(true);
+                for (int a = 0; a < strayAnims.Length; a++)
+                {
+                    if (strayAnims[a] != null) GameObject.DestroyImmediate(strayAnims[a]);
+                }
+
+                Animator[] strayAnimators = obj.GetComponentsInChildren<Animator>(true);
+                for (int a = 0; a < strayAnimators.Length; a++)
+                {
+                    if (strayAnimators[a] != null) GameObject.DestroyImmediate(strayAnimators[a]);
+                }
+            }
+
+            // 3. Ensure all renderers are enabled and on Layer 0
+            Renderer[] allRends = obj.GetComponentsInChildren<Renderer>(true);
+            for (int r = 0; r < allRends.Length; r++)
+            {
+                if (allRends[r] != null)
+                {
+                    allRends[r].enabled = true;
+                    if (allRends[r].gameObject.name != "Editor_Snapping_Proxy")
+                        allRends[r].gameObject.layer = 0;
+                }
+            }
 
             bool isHazard = asset.IsLaser || asset.IsRotatingLaser;
             bool isGate = asset.IsCheckPoint || asset.IsSpawnGate || asset.IsGoalGate;
-            bool isLight = asset.IsSpotlight || asset.IsSunlight;
+            bool isLight = asset.IsSpotlight || asset.IsSunlight || asset.IsSkybox;
             bool isHelix = asset.IsHelix;
             bool isTurret = asset.IsTurret;
             bool isJumper = asset.IsJumper;
+            bool isSwitch = asset.IsSwitch;
 
             Collider[] existingCols = obj.GetComponentsInChildren<Collider>(true);
             bool hasSolidCollider = false;
@@ -1676,31 +1359,33 @@ namespace DeadCoreEditor
 
                 c.enabled = true;
 
-                if (isHazard || isLight || isGate)
+                if (isHazard || isLight)
                 {
                     c.isTrigger = true;
+                }
+                else if (isGate)
+                {
+                    // For gates: preserve solid frame colliders; checkpoint trigger handled explicitly below
+                    if (!c.isTrigger) hasSolidCollider = true;
                 }
                 else if (isHelix)
                 {
                     HelixPushingZone zone = c.GetComponent<HelixPushingZone>() ?? c.GetComponentInParent<HelixPushingZone>();
                     string cName = c.gameObject.name.ToLower();
 
-                    // Keep pushing zones AND blade/kill triggers as triggers
                     if (zone != null || cName.Contains("zone") || cName.Contains("push") ||
                         cName.Contains("vent") || cName.Contains("wind") || cName.Contains("kill") ||
                         cName.Contains("death") || cName.Contains("blade") || cName.Contains("hazard"))
                     {
                         c.isTrigger = true;
                     }
-                    else
+                    else if (!c.isTrigger)
                     {
-                        // Keep the native housing solid without breaking native triggers
-                        if (!c.isTrigger) hasSolidCollider = true;
+                        hasSolidCollider = true;
                     }
                 }
-                else if (isJumper || isTurret)
+                else if (isJumper || isTurret || isSwitch)
                 {
-                    // Leave native trigger zones and solid base switches untouched
                     if (!c.isTrigger) hasSolidCollider = true;
                 }
                 else
@@ -1710,7 +1395,6 @@ namespace DeadCoreEditor
                 }
             }
 
-            // ACCURATE GAMEPLAY MESH COLLIDERS FOR PLATFORMS/ARCHITECTURE
             if (!hasSolidCollider && !isHazard && !isGate && !isLight && !isHelix && !isTurret && !isJumper)
             {
                 MeshFilter[] mfs = obj.GetComponentsInChildren<MeshFilter>(true);
@@ -1750,7 +1434,8 @@ namespace DeadCoreEditor
                 ApplyGateVisualTint(obj, new Color(0.1f, 0.65f, 1.0f));
             }
 
-            if (asset.IsCheckPoint)
+            // Universal Checkpoint Setup for all gates (CLASS1 COMPATIBLE)
+            if (asset.IsCheckPoint || asset.IsSpawnGate || asset.IsGoalGate)
             {
                 CheckPointScript cp = obj.GetComponentInChildren<CheckPointScript>();
                 if (cp != null)
@@ -1766,7 +1451,7 @@ namespace DeadCoreEditor
                         cp._spawnPoint = spObj.transform;
                     }
 
-                    Collider col = obj.GetComponentInChildren<Collider>();
+                    Collider col = cp.GetComponent<Collider>() ?? obj.GetComponentInChildren<Collider>();
                     if (col != null) col.isTrigger = true;
                 }
             }
@@ -1799,11 +1484,24 @@ namespace DeadCoreEditor
                     ApplyLightConfig(obj, PlacedLights[obj]);
                 }
             }
+            else if (asset.IsSkybox)
+            {
+                obj.name = "Custom_Skybox_Controller";
+                SkyboxControllerService.Initialize(obj, SkyboxControllerService.ActiveConfig);
+
+                obj.layer = 0;
+                BoxCollider bc = obj.GetComponent<BoxCollider>();
+                if (bc == null) bc = obj.AddComponent<BoxCollider>();
+                bc.size = new Vector3(2.5f, 2.5f, 2.5f);
+                bc.isTrigger = true;
+            }
 
             if (asset.IsHelix) ApplyTurbineSpeed(obj, ActiveTurbineSpeed);
             if (asset.IsTurret) ApplyTurretSettings(obj, ActiveTurretFireDelay, 1500f);
             if (asset.IsJumper) ApplyJumperForce(obj, ActiveJumperForce);
+            if (asset.IsSwitch) SwitchService.ApplySwitchConfig(obj, new SwitchConfig());
 
+            obj.SetActive(true);
             AttachEditorSnappingProxy(obj);
             return obj;
         }
@@ -1812,26 +1510,25 @@ namespace DeadCoreEditor
         {
             return SpawnCatalogObject(asset, position, Vector3.one * uniformScale, customRotation);
         }
+
         public static void AttachEditorSnappingProxy(GameObject obj)
         {
             if (obj == null) return;
 
             Transform old = obj.transform.Find("Editor_Snapping_Proxy");
-            if (old != null) GameObject.Destroy(old.gameObject); // Safe destroy
+            if (old != null) GameObject.Destroy(old.gameObject);
 
             GameObject proxyObj = new GameObject("Editor_Snapping_Proxy");
             proxyObj.transform.SetParent(obj.transform, false);
             proxyObj.transform.localPosition = Vector3.zero;
             proxyObj.transform.localRotation = Quaternion.identity;
             proxyObj.transform.localScale = Vector3.one;
-            proxyObj.layer = 2; // Layer 2: Ignore Raycast
+            proxyObj.layer = 2;
 
             Bounds proxyB = PlacementHologramController.CalculateOptimizedProxyBounds(obj);
             BoxCollider bc = proxyObj.AddComponent<BoxCollider>();
             bc.isTrigger = true;
             bc.center = proxyB.center;
-
-            // Enforce minimum 0.2m thickness on all 3 axes to prevent PhysX zero-volume engine crash
             bc.size = new Vector3(
                 Mathf.Max(0.2f, Mathf.Abs(proxyB.size.x)),
                 Mathf.Max(0.2f, Mathf.Abs(proxyB.size.y)),
@@ -1839,21 +1536,27 @@ namespace DeadCoreEditor
             );
         }
 
-        // =========================================================================
-        // ENTITY REGISTRATION & HIERARCHY TRACKING
-        // =========================================================================
-
         public static void RegisterPlacedObject(GameObject obj)
         {
             if (obj == null || PlacedObjects.Contains(obj)) return;
 
             PlacedObjects.Add(obj);
+
+            PlaytestSnapshots[obj] = new PlaytestTransformSnapshot
+            {
+                Position = obj.transform.position,
+                Rotation = obj.transform.rotation,
+                LocalScale = obj.transform.localScale
+            };
+
             string low = obj.name.ToLower();
             PlacedObjectType identifiedType = PlacedObjectType.Generic;
 
             CheckPointScript cp = obj.GetComponentInChildren<CheckPointScript>();
             if (cp != null && !PlacedCheckpoints.Contains(cp))
+            {
                 PlacedCheckpoints.Add(cp);
+            }
 
             if (low.Contains("jumper"))
             {
@@ -1865,17 +1568,17 @@ namespace DeadCoreEditor
                 identifiedType = PlacedObjectType.Turbine;
                 if (!PlacedTurbines.Contains(obj)) PlacedTurbines.Add(obj);
                 Helix h = obj.GetComponentInChildren<Helix>();
-                if (h != null) _cachedHelixScripts[obj] = h;
+                if (h != null) CachedHelixScripts[obj] = h;
             }
             else if (low.Contains("turret") || obj.GetComponentInChildren<TurretScript>() != null)
             {
                 identifiedType = PlacedObjectType.Turret;
             }
-            else if (low.Contains("spawn"))
+            else if (low.Contains("spawn") || low.Contains("entry"))
             {
                 identifiedType = PlacedObjectType.SpawnGate;
             }
-            else if (low.Contains("goal"))
+            else if (low.Contains("goal") || low.Contains("finish"))
             {
                 identifiedType = PlacedObjectType.GoalGate;
                 PlacedGoalGate = obj;
@@ -1887,6 +1590,10 @@ namespace DeadCoreEditor
             else if (low.Contains("spotlight"))
             {
                 identifiedType = PlacedObjectType.Spotlight;
+            }
+            else if (low.Contains("skybox"))
+            {
+                identifiedType = PlacedObjectType.SkyboxController;
             }
             else if (low.Contains("rotating_laser") || low.Contains("rotating laser"))
             {
@@ -1926,7 +1633,13 @@ namespace DeadCoreEditor
                     PlacedLaserColliders.Add(bc);
                 }
             }
-            else if (cp != null)
+            else if (low.Contains("switch") || low.Contains("interupt") || obj.GetComponentInChildren<Interuptor>() != null)
+            {
+                identifiedType = PlacedObjectType.Switch;
+                if (!SwitchService.PlacedSwitches.ContainsKey(obj))
+                    SwitchService.PlacedSwitches[obj] = new SwitchConfig();
+            }
+            else if (cp != null || low.Contains("checkpoint"))
             {
                 identifiedType = PlacedObjectType.Checkpoint;
             }
@@ -1950,13 +1663,14 @@ namespace DeadCoreEditor
             PlacedObjectTypes.Remove(target);
             PlacedParentChildCounts.Remove(target);
             SelectedObjects.Remove(target);
+            EntityRegistry.Remove(target);
+            PlaytestSnapshots.Remove(target);
 
             if (target.transform.parent != null)
                 RecalculateParentChildCount(target.transform.parent.gameObject);
 
-            if (PlacedLights.ContainsKey(target)) PlacedLights.Remove(target);
-
-            if (MotionPaths.ContainsKey(target)) MotionPaths.Remove(target);
+            PlacedLights.Remove(target);
+            MotionPaths.Remove(target);
             DestroyWaypointVisuals(target);
 
             if (PathEditTarget == target) PathEditTarget = null;
@@ -1966,7 +1680,7 @@ namespace DeadCoreEditor
 
             PlacedJumpers.Remove(target);
             PlacedTurbines.Remove(target);
-            _cachedHelixScripts.Remove(target);
+            CachedHelixScripts.Remove(target);
             PlacedRotatingLasers.Remove(target);
 
             int laserIdx = PlacedLaserBarriers.IndexOf(target);
@@ -1975,6 +1689,8 @@ namespace DeadCoreEditor
                 PlacedLaserBarriers.RemoveAt(laserIdx);
                 if (laserIdx < PlacedLaserColliders.Count) PlacedLaserColliders.RemoveAt(laserIdx);
             }
+
+            SwitchService.PlacedSwitches.Remove(target);
 
             if (PlacedGoalGate == target) PlacedGoalGate = null;
 
@@ -1989,14 +1705,9 @@ namespace DeadCoreEditor
         {
             if (target != null)
             {
+                EditorEntityData dataSnapshot = ExtractEntityData(target);
                 RemovePlacedObjectFromTracking(target);
                 target.SetActive(false);
-
-                float param = 0f;
-                if (JumperForces.ContainsKey(target)) param = JumperForces[target];
-                else if (TurbineSpeeds.ContainsKey(target)) param = TurbineSpeeds[target];
-                else if (TurretFireDelays.ContainsKey(target)) param = TurretFireDelays[target];
-                else if (PlacedLights.ContainsKey(target)) param = PlacedLights[target].Intensity;
 
                 UndoHistory.Push(new HistoryRecord
                 {
@@ -2005,8 +1716,8 @@ namespace DeadCoreEditor
                     AssetName = target.name.StartsWith("Custom_") ? target.name.Substring(7) : target.name,
                     Position = target.transform.position,
                     Rotation = target.transform.rotation,
-                    ScaleVector = target.transform.localScale, // Saves full Vector3 scale
-                    CustomParameter = param
+                    ScaleVector = target.transform.localScale,
+                    EntityDataSnapshot = dataSnapshot
                 });
                 RedoHistory.Clear();
 
@@ -2024,6 +1735,7 @@ namespace DeadCoreEditor
             PlacedObjectTypes.Clear();
             PlacedParentChildCounts.Clear();
             PlacedLights.Clear();
+            EntityRegistry.Clear();
             RepositionTarget = null;
             LastPlacedObject = null;
             SelectedObjects.Clear();
@@ -2031,12 +1743,13 @@ namespace DeadCoreEditor
 
             PlacedJumpers.Clear();
             PlacedTurbines.Clear();
-            _cachedHelixScripts.Clear();
+            CachedHelixScripts.Clear();
             PlacedLaserBarriers.Clear();
             PlacedLaserColliders.Clear();
             PlacedRotatingLasers.Clear();
             PlacedCheckpoints.Clear();
             PlacedGoalGate = null;
+            ActiveCustomCheckpoint = null;
 
             JumperForces.Clear();
             TurbineSpeeds.Clear();
@@ -2045,6 +1758,7 @@ namespace DeadCoreEditor
             MotionPaths.Clear();
             DestroyAllWaypointVisuals();
             StudioGizmoController.ClearAllCachedCentroids();
+            SwitchService.PlacedSwitches.Clear();
 
             PathEditTarget = null;
             ParentingChildTarget = null;
@@ -2084,7 +1798,7 @@ namespace DeadCoreEditor
         }
 
         // =========================================================================
-        // UNDO / REDO ENGINE
+        // SECTION 8: UNDO / REDO SYSTEM
         // =========================================================================
 
         public static void PerformUndo()
@@ -2113,6 +1827,8 @@ namespace DeadCoreEditor
                 {
                     record.TargetObject.SetActive(true);
                     RegisterPlacedObject(record.TargetObject);
+                    if (record.EntityDataSnapshot != null)
+                        ApplyEntityData(record.TargetObject, record.EntityDataSnapshot);
                 }
                 RedoHistory.Push(record);
                 ShowNotification($"Restored deleted {record.AssetName}");
@@ -2163,6 +1879,8 @@ namespace DeadCoreEditor
                 {
                     record.TargetObject.SetActive(true);
                     RegisterPlacedObject(record.TargetObject);
+                    if (record.EntityDataSnapshot != null)
+                        ApplyEntityData(record.TargetObject, record.EntityDataSnapshot);
                 }
                 UndoHistory.Push(record);
                 ShowNotification($"Redid placement of {record.AssetName}");
@@ -2208,7 +1926,7 @@ namespace DeadCoreEditor
         }
 
         // =========================================================================
-        // COMPONENT SETTINGS APPLIERS
+        // SECTION 9: ENTITY APPLIERS & SETTINGS
         // =========================================================================
 
         public static void ApplyJumperForce(GameObject jumperObj, float force)
@@ -2243,7 +1961,7 @@ namespace DeadCoreEditor
             {
                 h.enabled = true;
                 h._maximumVelocity = speed * 20f;
-                _cachedHelixScripts[turbineObj] = h;
+                CachedHelixScripts[turbineObj] = h;
 
                 if (h._hingeJoint != null)
                 {
@@ -2288,10 +2006,6 @@ namespace DeadCoreEditor
             }
         }
 
-        // =========================================================================
-        // HDRP VOLUMETRIC LIGHTING & DIRECTIONAL SUN CONTROLLER
-        // =========================================================================
-
         public static void ApplyLightConfig(GameObject lightObj, LightConfig cfg)
         {
             if (lightObj == null || cfg == null) return;
@@ -2320,11 +2034,7 @@ namespace DeadCoreEditor
                     ApplyHDRPVolumetricSettings(targetSun.gameObject, cfg.VolumetricIntensity, sunLux, cfg.Color);
                 }
 
-                if (l != null && targetSun != l)
-                {
-                    l.enabled = false;
-                }
-
+                if (l != null && targetSun != l) l.enabled = false;
                 StudioGizmoController.AttachSunVisualWidget(lightObj);
             }
             else
@@ -2395,9 +2105,7 @@ namespace DeadCoreEditor
                     SetFieldOrProp(type, hdLight, "m_UseColorTemperature", false);
                     SetFieldOrProp(type, hdLight, "color", lightColor);
                     SetFieldOrProp(type, hdLight, "colorFilter", lightColor);
-
                     SetFieldOrProp(type, hdLight, "intensity", physicalIntensity);
-
                     SetFieldOrProp(type, hdLight, "volumetricDimmer", dimmer);
                     SetFieldOrProp(type, hdLight, "m_VolumetricDimmer", dimmer);
                     SetFieldOrProp(type, hdLight, "affectsVolumetric", enableVol);
@@ -2424,10 +2132,7 @@ namespace DeadCoreEditor
                     return;
                 }
                 var field = type.GetField(name, System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-                if (field != null)
-                {
-                    field.SetValue(target, val);
-                }
+                if (field != null) field.SetValue(target, val);
             }
             catch { }
         }
@@ -2482,6 +2187,16 @@ namespace DeadCoreEditor
             {
                 if (lights[i] != null) lights[i].color = tintColor;
             }
+
+            TrailRenderer[] trails = gateObj.GetComponentsInChildren<TrailRenderer>(true);
+            for (int i = 0; i < trails.Length; i++)
+            {
+                if (trails[i] != null)
+                {
+                    trails[i].startColor = tintColor;
+                    trails[i].endColor = tintColor;
+                }
+            }
         }
 
         public static void StripParticlesAndLights(GameObject root)
@@ -2489,8 +2204,7 @@ namespace DeadCoreEditor
             if (root == null) return;
 
             Jumper jc = root.GetComponentInChildren<Jumper>();
-            if (jc != null && jc.Fx != null)
-                GameObject.DestroyImmediate(jc.Fx);
+            if (jc != null && jc.Fx != null) GameObject.DestroyImmediate(jc.Fx);
 
             Component[] components = root.GetComponentsInChildren<Component>(true);
             foreach (var comp in components)
@@ -2533,11 +2247,14 @@ namespace DeadCoreEditor
 
                 Transform sunWidget = obj.transform.Find("Sun_Editor_Widget");
                 if (sunWidget != null) sunWidget.gameObject.SetActive(visible);
+
+                Transform skyWidget = obj.transform.Find("Skybox_Editor_Widget");
+                if (skyWidget != null) skyWidget.gameObject.SetActive(visible);
             }
         }
 
         // =========================================================================
-        // MOTION PATHS & FULLY MOVEABLE IN-SCENE WAYPOINTS
+        // SECTION 10: WAYPOINTS & MOTION PATHS
         // =========================================================================
 
         public static bool IsWaypointMarker(GameObject go, out GameObject ownerObj, out bool isPointB)
@@ -2599,22 +2316,13 @@ namespace DeadCoreEditor
         {
             if (obj == null) return;
 
-            if (WaypointMarkersA.TryGetValue(obj, out GameObject a) && a != null)
-            {
-                GameObject.DestroyImmediate(a);
-            }
+            if (WaypointMarkersA.TryGetValue(obj, out GameObject a) && a != null) GameObject.DestroyImmediate(a);
             WaypointMarkersA.Remove(obj);
 
-            if (WaypointMarkersB.TryGetValue(obj, out GameObject b) && b != null)
-            {
-                GameObject.DestroyImmediate(b);
-            }
+            if (WaypointMarkersB.TryGetValue(obj, out GameObject b) && b != null) GameObject.DestroyImmediate(b);
             WaypointMarkersB.Remove(obj);
 
-            if (WaypointLines.TryGetValue(obj, out LineRenderer l) && l != null)
-            {
-                GameObject.DestroyImmediate(l.gameObject);
-            }
+            if (WaypointLines.TryGetValue(obj, out LineRenderer l) && l != null) GameObject.DestroyImmediate(l.gameObject);
             WaypointLines.Remove(obj);
         }
 
@@ -2637,128 +2345,6 @@ namespace DeadCoreEditor
             foreach (var kvp in WaypointLines) if (kvp.Value != null) kvp.Value.gameObject.SetActive(false);
         }
 
-        private static void UpdateObjectMotionPaths(GameObject player, CharacterController cc)
-        {
-            if (MotionPaths.Count == 0)
-            {
-                HideAllWaypointMarkers();
-                return;
-            }
-
-            bool canPushPlayer = (player != null && !IsEditModeActive && cc != null && cc.isGrounded);
-            Vector3 playerFeetPos = canPushPlayer ? player.transform.position : Vector3.zero;
-            float dt = Time.deltaTime;
-
-            foreach (var kvp in MotionPaths)
-            {
-                GameObject obj = kvp.Key;
-                ObjectMotionPath path = kvp.Value;
-                if (obj == null || !obj.activeSelf || !path.IsActive) continue;
-
-                if (IsEditModeActive)
-                {
-                    if (SelectedObject != null && IsWaypointMarker(SelectedObject, out GameObject ownerB, out bool isB) && ownerB == obj)
-                    {
-                        if (isB)
-                        {
-                            path.PointB = SelectedObject.transform.position;
-                        }
-                        else
-                        {
-                            path.PointA = SelectedObject.transform.position;
-                            obj.transform.position = path.PointA;
-                        }
-                    }
-                    else if (SelectedObject == obj)
-                    {
-                        if (obj.transform.position != path.PointA)
-                        {
-                            Vector3 delta = obj.transform.position - path.PointA;
-                            path.PointA = obj.transform.position;
-                            path.PointB += delta;
-                        }
-                    }
-                    else
-                    {
-                        obj.transform.position = path.PointA;
-                    }
-
-                    UpdateWaypointVisuals(obj, path);
-                    continue;
-                }
-
-                HideWaypointVisual(obj);
-
-                // 1. Detect if player is standing on this platform
-                bool playerOnPlatform = false;
-                if (canPushPlayer && obj != null)
-                {
-                    if (path.CachedColliders == null || path.CachedColliders.Length == 0)
-                        path.CachedColliders = obj.GetComponentsInChildren<Collider>(true);
-
-                    for (int c = 0; c < path.CachedColliders.Length; c++)
-                    {
-                        Collider col = path.CachedColliders[c];
-                        if (col == null || !col.gameObject.activeInHierarchy || col.isTrigger) continue;
-
-                        try
-                        {
-                            if (col.bounds.Contains(playerFeetPos + Vector3.down * 0.2f))
-                            {
-                                playerOnPlatform = true;
-                                break;
-                            }
-                        }
-                        catch { }
-                    }
-                }
-
-                // 2. Continuous rotation & player tangential momentum
-                if (Mathf.Abs(path.RotationSpeed) > 0.01f)
-                {
-                    Vector3 localAxis = path.GetEffectiveLocalAxis(obj.transform);
-
-                    float rotAngle = path.RotationSpeed * dt;
-                    Vector3 worldAxis = obj.transform.TransformDirection(localAxis);
-                    Quaternion rotDelta = Quaternion.AngleAxis(rotAngle, worldAxis);
-
-                    // If player is on the platform, rotate them with the surface
-                    if (playerOnPlatform)
-                    {
-                        Vector3 offset = player.transform.position - obj.transform.position;
-                        Vector3 newOffset = rotDelta * offset;
-                        Vector3 rotPush = newOffset - offset;
-                        cc.Move(rotPush);
-
-                        // If the axis has a vertical (Y) component, rotate the player view accordingly
-                        if (Mathf.Abs(worldAxis.y) > 0.25f)
-                        {
-                            float yawAngle = rotAngle * worldAxis.y;
-                            player.transform.rotation = Quaternion.AngleAxis(yawAngle, Vector3.up) * player.transform.rotation;
-                        }
-                    }
-
-                    obj.transform.Rotate(localAxis, rotAngle, Space.Self);
-                }
-
-                // 3. Linear movement between Point A and Point B
-                float dist = path.TotalDistance;
-                if (dist < 0.05f || path.Speed < 0.01f) continue; // Standalone rotation mode
-
-                float speed = Mathf.Max(0.1f, path.Speed);
-                float duration = dist / speed;
-                float t = Mathf.PingPong(LevelTimer / duration, 1.0f);
-                Vector3 targetPos = path.EvaluatePosition(t);
-                Vector3 deltaPos = targetPos - obj.transform.position;
-
-                obj.transform.position = targetPos;
-
-                if (playerOnPlatform && deltaPos.sqrMagnitude > 0.00001f)
-                {
-                    cc.Move(deltaPos);
-                }
-            }
-        }
         public static void UpdateWaypointVisuals(GameObject obj, ObjectMotionPath path)
         {
             if (obj == null || path == null) return;
@@ -2773,9 +2359,7 @@ namespace DeadCoreEditor
                 if (sc != null) { sc.isTrigger = false; sc.radius = 0.55f; }
 
                 markerA.transform.localScale = Vector3.one * 0.95f;
-                Material ma = new Material(Shader.Find("Unlit/Color") ?? Shader.Find("Sprites/Default"));
-                ma.color = new Color(0.2f, 1f, 0.4f, 1f);
-                if (ma.HasProperty("_EmissionColor")) { ma.SetColor("_EmissionColor", new Color(0.2f, 1f, 0.4f) * 2f); ma.EnableKeyword("_EMISSION"); }
+                Material ma = GizmoMaterialCache.CreateSolidMaterial(new Color(0.2f, 1f, 0.4f, 1f));
                 markerA.GetComponent<Renderer>().sharedMaterial = ma;
                 markerA.GetComponent<Renderer>().shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
 
@@ -2792,9 +2376,7 @@ namespace DeadCoreEditor
                 if (sc != null) { sc.isTrigger = false; sc.radius = 0.55f; }
 
                 markerB.transform.localScale = Vector3.one * 0.95f;
-                Material mb = new Material(Shader.Find("Unlit/Color") ?? Shader.Find("Sprites/Default"));
-                mb.color = new Color(1f, 0.65f, 0.1f, 1f);
-                if (mb.HasProperty("_EmissionColor")) { mb.SetColor("_EmissionColor", new Color(1f, 0.65f, 0.1f) * 2f); mb.EnableKeyword("_EMISSION"); }
+                Material mb = GizmoMaterialCache.CreateSolidMaterial(new Color(1f, 0.65f, 0.1f, 1f));
                 markerB.GetComponent<Renderer>().sharedMaterial = mb;
                 markerB.GetComponent<Renderer>().shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
 
@@ -2809,8 +2391,7 @@ namespace DeadCoreEditor
                 lr.positionCount = 2;
                 lr.startWidth = 0.15f;
                 lr.endWidth = 0.15f;
-                Material ml = new Material(Shader.Find("Unlit/Color") ?? Shader.Find("Sprites/Default"));
-                ml.color = new Color(0.3f, 0.85f, 1f, 0.8f);
+                Material ml = GizmoMaterialCache.CreateSolidMaterial(new Color(0.3f, 0.85f, 1f, 0.8f));
                 lr.sharedMaterial = ml;
                 lr.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
 
@@ -2835,153 +2416,308 @@ namespace DeadCoreEditor
             if (WaypointLines.TryGetValue(obj, out LineRenderer l) && l != null) l.gameObject.SetActive(false);
         }
 
-        private static void CheckGoalTriggerArrival(GameObject player)
+        private static void UpdateObjectMotionPaths(GameObject player, CharacterController cc)
         {
-            if (IsLevelCompleted || PlacedGoalGate == null || !PlacedGoalGate.activeSelf) return;
-
-            Vector3 pPos = player.transform.position;
-            Vector3 gPos = PlacedGoalGate.transform.position;
-
-            float horizDistSq = (pPos.x - gPos.x) * (pPos.x - gPos.x) + (pPos.z - gPos.z) * (pPos.z - gPos.z);
-            float vertDist = Mathf.Abs(pPos.y - gPos.y);
-
-            if (horizDistSq < 10.24f && vertDist < 2.5f)
+            if (MotionPaths.Count == 0)
             {
-                IsLevelCompleted = true;
-                Cursor.lockState = CursorLockMode.None;
-                Cursor.visible = true;
+                HideAllWaypointMarkers();
+                return;
             }
-        }
 
-        private static void CheckHelixWindPushing(GameObject player, CharacterController cc)
-        {
-            if (PlacedTurbines.Count == 0 || cc == null) return;
-
-            Vector3 pPos = player.transform.position + Vector3.up * 1.0f;
+            bool canPushPlayer = (player != null && !IsEditModeActive && cc != null && cc.isGrounded);
+            Vector3 playerFeetPos = canPushPlayer ? player.transform.position : Vector3.zero;
             float dt = Time.deltaTime;
 
-            for (int i = 0; i < PlacedTurbines.Count; i++)
+            foreach (var kvp in MotionPaths)
             {
-                GameObject obj = PlacedTurbines[i];
-                if (obj == null || !obj.activeSelf) continue;
+                GameObject obj = kvp.Key;
+                ObjectMotionPath path = kvp.Value;
+                if (obj == null || !obj.activeSelf || !path.IsActive) continue;
 
-                float speed = TurbineSpeeds.ContainsKey(obj) ? TurbineSpeeds[obj] : ActiveTurbineSpeed;
-
-                if (!_cachedHelixScripts.TryGetValue(obj, out Helix helixScript) || helixScript == null)
+                if (IsEditModeActive)
                 {
-                    helixScript = obj.GetComponentInChildren<Helix>();
-                    _cachedHelixScripts[obj] = helixScript;
-                }
-
-                // NOTE: DO NOT call transform.Rotate here! 
-                // DeadCore's native Helix component rotates the blade automatically via its HingeJoint.
-
-                Vector3 hPos = obj.transform.position;
-                Vector3 forward = obj.transform.forward;
-                Vector3 toPlayer = pPos - hPos;
-
-                float forwardDist = Vector3.Dot(toPlayer, forward);
-                float windRange = 16.0f * obj.transform.localScale.z;
-
-                if (forwardDist > 0.2f && forwardDist < windRange)
-                {
-                    Vector3 perp = toPlayer - forward * forwardDist;
-                    float radius = 3.0f * obj.transform.localScale.x;
-
-                    if (perp.sqrMagnitude < radius * radius)
+                    if (SelectedObject != null && IsWaypointMarker(SelectedObject, out GameObject ownerB, out bool isB) && ownerB == obj)
                     {
-                        Vector3 pushDir = forward;
-                        pushDir.y = Mathf.Max(0.22f, pushDir.y);
-                        pushDir.Normalize();
-
-                        float pushSpeed = Mathf.Lerp(speed, speed * 0.25f, forwardDist / windRange);
-                        cc.Move(pushDir * pushSpeed * dt);
-                    }
-                }
-            }
-        }
-
-        private static void CheckLaserBarriers(GameObject player, CharacterController cc)
-        {
-            if (PlacedLaserBarriers.Count == 0 || cc == null) return;
-
-            Vector3 playerCenter = player.transform.position + cc.center;
-            float playerRadius = cc.radius + 0.1f;
-            float playerHalfHeight = cc.height * 0.5f;
-
-            for (int i = 0; i < PlacedLaserBarriers.Count; i++)
-            {
-                GameObject obj = PlacedLaserBarriers[i];
-                if (obj == null || !obj.activeSelf) continue;
-
-                if ((obj.transform.position - playerCenter).sqrMagnitude > 2500f) continue;
-
-                BoxCollider bc = (i < PlacedLaserColliders.Count) ? PlacedLaserColliders[i] : null;
-                if (bc == null || !bc.gameObject.activeInHierarchy)
-                {
-                    bc = obj.transform.Find("Beam")?.GetComponent<BoxCollider>() ?? obj.GetComponent<BoxCollider>();
-                    if (bc == null)
-                    {
-                        var allCols = obj.GetComponentsInChildren<BoxCollider>(true);
-                        for (int c = 0; c < allCols.Length; c++)
+                        if (isB) path.PointB = SelectedObject.transform.position;
+                        else
                         {
-                            if (allCols[c].gameObject.name != "Editor_Snapping_Proxy")
+                            path.PointA = SelectedObject.transform.position;
+                            obj.transform.position = path.PointA;
+                        }
+                    }
+                    else if (SelectedObject == obj)
+                    {
+                        if (obj.transform.position != path.PointA)
+                        {
+                            Vector3 delta = obj.transform.position - path.PointA;
+                            path.PointA = obj.transform.position;
+                            path.PointB += delta;
+                        }
+                    }
+                    else
+                    {
+                        if (path.PointA != Vector3.zero || obj.transform.position == Vector3.zero)
+                            obj.transform.position = path.PointA;
+                    }
+
+                    UpdateWaypointVisuals(obj, path);
+                    continue;
+                }
+
+                HideWaypointVisual(obj);
+
+                bool playerOnPlatform = false;
+                if (canPushPlayer && obj != null)
+                {
+                    if (path.CachedColliders == null || path.CachedColliders.Length == 0)
+                        path.CachedColliders = obj.GetComponentsInChildren<Collider>(true);
+
+                    for (int c = 0; c < path.CachedColliders.Length; c++)
+                    {
+                        Collider col = path.CachedColliders[c];
+                        if (col == null || !col.gameObject.activeInHierarchy || col.isTrigger) continue;
+
+                        try
+                        {
+                            if (col.bounds.Contains(playerFeetPos + Vector3.down * 0.2f))
                             {
-                                bc = allCols[c];
+                                playerOnPlatform = true;
                                 break;
                             }
                         }
+                        catch { }
                     }
-                    if (i < PlacedLaserColliders.Count) PlacedLaserColliders[i] = bc;
                 }
-                if (bc == null) continue;
 
-                Vector3 localPlayer = bc.transform.InverseTransformPoint(playerCenter);
-                Vector3 boxSize = bc.size;
-                Vector3 boxCenter = bc.center;
-
-                float dx = Mathf.Abs(localPlayer.x - boxCenter.x);
-                float dy = Mathf.Abs(localPlayer.y - boxCenter.y);
-                float dz = Mathf.Abs(localPlayer.z - boxCenter.z);
-
-                Vector3 lossy = bc.transform.lossyScale;
-                float limitX = (boxSize.x * 0.5f) + (playerRadius / Mathf.Max(0.001f, lossy.x));
-                float limitY = (boxSize.y * 0.5f) + (playerHalfHeight / Mathf.Max(0.001f, lossy.y));
-                float limitZ = (boxSize.z * 0.5f) + (playerRadius / Mathf.Max(0.001f, lossy.z));
-
-                if (dx <= limitX && dy <= limitY && dz <= limitZ)
+                if (Mathf.Abs(path.RotationSpeed) > 0.01f)
                 {
-                    RespawnPlayer(player);
-                    break;
+                    Vector3 localAxis = path.GetEffectiveLocalAxis(obj.transform);
+                    float rotAngle = path.RotationSpeed * dt;
+                    Vector3 worldAxis = obj.transform.TransformDirection(localAxis);
+                    Quaternion rotDelta = Quaternion.AngleAxis(rotAngle, worldAxis);
+
+                    if (playerOnPlatform)
+                    {
+                        Vector3 offset = player.transform.position - obj.transform.position;
+                        Vector3 newOffset = rotDelta * offset;
+                        Vector3 rotPush = newOffset - offset;
+                        cc.Move(rotPush);
+
+                        if (Mathf.Abs(worldAxis.y) > 0.25f)
+                        {
+                            float yawAngle = rotAngle * worldAxis.y;
+                            player.transform.rotation = Quaternion.AngleAxis(yawAngle, Vector3.up) * player.transform.rotation;
+                        }
+                    }
+
+                    obj.transform.Rotate(localAxis, rotAngle, Space.Self);
+                }
+
+                float dist = path.TotalDistance;
+                if (dist < 0.05f || path.Speed < 0.01f) continue;
+
+                float speed = Mathf.Max(0.1f, path.Speed);
+                float duration = dist / speed;
+                float t = Mathf.PingPong(LevelTimer / duration, 1.0f);
+                Vector3 targetPos = path.EvaluatePosition(t);
+                Vector3 deltaPos = targetPos - obj.transform.position;
+
+                obj.transform.position = targetPos;
+
+                if (playerOnPlatform && deltaPos.sqrMagnitude > 0.00001f)
+                {
+                    cc.Move(deltaPos);
                 }
             }
         }
 
-        private static void FreezePlayerEntity(GameObject player, CharacterController cc)
+        // =========================================================================
+        // SECTION 11: PLAYTEST SIMULATION ENGINE (CLASS1 LOGIC RESTORED)
+        // =========================================================================
+
+        public static class PlaytestSimulationEngine
         {
-            if (player != null)
+            public static void RunPlaytestTick(GameObject player, CharacterController cc, float dt)
             {
-                player.transform.position = FrozenPlayerPosition;
-                player.transform.rotation = FrozenPlayerRotation;
-
-                if (cc != null && cc.enabled) cc.enabled = false;
-
-                Rigidbody rb = player.GetComponent<Rigidbody>();
-                if (rb != null)
+                for (int i = 0; i < PlacedRotatingLasers.Count; i++)
                 {
-                    rb.isKinematic = true;
-                    rb.velocity = Vector3.zero;
-                    rb.angularVelocity = Vector3.zero;
+                    GameObject obj = PlacedRotatingLasers[i];
+                    if (obj == null || !obj.activeSelf) continue;
+                    float speed = LaserRotationSpeeds.ContainsKey(obj) ? LaserRotationSpeeds[obj] : ActiveLaserRotationSpeed;
+                    obj.transform.Rotate(Vector3.up, speed * dt, Space.Self);
+                }
+
+                if (player != null)
+                {
+                    CheckVoidFall(player);
+                    CheckHelixWindPushing(player, cc);
+                    CheckLaserBarriers(player, cc);
+                    CheckGoalTriggerArrival(player);
+
+                    SkyboxControllerService.UpdateTick(dt);
+
+                    // Robust Checkpoint Detection directly matching Class1.cs
+                    Vector3 pPos = player.transform.position;
+                    for (int i = 0; i < PlacedCheckpoints.Count; i++)
+                    {
+                        CheckPointScript cp = PlacedCheckpoints[i];
+                        if (cp != null && cp.gameObject.activeSelf)
+                        {
+                            Vector3 checkPos = (cp._spawnPoint != null) ? cp._spawnPoint.position : cp.transform.position;
+                            if ((pPos - checkPos).sqrMagnitude < 16.0f || (pPos - cp.transform.position).sqrMagnitude < 16.0f)
+                            {
+                                if (ActiveCustomCheckpoint != cp)
+                                {
+                                    ActiveCustomCheckpoint = cp;
+                                    MelonLogger.Msg($">> [Checkpoint] Tagged checkpoint at {cp.transform.position}!");
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if (!IsLevelCompleted)
+                {
+                    LevelTimer += dt;
+                }
+                else
+                {
+                    Cursor.lockState = CursorLockMode.None;
+                    Cursor.visible = true;
                 }
             }
-        }
-        private static void CheckVoidFall(GameObject player)
-        {
-            if (player.transform.position.y < CachedVoidDeathY)
-                RespawnPlayer(player);
+
+            private static void CheckGoalTriggerArrival(GameObject player)
+            {
+                if (IsLevelCompleted || PlacedGoalGate == null || !PlacedGoalGate.activeSelf) return;
+
+                Vector3 pPos = player.transform.position;
+                Vector3 gPos = PlacedGoalGate.transform.position;
+
+                float horizDistSq = (pPos.x - gPos.x) * (pPos.x - gPos.x) + (pPos.z - gPos.z) * (pPos.z - gPos.z);
+                float vertDist = Mathf.Abs(pPos.y - gPos.y);
+
+                if (horizDistSq < 16.0f && vertDist < 3.5f)
+                {
+                    IsLevelCompleted = true;
+                    Cursor.lockState = CursorLockMode.None;
+                    Cursor.visible = true;
+                    MelonLogger.Msg($">> [VICTORY] Level completed in {LevelTimer:F2} seconds!");
+                }
+            }
+
+            private static void CheckHelixWindPushing(GameObject player, CharacterController cc)
+            {
+                if (PlacedTurbines.Count == 0 || cc == null) return;
+
+                Vector3 pPos = player.transform.position + Vector3.up * 1.0f;
+                float dt = Time.deltaTime;
+
+                for (int i = 0; i < PlacedTurbines.Count; i++)
+                {
+                    GameObject obj = PlacedTurbines[i];
+                    if (obj == null || !obj.activeSelf) continue;
+
+                    float speed = TurbineSpeeds.ContainsKey(obj) ? TurbineSpeeds[obj] : ActiveTurbineSpeed;
+
+                    if (!CachedHelixScripts.TryGetValue(obj, out Helix helixScript) || helixScript == null)
+                    {
+                        helixScript = obj.GetComponentInChildren<Helix>();
+                        CachedHelixScripts[obj] = helixScript;
+                    }
+
+                    Vector3 hPos = obj.transform.position;
+                    Vector3 forward = obj.transform.forward;
+                    Vector3 toPlayer = pPos - hPos;
+
+                    float forwardDist = Vector3.Dot(toPlayer, forward);
+                    float windRange = 16.0f * obj.transform.localScale.z;
+
+                    if (forwardDist > 0.2f && forwardDist < windRange)
+                    {
+                        Vector3 perp = toPlayer - forward * forwardDist;
+                        float radius = 3.0f * obj.transform.localScale.x;
+
+                        if (perp.sqrMagnitude < radius * radius)
+                        {
+                            Vector3 pushDir = forward;
+                            pushDir.y = Mathf.Max(0.22f, pushDir.y);
+                            pushDir.Normalize();
+
+                            float pushSpeed = Mathf.Lerp(speed, speed * 0.25f, forwardDist / windRange);
+                            cc.Move(pushDir * pushSpeed * dt);
+                        }
+                    }
+                }
+            }
+
+            private static void CheckLaserBarriers(GameObject player, CharacterController cc)
+            {
+                if (PlacedLaserBarriers.Count == 0 || cc == null) return;
+
+                Vector3 playerCenter = player.transform.position + cc.center;
+                float playerRadius = cc.radius + 0.1f;
+                float playerHalfHeight = cc.height * 0.5f;
+
+                for (int i = 0; i < PlacedLaserBarriers.Count; i++)
+                {
+                    GameObject obj = PlacedLaserBarriers[i];
+                    if (obj == null || !obj.activeSelf) continue;
+
+                    if ((obj.transform.position - playerCenter).sqrMagnitude > 2500f) continue;
+
+                    BoxCollider bc = (i < PlacedLaserColliders.Count) ? PlacedLaserColliders[i] : null;
+                    if (bc == null || !bc.gameObject.activeInHierarchy)
+                    {
+                        bc = obj.transform.Find("Beam")?.GetComponent<BoxCollider>() ?? obj.GetComponent<BoxCollider>();
+                        if (bc == null)
+                        {
+                            var allCols = obj.GetComponentsInChildren<BoxCollider>(true);
+                            for (int c = 0; c < allCols.Length; c++)
+                            {
+                                if (allCols[c].gameObject.name != "Editor_Snapping_Proxy") { bc = allCols[c]; break; }
+                            }
+                        }
+                        if (i < PlacedLaserColliders.Count) PlacedLaserColliders[i] = bc;
+                    }
+                    if (bc == null) continue;
+
+                    Vector3 localPlayer = bc.transform.InverseTransformPoint(playerCenter);
+                    Vector3 boxSize = bc.size;
+                    Vector3 boxCenter = bc.center;
+
+                    float dx = Mathf.Abs(localPlayer.x - boxCenter.x);
+                    float dy = Mathf.Abs(localPlayer.y - boxCenter.y);
+                    float dz = Mathf.Abs(localPlayer.z - boxCenter.z);
+
+                    Vector3 lossy = bc.transform.lossyScale;
+                    float limitX = (boxSize.x * 0.5f) + (playerRadius / Mathf.Max(0.001f, lossy.x));
+                    float limitY = (boxSize.y * 0.5f) + (playerHalfHeight / Mathf.Max(0.001f, lossy.y));
+                    float limitZ = (boxSize.z * 0.5f) + (playerRadius / Mathf.Max(0.001f, lossy.z));
+
+                    if (dx <= limitX && dy <= limitY && dz <= limitZ)
+                    {
+                        RespawnPlayer(player);
+                        break;
+                    }
+                }
+            }
+
+            private static void CheckVoidFall(GameObject player)
+            {
+                if (player.transform.position.y < CachedVoidDeathY)
+                    RespawnPlayer(player);
+            }
         }
 
-        public static void ClearLastCheckpoint() { ActiveCustomCheckpoint = null; }
+        // =========================================================================
+        // SECTION 12: PLAYER ENTITY & RESPAWNING (CLASS1 RESTORED)
+        // =========================================================================
+
+        public static void ClearLastCheckpoint()
+        {
+            ActiveCustomCheckpoint = null;
+        }
 
         public static void RestartRun()
         {
@@ -3034,6 +2770,7 @@ namespace DeadCoreEditor
             Cursor.visible = false;
 
             UnfreezePlayerControls();
+            MelonLogger.Msg(">> [Restart] Restarted run cleanly from Entry Gate!");
         }
 
         public static void RespawnPlayer(GameObject player)
@@ -3049,6 +2786,8 @@ namespace DeadCoreEditor
 
                 player.transform.position = targetPos;
                 player.transform.rotation = targetRot;
+
+                MelonLogger.Msg(">> [Respawn] Returned to active Checkpoint!");
             }
             else
             {
@@ -3066,81 +2805,92 @@ namespace DeadCoreEditor
             GameObject player = FindPlayerEntity();
             if (player == null) return;
 
-            Transform playerRoot = player.transform.root;
-
-            // 1. Freeze / Unfreeze CharacterController
             CharacterController cc = GetPlayerController();
             if (cc != null) cc.enabled = active;
 
-            // 2. Freeze / Unfreeze Rigidbodies
-            Rigidbody[] rbs = playerRoot.GetComponentsInChildren<Rigidbody>(true);
-            for (int i = 0; i < rbs.Length; i++)
+            Rigidbody rb = player.GetComponent<Rigidbody>();
+            if (rb != null)
             {
-                if (rbs[i] == null) continue;
-                rbs[i].isKinematic = !active;
+                rb.isKinematic = !active;
                 if (!active)
                 {
-                    rbs[i].velocity = Vector3.zero;
-                    rbs[i].angularVelocity = Vector3.zero;
+                    rb.velocity = Vector3.zero;
+                    rb.angularVelocity = Vector3.zero;
                 }
             }
 
-            // 4. Disable / Restore all player scripts across the entire hierarchy
             if (!active)
             {
                 _disabledPlayerScripts.Clear();
 
-                List<MonoBehaviour> allScripts = new List<MonoBehaviour>();
-                allScripts.AddRange(playerRoot.GetComponentsInChildren<MonoBehaviour>(true));
-
-                // If the player's camera is in a separate root tree, include it
-                if (PlayerCameraInstance != null && !PlayerCameraInstance.transform.IsChildOf(playerRoot))
+                MonoBehaviour[] scripts = player.GetComponentsInChildren<MonoBehaviour>(true);
+                for (int i = 0; i < scripts.Length; i++)
                 {
-                    allScripts.AddRange(PlayerCameraInstance.transform.root.GetComponentsInChildren<MonoBehaviour>(true));
-                }
-
-                for (int i = 0; i < allScripts.Count; i++)
-                {
-                    MonoBehaviour mb = allScripts[i];
+                    MonoBehaviour mb = scripts[i];
                     if (mb == null) continue;
 
-                    // Never disable components belonging to the editor mod itself
+                    string name = mb.GetIl2CppType().Name.ToLowerInvariant();
                     string ns = mb.GetIl2CppType().Namespace ?? "";
                     if (ns.StartsWith("DeadCoreEditor")) continue;
 
-                    if (mb.enabled)
+                    if (name.Contains("manager") || name.Contains("scene") || name.Contains("level") ||
+                        name.Contains("game") || name.Contains("core") || name.Contains("audio") ||
+                        name.Contains("sound") || name.Contains("music") || name.Contains("life") ||
+                        name.Contains("health") || name.Contains("spawn") || name.Contains("checkpoint") ||
+                        name.Contains("trigger") || name.Contains("loader") || name.Contains("stream"))
                     {
-                        mb.enabled = false;
-                        _disabledPlayerScripts.Add(mb);
+                        continue;
+                    }
+
+                    if (name.Contains("look") || name.Contains("input") || name.Contains("motor") ||
+                        name.Contains("gun") || name.Contains("shoot") || name.Contains("arm") ||
+                        name.Contains("weapon") || name.Contains("movement") || name.Contains("controller"))
+                    {
+                        if (mb.enabled)
+                        {
+                            mb.enabled = false;
+                            _disabledPlayerScripts.Add(mb);
+                        }
                     }
                 }
             }
             else
             {
-                // Re-enable only scripts that were originally active
                 for (int i = 0; i < _disabledPlayerScripts.Count; i++)
                 {
-                    if (_disabledPlayerScripts[i] != null)
-                    {
-                        _disabledPlayerScripts[i].enabled = true;
-                    }
+                    if (_disabledPlayerScripts[i] != null) _disabledPlayerScripts[i].enabled = true;
                 }
                 _disabledPlayerScripts.Clear();
             }
         }
+        public static void UnfreezePlayerControls() => SetPlayerControlsActive(true);
 
-        public static void UnfreezePlayerControls()
+        private static void FreezePlayerEntity(GameObject player, CharacterController cc)
         {
-            SetPlayerControlsActive(true);
+            if (player != null)
+            {
+                player.transform.position = FrozenPlayerPosition;
+                player.transform.rotation = FrozenPlayerRotation;
+
+                if (cc != null && cc.enabled) cc.enabled = false;
+
+                Rigidbody rb = player.GetComponent<Rigidbody>();
+                if (rb != null)
+                {
+                    rb.isKinematic = true;
+                    rb.velocity = Vector3.zero;
+                    rb.angularVelocity = Vector3.zero;
+                }
+            }
         }
 
         public static void InitializeCustomLevel()
         {
+            if (IsLevelInitialized) return;
+
             string curScene = SceneManager.GetActiveScene().name.ToLower();
             if (curScene.Contains("load") || curScene.Contains("menu") || curScene.Contains("boot"))
-            {
                 return;
-            }
 
             GameObject player = FindPlayerEntity();
             Vector3 startPos = LevelSpawnPosition;
@@ -3166,7 +2916,8 @@ namespace DeadCoreEditor
                 GameObject obj = PlacedObjects[i];
                 if (obj != null && PlacedObjectTypes.TryGetValue(obj, out var t) && t == PlacedObjectType.SpawnGate)
                 {
-                    LevelSpawnPosition = obj.transform.position + Vector3.up * 0.2f;
+                    CheckPointScript cp = obj.GetComponentInChildren<CheckPointScript>();
+                    LevelSpawnPosition = (cp != null && cp._spawnPoint != null) ? cp._spawnPoint.position : (obj.transform.position + Vector3.up * 0.2f);
                     startPos = LevelSpawnPosition;
                     break;
                 }
@@ -3192,16 +2943,12 @@ namespace DeadCoreEditor
                 GameObject startPlatform = SpawnAssetByName("Floor_Platform_16x16", p0Pos, 0.55f);
                 if (startPlatform == null) startPlatform = SpawnAssetByName("Platform", p0Pos, 0.8f);
 
-                if (startPlatform != null)
-                {
-                    RegisterPlacedObject(startPlatform);
-                }
+                if (startPlatform != null) RegisterPlacedObject(startPlatform);
             }
 
             for (int i = 0; i < PlacedObjects.Count; i++)
             {
-                if (PlacedObjects[i] != null)
-                    AttachEditorSnappingProxy(PlacedObjects[i]);
+                if (PlacedObjects[i] != null) AttachEditorSnappingProxy(PlacedObjects[i]);
             }
 
             if (player != null)
@@ -3223,10 +2970,6 @@ namespace DeadCoreEditor
             IsLevelInitialized = true;
         }
 
-        // =========================================================================
-        // ROBUST RAYCAST OBJECT PICKING WITH HIERARCHY WALKING
-        // =========================================================================
-
         public static GameObject GetAimedPlacedObject()
         {
             if (EditorViewportCamera.ViewportCamera == null) return null;
@@ -3240,7 +2983,6 @@ namespace DeadCoreEditor
 
             Array.Sort(hits, (a, b) => a.distance.CompareTo(b.distance));
 
-            // 1. Waypoint Markers Priority
             for (int h = 0; h < hits.Length; h++)
             {
                 Collider col = hits[h].collider;
@@ -3248,19 +2990,15 @@ namespace DeadCoreEditor
                 GameObject hitGo = col.gameObject;
 
                 if (IsWaypointMarker(hitGo, out _, out _) || IsChildOfAnyWaypoint(hitGo, out hitGo))
-                {
                     return hitGo;
-                }
             }
 
-            // 2. Placed Scene Objects: Find closest registered object
             for (int h = 0; h < hits.Length; h++)
             {
                 Collider col = hits[h].collider;
                 if (col == null) continue;
                 GameObject hitGo = col.gameObject;
 
-                // Skip editor highlights, beacons, and camera gizmos
                 if (hitGo.name.Contains("Highlight") || hitGo.name.Contains("Beacon") || hitGo.name.Contains("Ghost")) continue;
                 if (hitGo.name.StartsWith("Studio_3D_Gizmo") || (hitGo.transform.root != null && hitGo.transform.root.name == "Studio_3D_Gizmo_Root")) continue;
                 if (_cachedPlayer != null && (hitGo == _cachedPlayer || hitGo.transform.root.gameObject == _cachedPlayer)) continue;
@@ -3268,10 +3006,7 @@ namespace DeadCoreEditor
                 Transform curr = hitGo.transform;
                 while (curr != null)
                 {
-                    if (PlacedObjects.Contains(curr.gameObject))
-                    {
-                        return curr.gameObject;
-                    }
+                    if (PlacedObjects.Contains(curr.gameObject)) return curr.gameObject;
                     curr = curr.parent;
                 }
             }
@@ -3292,8 +3027,7 @@ namespace DeadCoreEditor
             if (curScene.Contains("menu") || curScene.Contains("load") || curScene.Contains("boot") || curScene.Contains("title"))
                 return null;
 
-            if (_cachedPlayer != null && _cachedPlayer.activeInHierarchy)
-                return _cachedPlayer;
+            if (_cachedPlayer != null && _cachedPlayer.activeInHierarchy) return _cachedPlayer;
 
             GameObject tagged = GameObject.FindWithTag("Player");
             if (tagged != null)
@@ -3382,393 +3116,6 @@ namespace DeadCoreEditor
             }
 
             GUI.color = origColor;
-        }
-    }
-
-    // =========================================================================
-    // SECTION 2: DISK SERIALIZATION & LEVEL PERSISTENCE
-    // =========================================================================
-
-    public static class LevelPersistenceService
-    {
-        private static string ColorToHex(Color c)
-        {
-            byte r = (byte)Mathf.Clamp(Mathf.RoundToInt(c.r * 255f), 0, 255);
-            byte g = (byte)Mathf.Clamp(Mathf.RoundToInt(c.g * 255f), 0, 255);
-            byte b = (byte)Mathf.Clamp(Mathf.RoundToInt(c.b * 255f), 0, 255);
-            return $"{r:X2}{g:X2}{b:X2}";
-        }
-
-        private static Color HexToColor(string hex)
-        {
-            if (string.IsNullOrWhiteSpace(hex)) return Color.cyan;
-            hex = hex.Trim().TrimStart('#');
-            if (hex.Length >= 6 &&
-                byte.TryParse(hex.Substring(0, 2), NumberStyles.HexNumber, CultureInfo.InvariantCulture, out byte r) &&
-                byte.TryParse(hex.Substring(2, 2), NumberStyles.HexNumber, CultureInfo.InvariantCulture, out byte g) &&
-                byte.TryParse(hex.Substring(4, 2), NumberStyles.HexNumber, CultureInfo.InvariantCulture, out byte b))
-            {
-                return new Color(r / 255f, g / 255f, b / 255f, 1f);
-            }
-            return Color.cyan;
-        }
-
-        private static float ParseFloat(string str)
-        {
-            if (string.IsNullOrWhiteSpace(str)) return 0f;
-            str = str.Trim().Replace(',', '.');
-            if (float.TryParse(str, NumberStyles.Float, CultureInfo.InvariantCulture, out float val))
-                return val;
-            return 0f;
-        }
-
-        public static void SaveLevel(string filename)
-        {
-            string saveDir = MapBrowserService.MyLevelsDir;
-            if (!Directory.Exists(saveDir)) Directory.CreateDirectory(saveDir);
-
-            string cleanName = Path.GetFileNameWithoutExtension(filename);
-            if (string.IsNullOrWhiteSpace(cleanName)) cleanName = "Default_Level";
-
-            string path = Path.Combine(saveDir, $"{cleanName}.txt");
-            List<string> lines = new List<string>();
-            var inv = CultureInfo.InvariantCulture;
-
-            LevelMetadata existingMeta = NativeLogsMenuHijacker.ReadLevelMetadata(path, cleanName);
-            lines.Add($"#TITLE: {existingMeta.Title}");
-            lines.Add($"#AUTHOR: {existingMeta.Author}");
-            lines.Add($"#DIFFICULTY: {existingMeta.Difficulty}");
-            lines.Add($"#DESC: {existingMeta.Description}");
-            lines.Add($"#SCENE: {MapBrowserService.SelectedStagingScene}");
-
-            for (int i = 0; i < EditorSessionManager.PlacedObjects.Count; i++)
-            {
-                GameObject obj = EditorSessionManager.PlacedObjects[i];
-                if (obj == null || !obj.activeSelf) continue;
-
-                Vector3 pos = EditorSessionManager.MotionPaths.ContainsKey(obj)
-                    ? EditorSessionManager.MotionPaths[obj].PointA
-                    : obj.transform.position;
-
-                Quaternion rot = obj.transform.rotation;
-                Vector3 scl = obj.transform.localScale; // Full 3D scale
-                string name = obj.name.StartsWith("Custom_") ? obj.name.Substring(7) : obj.name;
-
-                float param = 0f;
-                string extraParams = "";
-
-                if (EditorSessionManager.JumperForces.ContainsKey(obj))
-                    param = EditorSessionManager.JumperForces[obj];
-                else if (EditorSessionManager.TurbineSpeeds.ContainsKey(obj))
-                    param = EditorSessionManager.TurbineSpeeds[obj];
-                else if (EditorSessionManager.TurretFireDelays.ContainsKey(obj))
-                    param = EditorSessionManager.TurretFireDelays[obj];
-                else if (EditorSessionManager.LaserRotationSpeeds.ContainsKey(obj))
-                    param = EditorSessionManager.LaserRotationSpeeds[obj];
-                else if (EditorSessionManager.PlacedLights.ContainsKey(obj))
-                {
-                    LightConfig cfg = EditorSessionManager.PlacedLights[obj];
-                    param = cfg.Intensity;
-                    string hexColor = ColorToHex(cfg.Color);
-                    extraParams = $";{cfg.SpotAngle.ToString("F1", inv)};{hexColor};{cfg.VolumetricIntensity.ToString("F2", inv)}";
-                }
-
-                string pathParams = ";PATH:0";
-                if (EditorSessionManager.MotionPaths.ContainsKey(obj))
-                {
-                    var mp = EditorSessionManager.MotionPaths[obj];
-                    pathParams = $";PATH:1:{mp.Speed.ToString("F2", inv)}:{mp.PointA.x.ToString("F4", inv)}:{mp.PointA.y.ToString("F4", inv)}:{mp.PointA.z.ToString("F4", inv)}:{mp.PointB.x.ToString("F4", inv)}:{mp.PointB.y.ToString("F4", inv)}:{mp.PointB.z.ToString("F4", inv)}:{mp.RotationSpeed.ToString("F2", inv)}:{mp.RotationAxis}:{mp.CustomAxis.x.ToString("F4", inv)}:{mp.CustomAxis.y.ToString("F4", inv)}:{mp.CustomAxis.z.ToString("F4", inv)}";
-                }
-
-                int parentIdx = -1;
-                if (obj.transform.parent != null && EditorSessionManager.PlacedObjects.Contains(obj.transform.parent.gameObject))
-                {
-                    parentIdx = EditorSessionManager.PlacedObjects.IndexOf(obj.transform.parent.gameObject);
-                }
-                string parentParams = $";PARENT:{parentIdx}";
-
-                // Exact 3D scale tag
-                string scale3Params = $";SCALE3:{scl.x.ToString("F4", inv)}:{scl.y.ToString("F4", inv)}:{scl.z.ToString("F4", inv)}";
-
-                lines.Add($"{name};{pos.x.ToString("F4", inv)};{pos.y.ToString("F4", inv)};{pos.z.ToString("F4", inv)};{scl.x.ToString("F4", inv)};{rot.x.ToString("F4", inv)};{rot.y.ToString("F4", inv)};{rot.z.ToString("F4", inv)};{rot.w.ToString("F4", inv)};{param.ToString("F2", inv)}{extraParams}{pathParams}{parentParams}{scale3Params}");
-            }
-
-            File.WriteAllLines(path, lines.ToArray());
-            ThumbnailCaptureService.CaptureLevelThumbnail(path, EditorSessionManager.PlacedObjects, EditorSessionManager.LevelSpawnPosition);
-
-            EditorSessionManager.ShowNotification($"Saved {lines.Count - 5} objects to {cleanName}.txt!");
-
-            MapBrowserService.SelectedMapPath = path;
-            MapBrowserService.SelectedMapName = cleanName;
-            MapBrowserService.RefreshFiles();
-        }
-
-        public static void LoadLevel(string filename)
-        {
-            string cleanName = Path.GetFileNameWithoutExtension(filename);
-            string path = Path.Combine(MapBrowserService.MyLevelsDir, $"{cleanName}.txt");
-            if (!File.Exists(path))
-                path = Path.Combine(MapBrowserService.DownloadedLevelsDir, $"{cleanName}.txt");
-
-            if (!File.Exists(path))
-            {
-                EditorSessionManager.ShowNotification($"Save file '{cleanName}.txt' not found!");
-                return;
-            }
-
-            LoadLevelByFullPath(path);
-        }
-
-        public static void LoadLevelByFullPath(string fullPath)
-        {
-            if (!File.Exists(fullPath)) return;
-
-            string[] lines = File.ReadAllLines(fullPath);
-            EditorSessionManager.ClearAllPlacedObjects();
-
-            List<int> loadedParentIndices = new List<int>();
-            List<Vector3> loadedScales = new List<Vector3>(); // 1. Track original scales
-            int count = 0;
-
-            foreach (string line in lines)
-            {
-                if (string.IsNullOrWhiteSpace(line)) continue;
-                string trimmed = line.Trim();
-
-                if (trimmed.StartsWith("#SCENE:", StringComparison.OrdinalIgnoreCase))
-                {
-                    MapBrowserService.SelectedStagingScene = trimmed.Substring(7).Trim();
-                    continue;
-                }
-                if (trimmed.StartsWith("#")) continue;
-
-                string[] p = trimmed.Split(';');
-                if (p.Length < 5) continue;
-
-                string rawName = p[0];
-                Vector3 pos = new Vector3(ParseFloat(p[1]), ParseFloat(p[2]), ParseFloat(p[3]));
-
-                // Default uniform scale fallback
-                float uniformScale = ParseFloat(p[4]);
-                if (uniformScale <= 0.0001f) uniformScale = 0.55f;
-                Vector3 scaleVec = Vector3.one * uniformScale;
-
-                // Check for exact 3D non-uniform scale tag
-                int scale3TagIdx = trimmed.IndexOf(";SCALE3:", StringComparison.OrdinalIgnoreCase);
-                if (scale3TagIdx != -1)
-                {
-                    string scaleSub = trimmed.Substring(scale3TagIdx + 8).Split(';')[0];
-                    string[] sParts = scaleSub.Split(':');
-                    if (sParts.Length >= 3)
-                    {
-                        scaleVec = new Vector3(ParseFloat(sParts[0]), ParseFloat(sParts[1]), ParseFloat(sParts[2]));
-                    }
-                }
-
-                // Prevent 0-scale invisible objects
-                scaleVec.x = Mathf.Max(0.01f, scaleVec.x);
-                scaleVec.y = Mathf.Max(0.01f, scaleVec.y);
-                scaleVec.z = Mathf.Max(0.01f, scaleVec.z);
-
-                Quaternion rot = Quaternion.identity;
-                if (p.Length >= 9)
-                {
-                    rot = new Quaternion(ParseFloat(p[5]), ParseFloat(p[6]), ParseFloat(p[7]), ParseFloat(p[8]));
-                    if (rot.x == 0f && rot.y == 0f && rot.z == 0f && rot.w == 0f) rot = Quaternion.identity;
-                }
-
-                float customParam = (p.Length >= 10) ? ParseFloat(p[9]) : 0f;
-
-                GameObject obj = EditorSessionManager.SpawnAssetByName(rawName, pos, scaleVec, rot);
-                if (obj != null)
-                {
-                    obj.transform.localScale = scaleVec;
-                    string lowName = rawName.ToLower();
-
-                    if (customParam > 0f)
-                    {
-                        if (lowName.Contains("jumper"))
-                            EditorSessionManager.ApplyJumperForce(obj, customParam);
-                        else if (lowName.Contains("helix"))
-                            EditorSessionManager.ApplyTurbineSpeed(obj, customParam);
-                        else if (lowName.Contains("turret"))
-                            EditorSessionManager.ApplyTurretSettings(obj, customParam, 1500f);
-                    }
-
-                    if (lowName.Contains("rotating") && customParam != 0f)
-                        EditorSessionManager.LaserRotationSpeeds[obj] = customParam;
-
-                    if (lowName.Contains("spotlight") || lowName.Contains("sunlight"))
-                    {
-                        LightConfig cfg = new LightConfig();
-                        cfg.IsDirectional = lowName.Contains("sunlight");
-                        if (customParam > 0f) cfg.Intensity = customParam;
-
-                        if (p.Length >= 11) cfg.SpotAngle = ParseFloat(p[10]);
-                        if (p.Length >= 12) cfg.Color = HexToColor(p[11]);
-                        if (p.Length >= 13) cfg.VolumetricIntensity = ParseFloat(p[12]);
-
-                        EditorSessionManager.ApplyLightConfig(obj, cfg);
-
-                        if (cfg.IsDirectional)
-                        {
-                            StudioGizmoController.AttachSunVisualWidget(obj);
-                        }
-                    }
-
-                    int pathTagIdx = trimmed.IndexOf(";PATH:");
-                    if (pathTagIdx != -1)
-                    {
-                        string pathSub = trimmed.Substring(pathTagIdx + 6).Split(';')[0];
-                        string[] pathParts = pathSub.Split(':');
-
-                        if (pathParts.Length >= 8 && pathParts[0] == "1")
-                        {
-                            float spd = ParseFloat(pathParts[1]);
-                            Vector3 pA = new Vector3(ParseFloat(pathParts[2]), ParseFloat(pathParts[3]), ParseFloat(pathParts[4]));
-                            Vector3 pB = new Vector3(ParseFloat(pathParts[5]), ParseFloat(pathParts[6]), ParseFloat(pathParts[7]));
-
-                            float rotSpd = (pathParts.Length >= 9) ? ParseFloat(pathParts[8]) : 0f;
-                            int rotAxis = (pathParts.Length >= 10 && int.TryParse(pathParts[9], out int ra)) ? ra : 1;
-
-                            Vector3 customAxis = Vector3.up;
-                            if (pathParts.Length >= 13)
-                            {
-                                customAxis = new Vector3(ParseFloat(pathParts[10]), ParseFloat(pathParts[11]), ParseFloat(pathParts[12]));
-                                if (customAxis.sqrMagnitude < 0.0001f) customAxis = Vector3.up;
-                            }
-                            else
-                            {
-                                if (rotAxis == 0) customAxis = Vector3.right;
-                                else if (rotAxis == 2) customAxis = Vector3.forward;
-                                else customAxis = Vector3.up;
-                            }
-
-                            obj.transform.position = pA;
-                            EditorSessionManager.MotionPaths[obj] = new ObjectMotionPath
-                            {
-                                PointA = pA,
-                                PointB = pB,
-                                Speed = spd > 0.01f ? spd : 3.5f,
-                                RotationSpeed = rotSpd,
-                                RotationAxis = rotAxis,
-                                CustomAxis = customAxis,
-                                IsActive = true
-                            };
-                        }
-                    }
-
-                    int pIndex = -1;
-                    int parentTagIdx = trimmed.IndexOf(";PARENT:");
-                    if (parentTagIdx != -1)
-                    {
-                        string pVal = trimmed.Substring(parentTagIdx + 8).Split(';')[0].Trim();
-                        int.TryParse(pVal, out pIndex);
-                    }
-
-                    loadedParentIndices.Add(pIndex);
-                    loadedScales.Add(scaleVec); // 2. Store the exact local scale
-
-                    EditorSessionManager.RegisterPlacedObject(obj);
-                    count++;
-                }
-            }
-
-            // 3. Restore parent hierarchies without scale shrinkage
-            for (int i = 0; i < EditorSessionManager.PlacedObjects.Count; i++)
-            {
-                if (i < loadedParentIndices.Count && loadedParentIndices[i] >= 0 && loadedParentIndices[i] < EditorSessionManager.PlacedObjects.Count)
-                {
-                    GameObject child = EditorSessionManager.PlacedObjects[i];
-                    GameObject parent = EditorSessionManager.PlacedObjects[loadedParentIndices[i]];
-                    if (child != null && parent != null && child != parent)
-                    {
-                        // Attach parent maintaining world position & rotation
-                        child.transform.SetParent(parent.transform, true);
-
-                        // FIX: Overwrite the divided local scale back to its exact saved value
-                        if (i < loadedScales.Count)
-                        {
-                            child.transform.localScale = loadedScales[i];
-                        }
-
-                        EditorSessionManager.RecalculateParentChildCount(parent);
-                    }
-                }
-            }
-
-            string fName = Path.GetFileNameWithoutExtension(fullPath);
-            EditorSessionManager.ShowNotification($"Loaded {count} objects from {fName}.txt!");
-            StudioUIManager.RefreshHierarchy();
-        }
-    }
-
-    // =========================================================================
-    // SECTION 3: MAP BROWSER & STAGING SCENE SERVICES
-    // =========================================================================
-
-    public static class MapBrowserService
-    {
-        public static bool IsBrowserOpen = false;
-        public static string SelectedMapPath = "";
-        public static string SelectedMapName = "Default_Level";
-
-        public static List<string> AvailableStagingScenes = new List<string>();
-        public static string SelectedStagingScene = "level01_Spark01";
-
-        public static string MyLevelsDir => Path.Combine(Directory.GetCurrentDirectory(), "UserData", "MyLevels");
-        public static string DownloadedLevelsDir => Path.Combine(Directory.GetCurrentDirectory(), "UserData", "DownloadedLevels");
-
-        public static void ScanStagingScenes()
-        {
-            AvailableStagingScenes.Clear();
-            AvailableStagingScenes.Add("level01_Spark01");
-        }
-
-        public static void EnsureDirectories()
-        {
-            if (!Directory.Exists(MyLevelsDir)) Directory.CreateDirectory(MyLevelsDir);
-            if (!Directory.Exists(DownloadedLevelsDir)) Directory.CreateDirectory(DownloadedLevelsDir);
-
-            string defaultMyPath = Path.Combine(MyLevelsDir, "Default_Level.txt");
-            if (!File.Exists(defaultMyPath))
-            {
-                Vector3 spawn = EditorSessionManager.LevelSpawnPosition;
-                File.WriteAllText(defaultMyPath, $"#TITLE: Default Level\n#AUTHOR: Community\n#DIFFICULTY: Normal\n#DESC: Starter platform.\n#SCENE: level01_Spark01\nFloor_Platform_16x16;{spawn.x:F4};{(spawn.y - 1.2f):F4};{spawn.z:F4};0.5500;0.0000;0.0000;0.0000;1.0000;0.00\n");
-            }
-
-            RefreshFiles();
-        }
-
-        public static void RefreshFiles()
-        {
-            if (string.IsNullOrEmpty(SelectedMapPath) || !File.Exists(SelectedMapPath))
-            {
-                string def = Path.Combine(MyLevelsDir, "Default_Level.txt");
-                if (File.Exists(def))
-                {
-                    SelectedMapPath = def;
-                    SelectedMapName = "Default_Level";
-                }
-            }
-        }
-
-        public static void LaunchSelectedMap()
-        {
-            IsBrowserOpen = false;
-            EditorSessionManager.CustomLevelSelected = true;
-            EditorSessionManager.IsCustomSessionActive = true;
-            EditorSessionManager.IsLevelInitialized = false;
-
-            string targetScene = "level01_Spark01";
-            string requested = !string.IsNullOrWhiteSpace(SelectedStagingScene) ? SelectedStagingScene.Trim() : "";
-
-            if (!string.IsNullOrEmpty(requested) && AvailableStagingScenes.Contains(requested))
-            {
-                targetScene = requested;
-            }
-
-            SceneLoader.LoadLevel(targetScene, false, true);
         }
     }
 }

@@ -41,6 +41,10 @@
 			<HintPath>C:\Program Files (x86)\Steam\steamapps\common\DeadCore Redux\MelonLoader\Il2CppAssemblies\UnityEngine.CoreModule.dll</HintPath>
 			<Private>False</Private>
 		</Reference>
+		<Reference Include="UnityEngine.ParticleSystemModule">
+		  <HintPath>..\..\..\..\..\..\Program Files (x86)\Steam\steamapps\common\DeadCore Redux\MelonLoader\Il2CppAssemblies\UnityEngine.ParticleSystemModule.dll</HintPath>
+		  <Private>False</Private>
+		</Reference>
 
 		<!-- CRITICAL: Contains Canvas, RenderMode, CanvasRenderer, RectTransformUtility -->
 		<Reference Include="UnityEngine.UIModule">

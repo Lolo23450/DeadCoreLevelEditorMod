@@ -22,7 +22,7 @@ using Path = System.IO.Path;
 namespace DeadCoreEditor
 {
     // =========================================================================
-    // SECTION 1: STUDIO UGUI SYSTEM (DOCKED, INTERACTIVE TREE HIERARCHY)
+    // SECTION 1: STUDIO UGUI SYSTEM (TOOLBAR, HIERARCHY, INSPECTOR, BROWSER)
     // =========================================================================
 
     public static class StudioUIManager
@@ -37,7 +37,7 @@ namespace DeadCoreEditor
         private static TMP_Text _surfaceAlignBtnText = null;
         private static TMP_Text _gridSnapBtnText = null;
 
-        // Scene Hierarchy (Left Panel: 260px Interactive Tree View)
+        // Scene Hierarchy
         private static GameObject _hierarchyPanel = null;
         private static ScrollRect _hierarchyScrollRect = null;
         private static RectTransform _hierarchyContent = null;
@@ -45,16 +45,7 @@ namespace DeadCoreEditor
         private static readonly List<GameObject> _hierarchyRows = new List<GameObject>();
         private static readonly HashSet<GameObject> _collapsedParents = new HashSet<GameObject>();
 
-        private static Slider _motionPathRotSlider = null;
-        private static TMP_Text _motionPathRotValText = null;
-        private static Button _motionPathAxisBtn = null;
-        private static TMP_Text _motionPathAxisBtnText = null;
-
-        private static TMP_InputField _motionPathAxisXInput = null;
-        private static TMP_InputField _motionPathAxisYInput = null;
-        private static TMP_InputField _motionPathAxisZInput = null;
-
-        // Hierarchy Drag & Drop Mapping
+        // Hierarchy Drag & Drop
         private static readonly Dictionary<GameObject, GameObject> _targetToRowMap = new Dictionary<GameObject, GameObject>();
         private static readonly Dictionary<GameObject, GameObject> _rowToTargetMap = new Dictionary<GameObject, GameObject>();
         private static GameObject _dragCandidateNode = null;
@@ -63,7 +54,7 @@ namespace DeadCoreEditor
         private static GameObject _dragGhostObj = null;
         private static TMP_Text _dragGhostText = null;
 
-        // Contextual Inspector (Right Panel: 280px - 380px)
+        // Contextual Inspector
         private static GameObject _inspectorPanel = null;
         private static RectTransform _inspectorPanelRt = null;
         private static RectTransform _inspectorContent = null;
@@ -83,7 +74,7 @@ namespace DeadCoreEditor
         private static TMP_InputField _scaleYInput = null;
         private static TMP_InputField _scaleZInput = null;
 
-        // Section Cards
+        // Dynamic Component Section Cards
         private static GameObject _jumperSection = null;
         private static Slider _jumperSlider = null;
         private static TMP_Text _jumperValueText = null;
@@ -100,7 +91,7 @@ namespace DeadCoreEditor
         private static Slider _laserSlider = null;
         private static TMP_Text _laserValueText = null;
 
-        // Merged Lighting & Atmosphere Section + RGB Selector
+        // Lighting & Volumetrics
         private static GameObject _lightSection = null;
         private static TMP_Text _lightTypeBadgeText = null;
         private static Slider _lightIntensitySlider = null;
@@ -119,15 +110,49 @@ namespace DeadCoreEditor
         private static Slider _lightBSlider = null;
         private static TMP_Text _lightBValText = null;
 
-        // Motion Path Section
+        // Kinematic Motion Path
         private static GameObject _motionPathSection = null;
         private static TMP_Text _motionPathStatusText = null;
         private static Slider _motionPathSpeedSlider = null;
         private static TMP_Text _motionPathSpeedValText = null;
+        private static Slider _motionPathRotSlider = null;
+        private static TMP_Text _motionPathRotValText = null;
+        private static Button _motionPathAxisBtn = null;
+        private static TMP_Text _motionPathAxisBtnText = null;
+        private static TMP_InputField _motionPathAxisXInput = null;
+        private static TMP_InputField _motionPathAxisYInput = null;
+        private static TMP_InputField _motionPathAxisZInput = null;
         private static GameObject _motionPathCreateBtnObj = null;
         private static GameObject _motionPathActiveControlsObj = null;
 
-        // Docked Bottom Asset Browser state
+        // Celestial Skybox
+        private static GameObject _skyboxSection = null;
+        private static Slider _skyExposureSlider = null;
+        private static TMP_Text _skyExposureValText = null;
+        private static Slider _skyYawSlider = null;
+        private static TMP_Text _skyYawValText = null;
+        private static Slider _skySpinSlider = null;
+        private static TMP_Text _skySpinValText = null;
+        private static Image _skyColorPreviewSwatch = null;
+        private static Slider _skyRSlider = null;
+        private static TMP_Text _skyRValText = null;
+        private static Slider _skyGSlider = null;
+        private static TMP_Text _skyGValText = null;
+        private static Slider _skyBSlider = null;
+        private static TMP_Text _skyBValText = null;
+
+        // Switch Target
+        private static GameObject _switchSection = null;
+        private static Slider _switchTimerSlider = null;
+        private static TMP_Text _switchTimerValText = null;
+        private static Button _switchAutoToggleBtn = null;
+        private static TMP_Text _switchAutoToggleText = null;
+        private static Button _switchInvertToggleBtn = null;
+        private static TMP_Text _switchInvertToggleText = null;
+        private static Button _switchInitialToggleBtn = null;
+        private static TMP_Text _switchInitialToggleText = null;
+
+        // Docked Asset Browser
         private static GameObject _assetBrowserPanel = null;
         private static RectTransform _browserContent = null;
         private static TMP_InputField _browserSearchInput = null;
@@ -137,7 +162,7 @@ namespace DeadCoreEditor
         private static TMP_Text _sortSizeBtnText = null;
         private static readonly List<GameObject> _browserCards = new List<GameObject>();
 
-        // Toast Notification Banner
+        // Toast Banner
         private static TMP_Text _toastText = null;
         private static bool _suppressInspectorCallbacks = false;
 
@@ -145,11 +170,9 @@ namespace DeadCoreEditor
         {
             if (_canvasRoot == null || !_canvasRoot.activeInHierarchy) return false;
 
-            // 1. Standard EventSystem Raycast
             if (EventSystem.current != null && EventSystem.current.IsPointerOverGameObject())
                 return true;
 
-            // 2. Geometric Screen Rect Fallback (prevents 3D viewport clicks while over panels)
             Vector2 mousePos = Input.mousePosition;
 
             if (_assetBrowserPanel != null && _assetBrowserPanel.activeInHierarchy &&
@@ -173,18 +196,12 @@ namespace DeadCoreEditor
 
         public static void SetNotificationText(string text)
         {
-            if (_toastText != null)
-            {
-                _toastText.text = text;
-            }
+            if (_toastText != null) _toastText.text = text;
         }
 
         public static void SetUIVisible(bool visible)
         {
-            if (_canvasRoot != null)
-            {
-                _canvasRoot.SetActive(visible);
-            }
+            if (_canvasRoot != null) _canvasRoot.SetActive(visible);
         }
 
         public static void InitializeUI()
@@ -244,26 +261,35 @@ namespace DeadCoreEditor
 
                 if (EditorSessionManager.PlacedObjectTypes.TryGetValue(obj, out var pType))
                 {
-                    bool isLight = (pType == PlacedObjectType.Spotlight || pType == PlacedObjectType.Sunlight);
+                    bool isLight = (pType == PlacedObjectType.Spotlight || pType == PlacedObjectType.Sunlight || pType == PlacedObjectType.SkyboxController);
                     bool isGate = (pType == PlacedObjectType.Checkpoint || pType == PlacedObjectType.SpawnGate || pType == PlacedObjectType.GoalGate);
 
-                    if (isLight || isGate)
+                    if (isLight)
                     {
                         BoxCollider bc = obj.GetComponent<BoxCollider>();
                         if (bc == null)
                         {
                             bc = obj.AddComponent<BoxCollider>();
-                            bc.size = isGate ? new Vector3(3.5f, 4.5f, 1.5f) : new Vector3(1.4f, 1.4f, 1.6f);
-                            bc.center = isGate ? new Vector3(0f, 2.25f, 0f) : new Vector3(0f, 0f, 0.4f);
+                            bc.size = new Vector3(1.4f, 1.4f, 1.6f);
+                            bc.center = new Vector3(0f, 0f, 0.4f);
                         }
-
-                        // 1. MUST be a trigger so the player runs straight through without colliding
                         bc.isTrigger = true;
-
-                        // 2. Only active in Edit Mode for clicking/selection; disabled during playtest for gates
-                        bc.enabled = EditorSessionManager.IsEditModeActive || isLight;
-
-                        obj.layer = 0; // Default layer so the editor raycast can hit it in Edit Mode
+                        bc.enabled = true;
+                        obj.layer = 0;
+                    }
+                    else if (isGate)
+                    {
+                        CheckPointScript cp = obj.GetComponentInChildren<CheckPointScript>();
+                        if (cp != null)
+                        {
+                            Collider col = cp.GetComponent<Collider>() ?? obj.GetComponentInChildren<Collider>();
+                            if (col != null)
+                            {
+                                col.isTrigger = true;
+                                col.enabled = true;
+                            }
+                        }
+                        obj.layer = 0;
                     }
                 }
             }
@@ -294,10 +320,30 @@ namespace DeadCoreEditor
             private static Camera _previewCam = null;
             private static GameObject _studioStage = null;
             private static Light _studioKeyLight = null;
-            private static Light _studioFillLight = null;
             private static RenderTexture _previewRt = null;
 
             private static readonly Vector3 StagePosition = new Vector3(9000f, 9000f, 9000f);
+            private static readonly Queue<CatalogAsset> _renderQueue = new Queue<CatalogAsset>();
+            private static readonly Dictionary<CatalogAsset, Image> _pendingTargetImages = new Dictionary<CatalogAsset, Image>();
+
+            public static void RequestThumbnail(CatalogAsset asset, Image targetImg)
+            {
+                if (asset == null || asset.ThumbnailSprite != null)
+                {
+                    if (asset != null && targetImg != null && asset.ThumbnailSprite != null)
+                    {
+                        targetImg.sprite = asset.ThumbnailSprite;
+                        targetImg.color = Color.white;
+                    }
+                    return;
+                }
+
+                if (!_pendingTargetImages.ContainsKey(asset))
+                {
+                    _pendingTargetImages[asset] = targetImg;
+                    _renderQueue.Enqueue(asset);
+                }
+            }
 
             private static void EnsureStudio()
             {
@@ -311,52 +357,41 @@ namespace DeadCoreEditor
                 camObj.transform.SetParent(_studioStage.transform, false);
                 _previewCam = camObj.AddComponent<Camera>();
                 _previewCam.clearFlags = CameraClearFlags.Color;
-                _previewCam.backgroundColor = new Color(0.06f, 0.07f, 0.09f, 1f);
+                _previewCam.backgroundColor = new Color(0.08f, 0.10f, 0.14f, 1f);
                 _previewCam.cullingMask = 1 << 2;
-                _previewCam.fieldOfView = 18f;
+                _previewCam.fieldOfView = 22f;
                 _previewCam.nearClipPlane = 0.1f;
                 _previewCam.farClipPlane = 500f;
 
-                _previewRt = new RenderTexture(128, 128, 24, RenderTextureFormat.ARGB32);
+                _previewRt = new RenderTexture(128, 128, 16, RenderTextureFormat.ARGB32);
                 _previewCam.targetTexture = _previewRt;
 
                 GameObject keyObj = new GameObject("Studio_KeyLight");
                 keyObj.transform.SetParent(_studioStage.transform, false);
                 _studioKeyLight = keyObj.AddComponent<Light>();
                 _studioKeyLight.type = LightType.Directional;
-                _studioKeyLight.color = new Color(1f, 0.95f, 0.88f);
-                _studioKeyLight.intensity = 0.95f;
+                _studioKeyLight.color = new Color(1f, 0.96f, 0.90f);
+                _studioKeyLight.intensity = 15000f;
                 _studioKeyLight.cullingMask = 1 << 2;
-                keyObj.transform.rotation = Quaternion.Euler(38f, -42f, 0f);
-
-                GameObject fillObj = new GameObject("Studio_FillLight");
-                fillObj.transform.SetParent(_studioStage.transform, false);
-                _studioFillLight = fillObj.AddComponent<Light>();
-                _studioFillLight.type = LightType.Directional;
-                _studioFillLight.color = new Color(0.45f, 0.75f, 1f);
-                _studioFillLight.intensity = 0.35f;
-                _studioFillLight.cullingMask = 1 << 2;
-                fillObj.transform.rotation = Quaternion.Euler(60f, 135f, 0f);
+                keyObj.transform.rotation = Quaternion.Euler(32f, -38f, 0f);
             }
 
-            public static Sprite GenerateThumbnail(CatalogAsset asset)
+            public static void ProcessQueueTick()
             {
-                if (asset == null || asset.SourceTemplate == null) return null;
+                if (_renderQueue.Count == 0) return;
+
+                CatalogAsset asset = _renderQueue.Dequeue();
+                if (asset == null || asset.SourceTemplate == null) return;
 
                 EnsureStudio();
 
                 GameObject tempModel = GameObject.Instantiate(asset.SourceTemplate);
                 tempModel.SetActive(true);
                 tempModel.transform.position = StagePosition;
-
-                tempModel.transform.rotation = Quaternion.Euler(30f, -45f, 0f) * asset.BaseRotation;
+                tempModel.transform.rotation = Quaternion.Euler(22f, -42f, 0f) * asset.BaseRotation;
                 tempModel.transform.localScale = Vector3.one * asset.DefaultScale;
 
-                foreach (var tr in tempModel.GetComponentsInChildren<Transform>(true))
-                {
-                    tr.gameObject.layer = 2;
-                }
-
+                foreach (var tr in tempModel.GetComponentsInChildren<Transform>(true)) tr.gameObject.layer = 2;
                 foreach (var l in tempModel.GetComponentsInChildren<Light>(true)) GameObject.DestroyImmediate(l);
                 foreach (var col in tempModel.GetComponentsInChildren<Collider>(true)) GameObject.DestroyImmediate(col);
                 foreach (var mb in tempModel.GetComponentsInChildren<MonoBehaviour>(true)) GameObject.DestroyImmediate(mb);
@@ -397,13 +432,19 @@ namespace DeadCoreEditor
 
                 Sprite sprite = Sprite.Create(tex, new Rect(0, 0, 128, 128), new Vector2(0.5f, 0.5f), 100f);
                 asset.ThumbnailSprite = sprite;
-                asset.ThumbnailTexture = tex;
 
-                return sprite;
+                if (_pendingTargetImages.TryGetValue(asset, out Image targetImg) && targetImg != null)
+                {
+                    targetImg.sprite = sprite;
+                    targetImg.color = Color.white;
+                    _pendingTargetImages.Remove(asset);
+                }
             }
 
             public static void Cleanup()
             {
+                _renderQueue.Clear();
+                _pendingTargetImages.Clear();
                 if (_studioStage != null)
                 {
                     GameObject.Destroy(_studioStage);
@@ -418,7 +459,7 @@ namespace DeadCoreEditor
         }
 
         // =========================================================================
-        // TOP TOOLBAR
+        // TOP TOOLBAR BUILDER
         // =========================================================================
 
         private static void BuildTopToolbar()
@@ -439,13 +480,9 @@ namespace DeadCoreEditor
             _modeToggleBtn = CreateButton(_toolbarPanel.transform, "Btn_ModeToggle", "MODE: [SELECT]", 145f, () =>
             {
                 if (EditorSessionManager.InteractionMode == EditorInteractionMode.SelectMode)
-                {
                     EditorSessionManager.SetInteractionMode(EditorInteractionMode.PlacementMode);
-                }
                 else
-                {
                     EditorSessionManager.SetInteractionMode(EditorInteractionMode.SelectMode);
-                }
             }, new Color(0.18f, 0.45f, 0.85f, 1f));
             _modeToggleBtnText = _modeToggleBtn.GetComponentInChildren<TMP_Text>();
 
@@ -501,7 +538,7 @@ namespace DeadCoreEditor
         }
 
         // =========================================================================
-        // HIERARCHY PANEL (INTERACTIVE TREE & INLINE TOOLS)
+        // HIERARCHY PANEL BUILDER
         // =========================================================================
 
         private static void BuildHierarchyPanel()
@@ -538,52 +575,16 @@ namespace DeadCoreEditor
             }, new Color(0.75f, 0.22f, 0.22f, 1f));
 
             RectTransform dbrt = delBtn.GetComponent<RectTransform>();
-            dbrt.anchorMin = new Vector2(0f, 0f);
-            dbrt.anchorMax = new Vector2(1f, 1f);
+            dbrt.anchorMin = Vector2.zero;
+            dbrt.anchorMax = Vector2.one;
             dbrt.offsetMin = new Vector2(8f, 4f);
             dbrt.offsetMax = new Vector2(-8f, -4f);
         }
 
-        private static string GetRotationAxisName(int axisIndex)
-        {
-            switch (axisIndex)
-            {
-                case 0: return "X - Tumble";
-                case 1: return "Y - Turntable";
-                case 2: return "Z - Roll";
-                case 3: return "Path (A -> B)";
-                case 4: return "Custom Override";
-                default: return "Custom Override";
-            }
-        }
-
-        private static void OnMotionPathAxisInputChanged(string val)
-        {
-            if (_suppressInspectorCallbacks || EditorSessionManager.SelectedObject == null) return;
-
-            GameObject target = EditorSessionManager.SelectedObject;
-            if (EditorSessionManager.IsWaypointMarker(target, out GameObject owner, out bool _)) target = owner;
-
-            if (!EditorSessionManager.MotionPaths.TryGetValue(target, out var mp) || mp == null) return;
-
-            float x = ParseFloat(_motionPathAxisXInput?.text, mp.CustomAxis.x);
-            float y = ParseFloat(_motionPathAxisYInput?.text, mp.CustomAxis.y);
-            float z = ParseFloat(_motionPathAxisZInput?.text, mp.CustomAxis.z);
-
-            Vector3 newAxis = new Vector3(x, y, z);
-            if (newAxis.sqrMagnitude > 0.0001f)
-                mp.CustomAxis = newAxis.normalized;
-            else
-                mp.CustomAxis = Vector3.up;
-
-            mp.RotationAxis = 4; // Automatically switches to Custom Override on user input
-            if (_motionPathAxisBtnText != null)
-                _motionPathAxisBtnText.text = "Axis: [Custom Override]";
-        }
-
         // =========================================================================
-        // TARGETED FIX: Safe RectTransform Instantiation
+        // INSPECTOR PANEL BUILDER
         // =========================================================================
+
         private static void BuildInspectorPanel()
         {
             _isInspectorExpanded = false;
@@ -593,7 +594,6 @@ namespace DeadCoreEditor
                 new Color(0.12f, 0.13f, 0.15f, 0.98f));
             _inspectorPanelRt = _inspectorPanel.GetComponent<RectTransform>();
 
-            // 1. TitleBar created with native RectTransform
             GameObject titleBar = new GameObject("TitleBar", Il2CppType.Of<RectTransform>());
             titleBar.transform.SetParent(_inspectorPanel.transform, false);
             RectTransform tbrt = titleBar.GetComponent<RectTransform>();
@@ -602,12 +602,12 @@ namespace DeadCoreEditor
                 tbrt.anchorMin = new Vector2(0f, 1f);
                 tbrt.anchorMax = new Vector2(1f, 1f);
                 tbrt.pivot = new Vector2(0.5f, 1f);
-                tbrt.anchoredPosition = new Vector2(0f, 0f);
+                tbrt.anchoredPosition = Vector2.zero;
                 tbrt.sizeDelta = new Vector2(0f, 34f);
             }
 
             _inspectorTitleText = CreateText(titleBar.transform, "Inspector",
-                new Vector2(0f, 0f), new Vector2(1f, 1f),
+                Vector2.zero, Vector2.one,
                 new Vector2(12f, 0f), new Vector2(-95f, 0f),
                 13f, FontStyles.Bold, Color.white, TextAlignmentOptions.MidlineLeft);
             if (_inspectorTitleText != null)
@@ -632,7 +632,7 @@ namespace DeadCoreEditor
             }
 
             GameObject scrollObj = CreateScrollView(_inspectorPanel.transform, "Inspector_Scroll",
-                new Vector2(0f, 0f), new Vector2(1f, 1f),
+                Vector2.zero, Vector2.one,
                 new Vector2(6f, 6f), new Vector2(-12f, -38f),
                 out _inspectorContent);
 
@@ -671,7 +671,7 @@ namespace DeadCoreEditor
 
             CreateVector3Row(transCard.transform, "Scale", out _scaleXInput, out _scaleYInput, out _scaleZInput, OnTransformInputChanged);
 
-            // 2. Gameplay Cards
+            // 2. Jumper Card
             _jumperSection = CreateSectionCard(_inspectorContent, "Jumper", "Jumper Launch Pad");
             CreateInspectorSliderRow(_jumperSection.transform, "Launch Force", out _jumperSlider, out _jumperValueText, 5f, 75f, (val) =>
             {
@@ -680,6 +680,7 @@ namespace DeadCoreEditor
                 if (_jumperValueText != null) _jumperValueText.text = $"{val:F1}";
             });
 
+            // 3. Turbine Card
             _turbineSection = CreateSectionCard(_inspectorContent, "Turbine", "Helix Turbine Fan");
             CreateInspectorSliderRow(_turbineSection.transform, "Wind Speed", out _turbineSlider, out _turbineValueText, 5f, 100f, (val) =>
             {
@@ -688,6 +689,7 @@ namespace DeadCoreEditor
                 if (_turbineValueText != null) _turbineValueText.text = $"{val:F1}";
             });
 
+            // 4. Turret Card
             _turretSection = CreateSectionCard(_inspectorContent, "Turret", "Defense Turret");
             CreateInspectorSliderRow(_turretSection.transform, "Fire Delay", out _turretSlider, out _turretValueText, 0.1f, 5.0f, (val) =>
             {
@@ -696,6 +698,7 @@ namespace DeadCoreEditor
                 if (_turretValueText != null) _turretValueText.text = $"{val:F2}s";
             });
 
+            // 5. Laser Card
             _laserSection = CreateSectionCard(_inspectorContent, "Laser", "Laser Barrier Hazard");
             CreateInspectorSliderRow(_laserSection.transform, "Rotation Spd", out _laserSlider, out _laserValueText, 0f, 180f, (val) =>
             {
@@ -704,9 +707,63 @@ namespace DeadCoreEditor
                 if (_laserValueText != null) _laserValueText.text = $"{val:F0} d/s";
             });
 
-            // 3. Merged Lighting Card + RGB Color Selector
-            _lightSection = CreateSectionCard(_inspectorContent, "Lighting", "Lighting Properties");
+            // 6. Switch Card
+            _switchSection = CreateSectionCard(_inspectorContent, "Switch", "Switch Target (Controls Children)");
+            CreateInspectorSliderRow(_switchSection.transform, "Active Time (s)", out _switchTimerSlider, out _switchTimerValText, 0.5f, 30.0f, (val) =>
+            {
+                if (_suppressInspectorCallbacks || EditorSessionManager.SelectedObject == null) return;
+                if (SwitchService.PlacedSwitches.TryGetValue(EditorSessionManager.SelectedObject, out var cfg))
+                {
+                    cfg.TimeBeforeSwitch = val;
+                    SwitchService.ApplySwitchConfig(EditorSessionManager.SelectedObject, cfg);
+                    if (_switchTimerValText != null) _switchTimerValText.text = $"{val:F1}s";
+                }
+            });
 
+            GameObject switchBtnRow1 = CreateRowContainer(_switchSection.transform, "Row_SwitchToggles1", 24f);
+            SetupRowHorizontalLayout(switchBtnRow1, 4f);
+
+            _switchAutoToggleBtn = CreateButton(switchBtnRow1.transform, "Btn_TimedToggle", "Timed: YES", 120f, () =>
+            {
+                if (EditorSessionManager.SelectedObject == null) return;
+                if (SwitchService.PlacedSwitches.TryGetValue(EditorSessionManager.SelectedObject, out var cfg))
+                {
+                    cfg.IsAutoSwitch = !cfg.IsAutoSwitch;
+                    SwitchService.ApplySwitchConfig(EditorSessionManager.SelectedObject, cfg);
+                    RefreshInspectorValues();
+                }
+            });
+            _switchAutoToggleText = _switchAutoToggleBtn.GetComponentInChildren<TMP_Text>();
+
+            _switchInvertToggleBtn = CreateButton(switchBtnRow1.transform, "Btn_InvertToggle", "Turn OFF: YES", 120f, () =>
+            {
+                if (EditorSessionManager.SelectedObject == null) return;
+                if (SwitchService.PlacedSwitches.TryGetValue(EditorSessionManager.SelectedObject, out var cfg))
+                {
+                    cfg.InvertChildren = !cfg.InvertChildren;
+                    SwitchService.ApplySwitchConfig(EditorSessionManager.SelectedObject, cfg);
+                    RefreshInspectorValues();
+                }
+            });
+            _switchInvertToggleText = _switchInvertToggleBtn.GetComponentInChildren<TMP_Text>();
+
+            GameObject switchBtnRow2 = CreateRowContainer(_switchSection.transform, "Row_SwitchToggles2", 24f);
+            SetupRowHorizontalLayout(switchBtnRow2, 4f);
+
+            _switchInitialToggleBtn = CreateButton(switchBtnRow2.transform, "Btn_InitialToggle", "Starts Active: NO", 240f, () =>
+            {
+                if (EditorSessionManager.SelectedObject == null) return;
+                if (SwitchService.PlacedSwitches.TryGetValue(EditorSessionManager.SelectedObject, out var cfg))
+                {
+                    cfg.InitialStateOn = !cfg.InitialStateOn;
+                    SwitchService.ApplySwitchConfig(EditorSessionManager.SelectedObject, cfg);
+                    RefreshInspectorValues();
+                }
+            });
+            _switchInitialToggleText = _switchInitialToggleBtn.GetComponentInChildren<TMP_Text>();
+
+            // 7. Lighting Card
+            _lightSection = CreateSectionCard(_inspectorContent, "Lighting", "Lighting Properties");
             GameObject badgeRow = CreateRowContainer(_lightSection.transform, "Row_Badge", 22f);
             _lightTypeBadgeText = CreateText(badgeRow.transform, "Type: [Tech Spotlight]", Vector2.zero, Vector2.one, Vector2.zero, Vector2.zero, 11f, FontStyles.Bold, new Color(0.25f, 0.9f, 1f), TextAlignmentOptions.MidlineLeft);
 
@@ -744,9 +801,8 @@ namespace DeadCoreEditor
             });
 
             GameObject swatchRow = CreateRowContainer(_lightSection.transform, "Row_Swatch", 24f);
-            CreateText(swatchRow.transform, "Active Color Swatch", new Vector2(0f, 0f), new Vector2(0.65f, 1f), new Vector2(4f, 0f), Vector2.zero, 10f, FontStyles.Normal, Color.white, TextAlignmentOptions.MidlineLeft);
+            CreateText(swatchRow.transform, "Active Color Swatch", Vector2.zero, new Vector2(0.65f, 1f), new Vector2(4f, 0f), Vector2.zero, 10f, FontStyles.Normal, Color.white, TextAlignmentOptions.MidlineLeft);
 
-            // 2. Swatch created with native RectTransform
             GameObject swatchObj = new GameObject("Swatch", Il2CppType.Of<RectTransform>());
             swatchObj.transform.SetParent(swatchRow.transform, false);
             RectTransform swrt = swatchObj.GetComponent<RectTransform>();
@@ -758,41 +814,15 @@ namespace DeadCoreEditor
                 swrt.anchoredPosition = new Vector2(-4f, 0f);
                 swrt.sizeDelta = new Vector2(60f, 18f);
             }
-
             _lightColorPreviewSwatch = swatchObj.AddComponent<Image>();
             _lightColorPreviewSwatch.color = Color.cyan;
 
-            CreateInspectorSliderRow(_lightSection.transform, "Red (R)", out _lightRSlider, out _lightRValText, 0f, 255f, (val) =>
-            {
-                if (_suppressInspectorCallbacks || EditorSessionManager.SelectedObject == null) return;
-                OnLightRGBChanged();
-            });
+            CreateInspectorSliderRow(_lightSection.transform, "Red (R)", out _lightRSlider, out _lightRValText, 0f, 255f, (val) => OnLightRGBChanged());
+            CreateInspectorSliderRow(_lightSection.transform, "Green (G)", out _lightGSlider, out _lightGValText, 0f, 255f, (val) => OnLightRGBChanged());
+            CreateInspectorSliderRow(_lightSection.transform, "Blue (B)", out _lightBSlider, out _lightBValText, 0f, 255f, (val) => OnLightRGBChanged());
 
-            CreateInspectorSliderRow(_lightSection.transform, "Green (G)", out _lightGSlider, out _lightGValText, 0f, 255f, (val) =>
-            {
-                if (_suppressInspectorCallbacks || EditorSessionManager.SelectedObject == null) return;
-                OnLightRGBChanged();
-            });
-
-            CreateInspectorSliderRow(_lightSection.transform, "Blue (B)", out _lightBSlider, out _lightBValText, 0f, 255f, (val) =>
-            {
-                if (_suppressInspectorCallbacks || EditorSessionManager.SelectedObject == null) return;
-                OnLightRGBChanged();
-            });
-
-            GameObject colorPresetsRow = CreateRowContainer(_lightSection.transform, "Row_ColorPresets", 26f);
-            SetupRowHorizontalLayout(colorPresetsRow, 4f);
-
-            CreateButton(colorPresetsRow.transform, "Btn_Cyan", "Cyan", 40f, () => ApplyPresetColor(Color.cyan), Color.cyan);
-            CreateButton(colorPresetsRow.transform, "Btn_Sun", "Gold", 40f, () => ApplyPresetColor(new Color(1f, 0.8f, 0.35f)), new Color(1f, 0.8f, 0.35f));
-            CreateButton(colorPresetsRow.transform, "Btn_Green", "Acid", 40f, () => ApplyPresetColor(new Color(0.2f, 1f, 0.4f)), new Color(0.2f, 1f, 0.4f));
-            CreateButton(colorPresetsRow.transform, "Btn_Red", "Red", 40f, () => ApplyPresetColor(new Color(1f, 0.2f, 0.2f)), new Color(1f, 0.2f, 0.2f));
-            CreateButton(colorPresetsRow.transform, "Btn_White", "White", 40f, () => ApplyPresetColor(Color.white), Color.white);
-            CreateButton(colorPresetsRow.transform, "Btn_Violet", "Violet", 40f, () => ApplyPresetColor(new Color(0.7f, 0.3f, 1f)), new Color(0.7f, 0.3f, 1f));
-
-            // 4. Motion Path Card
+            // 8. Motion Path Card
             _motionPathSection = CreateSectionCard(_inspectorContent, "MotionPath", "Kinematic Motion Path");
-
             _motionPathCreateBtnObj = CreateRowContainer(_motionPathSection.transform, "Row_CreatePath", 28f);
             SetupRowHorizontalLayout(_motionPathCreateBtnObj, 0f);
 
@@ -800,9 +830,7 @@ namespace DeadCoreEditor
             {
                 GameObject target = EditorSessionManager.SelectedObject;
                 if (target == null) return;
-
-                if (EditorSessionManager.IsWaypointMarker(target, out GameObject owner, out _))
-                    target = owner;
+                if (EditorSessionManager.IsWaypointMarker(target, out GameObject owner, out _)) target = owner;
 
                 Vector3 startPos = target.transform.position;
                 Vector3 endPos = startPos + new Vector3(10f, 0f, 0f);
@@ -816,7 +844,6 @@ namespace DeadCoreEditor
                 };
 
                 EditorSessionManager.MotionPaths[target] = newPath;
-
                 var rb = target.GetComponent<Rigidbody>();
                 if (rb == null) rb = target.AddComponent<Rigidbody>();
                 rb.isKinematic = true;
@@ -841,13 +868,6 @@ namespace DeadCoreEditor
             mpcCsf.verticalFit = ContentSizeFitter.FitMode.PreferredSize;
 
             _motionPathStatusText = CreateText(_motionPathActiveControlsObj.transform, "Path Active", Vector2.zero, Vector2.one, Vector2.zero, Vector2.zero, 11f, FontStyles.Normal, Color.cyan, TextAlignmentOptions.MidlineLeft);
-            if (_motionPathStatusText != null)
-            {
-                LayoutElement mple = _motionPathStatusText.gameObject.AddComponent<LayoutElement>();
-                mple.preferredHeight = 18f;
-            }
-
-            // Move Speed Slider
             CreateInspectorSliderRow(_motionPathActiveControlsObj.transform, "Speed (m/s)", out _motionPathSpeedSlider, out _motionPathSpeedValText, 0.0f, 25f, (val) =>
             {
                 if (_suppressInspectorCallbacks) return;
@@ -855,15 +875,13 @@ namespace DeadCoreEditor
                 if (target == null) return;
                 if (EditorSessionManager.IsWaypointMarker(target, out GameObject owner, out _)) target = owner;
 
-                ObjectMotionPath motionPath = null;
-                if (EditorSessionManager.MotionPaths.TryGetValue(target, out motionPath) && motionPath != null)
+                if (EditorSessionManager.MotionPaths.TryGetValue(target, out var motionPath) && motionPath != null)
                 {
                     motionPath.Speed = val;
                     if (_motionPathSpeedValText != null) _motionPathSpeedValText.text = $"{val:F1} m/s";
                 }
             });
 
-            // Rotation Speed Slider (-150 to +150 deg/s)
             CreateInspectorSliderRow(_motionPathActiveControlsObj.transform, "Spin (deg/s)", out _motionPathRotSlider, out _motionPathRotValText, -150f, 150f, (val) =>
             {
                 if (_suppressInspectorCallbacks) return;
@@ -871,15 +889,13 @@ namespace DeadCoreEditor
                 if (target == null) return;
                 if (EditorSessionManager.IsWaypointMarker(target, out GameObject owner, out _)) target = owner;
 
-                ObjectMotionPath motionPath = null;
-                if (EditorSessionManager.MotionPaths.TryGetValue(target, out motionPath) && motionPath != null)
+                if (EditorSessionManager.MotionPaths.TryGetValue(target, out var motionPath) && motionPath != null)
                 {
                     motionPath.RotationSpeed = Mathf.Round(val);
                     if (_motionPathRotValText != null) _motionPathRotValText.text = $"{motionPath.RotationSpeed:F0} d/s";
                 }
             });
 
-            // Rotation Axis Toggle & Zero Reset Buttons
             GameObject rotRow = CreateRowContainer(_motionPathActiveControlsObj.transform, "Row_RotControls", 24f);
             SetupRowHorizontalLayout(rotRow, 4f);
 
@@ -891,9 +907,7 @@ namespace DeadCoreEditor
 
                 if (EditorSessionManager.MotionPaths.TryGetValue(target, out var motionPath) && motionPath != null)
                 {
-                    // Cycles: 0 (X), 1 (Y), 2 (Z), 3 (Path Dir), 4 (Custom Override)
                     motionPath.RotationAxis = (motionPath.RotationAxis + 1) % 5;
-
                     if (motionPath.RotationAxis == 0) motionPath.CustomAxis = Vector3.right;
                     else if (motionPath.RotationAxis == 1) motionPath.CustomAxis = Vector3.up;
                     else if (motionPath.RotationAxis == 2) motionPath.CustomAxis = Vector3.forward;
@@ -904,7 +918,6 @@ namespace DeadCoreEditor
                     }
 
                     RefreshInspectorValues();
-                    EditorSessionManager.ShowNotification($"Rotation Axis set to [{GetRotationAxisName(motionPath.RotationAxis)}]");
                 }
             }, new Color(0.18f, 0.28f, 0.40f, 1f));
             _motionPathAxisBtnText = _motionPathAxisBtn.GetComponentInChildren<TMP_Text>();
@@ -920,143 +933,61 @@ namespace DeadCoreEditor
                     motionPath.RotationSpeed = 0f;
                     if (_motionPathRotSlider != null) _motionPathRotSlider.value = 0f;
                     if (_motionPathRotValText != null) _motionPathRotValText.text = "0 d/s";
-                    EditorSessionManager.ShowNotification("Rotation stopped.");
                 }
             }, new Color(0.25f, 0.28f, 0.32f, 1f));
 
-            // Custom 3D Axis Override Inputs (X, Y, Z)
             CreateVector3Row(_motionPathActiveControlsObj.transform, "Axis Vector", out _motionPathAxisXInput, out _motionPathAxisYInput, out _motionPathAxisZInput, OnMotionPathAxisInputChanged);
 
-            // Quick Axis Helpers: Align to Path & Normalize
-            GameObject axisHelperRow = CreateRowContainer(_motionPathActiveControlsObj.transform, "Row_AxisHelpers", 24f);
-            SetupRowHorizontalLayout(axisHelperRow, 4f);
-
-            CreateButton(axisHelperRow.transform, "Btn_AlignPath", "Align Path Dir", 120f, () =>
+            // 9. Skybox Card
+            _skyboxSection = CreateSectionCard(_inspectorContent, "Skybox", "Celestial Skybox & Horizon");
+            CreateInspectorSliderRow(_skyboxSection.transform, "Exposure", out _skyExposureSlider, out _skyExposureValText, 0.1f, 4.0f, (val) =>
             {
-                GameObject target = EditorSessionManager.SelectedObject;
-                if (target == null) return;
-                if (EditorSessionManager.IsWaypointMarker(target, out GameObject owner, out _)) target = owner;
+                if (_suppressInspectorCallbacks) return;
+                SkyboxControllerService.ActiveConfig.Exposure = val;
+                SkyboxControllerService.ApplyProperties();
+                if (_skyExposureValText != null) _skyExposureValText.text = $"{val:F2}x";
+            });
 
-                if (EditorSessionManager.MotionPaths.TryGetValue(target, out var mp) && mp != null)
-                {
-                    Vector3 delta = mp.PointB - mp.PointA;
-                    if (delta.sqrMagnitude > 0.001f)
-                    {
-                        mp.RotationAxis = 4; // Set to Custom Override
-                        mp.CustomAxis = target.transform.InverseTransformDirection(delta.normalized).normalized;
-                        RefreshInspectorValues();
-                        EditorSessionManager.ShowNotification($"Aligned axis to path: ({mp.CustomAxis.x:F2}, {mp.CustomAxis.y:F2}, {mp.CustomAxis.z:F2})");
-                    }
-                }
-            }, new Color(0.18f, 0.32f, 0.45f, 1f));
-
-            CreateButton(axisHelperRow.transform, "Btn_NormAxis", "Normalize", 115f, () =>
+            CreateInspectorSliderRow(_skyboxSection.transform, "Yaw Align", out _skyYawSlider, out _skyYawValText, 0f, 360f, (val) =>
             {
-                GameObject target = EditorSessionManager.SelectedObject;
-                if (target == null) return;
-                if (EditorSessionManager.IsWaypointMarker(target, out GameObject owner, out _)) target = owner;
+                if (_suppressInspectorCallbacks) return;
+                SkyboxControllerService.ActiveConfig.YawOffset = val;
+                SkyboxControllerService.ActiveConfig.CurrentAngle = val;
+                SkyboxControllerService.ApplyRotation(val);
+                if (_skyYawValText != null) _skyYawValText.text = $"{val:F0}°";
+            });
 
-                if (EditorSessionManager.MotionPaths.TryGetValue(target, out var mp) && mp != null)
-                {
-                    if (mp.CustomAxis.sqrMagnitude > 0.0001f)
-                        mp.CustomAxis.Normalize();
-                    else
-                        mp.CustomAxis = Vector3.up;
-
-                    mp.RotationAxis = 4;
-                    RefreshInspectorValues();
-                    EditorSessionManager.ShowNotification("Normalized spin axis vector.");
-                }
-            }, new Color(0.22f, 0.25f, 0.30f, 1f));
-        }
-
-        private static void ApplyPointBOffset(Vector3 offset)
-        {
-            GameObject target = EditorSessionManager.SelectedObject;
-            if (target == null) return;
-            if (EditorSessionManager.IsWaypointMarker(target, out GameObject owner, out _)) target = owner;
-
-            ObjectMotionPath motionPath = null;
-            if (EditorSessionManager.MotionPaths.TryGetValue(target, out motionPath) && motionPath != null)
+            CreateInspectorSliderRow(_skyboxSection.transform, "Spin Rate", out _skySpinSlider, out _skySpinValText, -30f, 30f, (val) =>
             {
-                motionPath.PointB = motionPath.PointA + offset;
-                EditorSessionManager.UpdateWaypointVisuals(target, motionPath);
-                RefreshInspectorValues();
-                EditorSessionManager.ShowNotification($"Moved Point B by {offset}");
+                if (_suppressInspectorCallbacks) return;
+                SkyboxControllerService.ActiveConfig.SpinSpeed = val;
+                if (_skySpinValText != null) _skySpinValText.text = $"{val:F1}°/s";
+            });
+
+            GameObject skySwatchRow = CreateRowContainer(_skyboxSection.transform, "Row_SkySwatch", 24f);
+            CreateText(skySwatchRow.transform, "Sky Tint Swatch", Vector2.zero, new Vector2(0.65f, 1f), new Vector2(4f, 0f), Vector2.zero, 10f, FontStyles.Normal, Color.white, TextAlignmentOptions.MidlineLeft);
+
+            GameObject skySwatchObj = new GameObject("SkySwatch", Il2CppType.Of<RectTransform>());
+            skySwatchObj.transform.SetParent(skySwatchRow.transform, false);
+            RectTransform sswrt = skySwatchObj.GetComponent<RectTransform>();
+            if (sswrt != null)
+            {
+                sswrt.anchorMin = new Vector2(1f, 0.5f);
+                sswrt.anchorMax = new Vector2(1f, 0.5f);
+                sswrt.pivot = new Vector2(1f, 0.5f);
+                sswrt.anchoredPosition = new Vector2(-4f, 0f);
+                sswrt.sizeDelta = new Vector2(60f, 18f);
             }
-        }
+            _skyColorPreviewSwatch = skySwatchObj.AddComponent<Image>();
+            _skyColorPreviewSwatch.color = Color.white;
 
-        private static void OnLightRGBChanged()
-        {
-            if (EditorSessionManager.SelectedObject == null) return;
-            if (!EditorSessionManager.PlacedLights.TryGetValue(EditorSessionManager.SelectedObject, out var cfg)) return;
-
-            float r = (_lightRSlider != null) ? _lightRSlider.value / 255f : cfg.Color.r;
-            float g = (_lightGSlider != null) ? _lightGSlider.value / 255f : cfg.Color.g;
-            float b = (_lightBSlider != null) ? _lightBSlider.value / 255f : cfg.Color.b;
-
-            Color newCol = new Color(r, g, b, 1f);
-            cfg.Color = newCol;
-
-            if (_lightRValText != null) _lightRValText.text = Mathf.RoundToInt(_lightRSlider.value).ToString();
-            if (_lightGValText != null) _lightGValText.text = Mathf.RoundToInt(_lightGSlider.value).ToString();
-            if (_lightBValText != null) _lightBValText.text = Mathf.RoundToInt(_lightBSlider.value).ToString();
-            if (_lightColorPreviewSwatch != null) _lightColorPreviewSwatch.color = newCol;
-
-            EditorSessionManager.ApplyLightConfig(EditorSessionManager.SelectedObject, cfg);
-        }
-
-        private static void ApplyPresetColor(Color c)
-        {
-            if (EditorSessionManager.SelectedObject == null) return;
-            if (EditorSessionManager.PlacedLights.TryGetValue(EditorSessionManager.SelectedObject, out var cfg))
-            {
-                cfg.Color = c;
-                EditorSessionManager.ApplyLightConfig(EditorSessionManager.SelectedObject, cfg);
-
-                _suppressInspectorCallbacks = true;
-                if (_lightRSlider != null) { _lightRSlider.value = c.r * 255f; if (_lightRValText != null) _lightRValText.text = Mathf.RoundToInt(c.r * 255f).ToString(); }
-                if (_lightGSlider != null) { _lightGSlider.value = c.g * 255f; if (_lightGValText != null) _lightGValText.text = Mathf.RoundToInt(c.g * 255f).ToString(); }
-                if (_lightBSlider != null) { _lightBSlider.value = c.b * 255f; if (_lightBValText != null) _lightBValText.text = Mathf.RoundToInt(c.b * 255f).ToString(); }
-                if (_lightColorPreviewSwatch != null) _lightColorPreviewSwatch.color = c;
-                _suppressInspectorCallbacks = false;
-
-                EditorSessionManager.ShowNotification("Applied light preset.");
-            }
-        }
-
-        private static void ToggleInspectorExpansion()
-        {
-            _isInspectorExpanded = !_isInspectorExpanded;
-            if (_inspectorPanelRt != null)
-            {
-                float w = _isInspectorExpanded ? 380f : 280f;
-                _inspectorPanelRt.sizeDelta = new Vector2(w, -40f);
-                _inspectorPanelRt.anchoredPosition = new Vector2(-w * 0.5f, -20f);
-            }
-            if (_inspectorExpandBtnText != null)
-            {
-                _inspectorExpandBtnText.text = _isInspectorExpanded ? "[- Slim]" : "[+ Expand]";
-            }
-        }
-
-        private static void OffsetPointB(Vector3 offset)
-        {
-            GameObject target = EditorSessionManager.SelectedObject;
-            if (target == null) return;
-            if (EditorSessionManager.IsWaypointMarker(target, out GameObject owner, out _)) target = owner;
-
-            if (EditorSessionManager.MotionPaths.TryGetValue(target, out var path))
-            {
-                path.PointB = path.PointA + offset;
-                EditorSessionManager.UpdateWaypointVisuals(target, path);
-                RefreshInspectorValues();
-                EditorSessionManager.ShowNotification($"Point B offset to {offset}");
-            }
+            CreateInspectorSliderRow(_skyboxSection.transform, "Red (R)", out _skyRSlider, out _skyRValText, 0f, 255f, (v) => OnSkyColorSlidersChanged());
+            CreateInspectorSliderRow(_skyboxSection.transform, "Green (G)", out _skyGSlider, out _skyGValText, 0f, 255f, (v) => OnSkyColorSlidersChanged());
+            CreateInspectorSliderRow(_skyboxSection.transform, "Blue (B)", out _skyBSlider, out _skyBValText, 0f, 255f, (v) => OnSkyColorSlidersChanged());
         }
 
         // =========================================================================
-        // ASSET BROWSER (BOTTOM DOCKED BETWEEN HIERARCHY & INSPECTOR)
+        // ASSET BROWSER BUILDER
         // =========================================================================
 
         private static void BuildAssetBrowserPanel()
@@ -1065,7 +996,7 @@ namespace DeadCoreEditor
             _assetBrowserPanel.transform.SetParent(_canvasRoot.transform, false);
 
             RectTransform abrt = _assetBrowserPanel.AddComponent<RectTransform>();
-            abrt.anchorMin = new Vector2(0f, 0f);
+            abrt.anchorMin = Vector2.zero;
             abrt.anchorMax = new Vector2(1f, 0f);
             abrt.pivot = new Vector2(0.5f, 0f);
             abrt.offsetMin = new Vector2(265f, 0f);
@@ -1074,7 +1005,6 @@ namespace DeadCoreEditor
             Image abImg = _assetBrowserPanel.AddComponent<Image>();
             abImg.color = new Color(0.10f, 0.11f, 0.13f, 0.98f);
 
-            // 1. Top Category Tabs
             GameObject topTabs = new GameObject("Browser_CategoryTabs");
             topTabs.transform.SetParent(_assetBrowserPanel.transform, false);
             RectTransform ttrt = topTabs.AddComponent<RectTransform>();
@@ -1108,7 +1038,6 @@ namespace DeadCoreEditor
                 new Vector2(-105f, -16f), new Vector2(180f, 24f),
                 "Search models...", (s) => RefreshAssetBrowser());
 
-            // 2. Secondary Size Tier & Sort Row
             GameObject sizeBar = new GameObject("Browser_SizeBar");
             sizeBar.transform.SetParent(_assetBrowserPanel.transform, false);
             RectTransform sbrt = sizeBar.AddComponent<RectTransform>();
@@ -1127,9 +1056,9 @@ namespace DeadCoreEditor
             shlg.childForceExpandHeight = true;
 
             CreateSizeFilterButton(sizeBar.transform, "ALL SIZES", AssetSizeTier.All, 85f);
-            CreateSizeFilterButton(sizeBar.transform, "SMALL 2-5m", AssetSizeTier.Small, 95f);
-            CreateSizeFilterButton(sizeBar.transform, "MEDIUM 5-11m", AssetSizeTier.Medium, 105f);
-            CreateSizeFilterButton(sizeBar.transform, "LARGE 11-50m", AssetSizeTier.Large, 105f);
+            CreateSizeFilterButton(sizeBar.transform, "SMALL 0-3m", AssetSizeTier.Small, 95f);
+            CreateSizeFilterButton(sizeBar.transform, "MEDIUM 3-11m", AssetSizeTier.Medium, 105f);
+            CreateSizeFilterButton(sizeBar.transform, "LARGE 11m+", AssetSizeTier.Large, 105f);
 
             Button sortBtn = CreateButton(sizeBar.transform, "Btn_ToggleSortOrder", "SIZE: ▲ ASC", 100f, () =>
             {
@@ -1140,12 +1069,11 @@ namespace DeadCoreEditor
             }, new Color(0.18f, 0.28f, 0.40f, 1f));
             _sortSizeBtnText = sortBtn.GetComponentInChildren<TMP_Text>();
 
-            // 3. Scrollable Grid Area
             GameObject scrollObj = new GameObject("Browser_Scroll");
             scrollObj.transform.SetParent(_assetBrowserPanel.transform, false);
             RectTransform srt = scrollObj.AddComponent<RectTransform>();
             srt.anchorMin = Vector2.zero;
-            srt.anchorMax = new Vector2(1f, 1f);
+            srt.anchorMax = Vector2.one;
             srt.offsetMin = new Vector2(8f, 6f);
             srt.offsetMax = new Vector2(-8f, -62f);
 
@@ -1168,7 +1096,7 @@ namespace DeadCoreEditor
             _browserContent.anchorMin = new Vector2(0f, 1f);
             _browserContent.anchorMax = new Vector2(1f, 1f);
             _browserContent.pivot = new Vector2(0.5f, 1f);
-            _browserContent.sizeDelta = new Vector2(0f, 0f);
+            _browserContent.sizeDelta = Vector2.zero;
 
             GridLayoutGroup glg = content.AddComponent<GridLayoutGroup>();
             glg.cellSize = new Vector2(100f, 106f);
@@ -1206,9 +1134,8 @@ namespace DeadCoreEditor
             }
             _browserCards.Clear();
 
-            // Split search string into separate query tokens (order-independent)
             string rawSearch = (_browserSearchInput != null && !string.IsNullOrEmpty(_browserSearchInput.text))
-                ? _browserSearchInput.text.Trim().ToLower() : "";
+                ? _browserSearchInput.text.Trim().ToLowerInvariant() : "";
 
             string[] searchTokens = !string.IsNullOrEmpty(rawSearch)
                 ? rawSearch.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries)
@@ -1221,64 +1148,27 @@ namespace DeadCoreEditor
                 CatalogAsset asset = EditorSessionManager.AllAssets[i];
                 if (asset == null || asset.SourceTemplate == null) continue;
 
-                // MULTI-TOKEN SMART SEARCH: Every keyword typed must match either title, category, or size
                 if (searchTokens != null && searchTokens.Length > 0)
                 {
-                    string dName = asset.DisplayName.ToLower();
-                    string subCat = (asset.SubCategory ?? "").ToLower();
-                    string badge = asset.GetSizeBadgeText().ToLower();
-                    string tier = asset.SizeTier.ToString().ToLower();
+                    string dName = asset.DisplayName.ToLowerInvariant();
+                    string subCat = (asset.SubCategory ?? "").ToLowerInvariant();
+                    string badge = asset.GetSizeBadgeText().ToLowerInvariant();
+                    string tier = asset.SizeTier.ToString().ToLowerInvariant();
 
                     bool allTokensMatched = true;
                     for (int t = 0; t < searchTokens.Length; t++)
                     {
                         string token = searchTokens[t];
-                        bool tokenFound = dName.Contains(token) ||
-                                          subCat.Contains(token) ||
-                                          badge.Contains(token) ||
-                                          tier.Contains(token);
-
-                        if (!tokenFound)
-                        {
-                            allTokensMatched = false;
-                            break;
-                        }
+                        bool tokenFound = dName.Contains(token) || subCat.Contains(token) || badge.Contains(token) || tier.Contains(token);
+                        if (!tokenFound) { allTokensMatched = false; break; }
                     }
-
                     if (!allTokensMatched) continue;
                 }
 
-                // Tab Categories
-                if (_activeBrowserCategory == "Architecture")
-                {
-                    bool isArch = asset.Category == AssetCategory.Building;
-                    if (asset.IsJumper || asset.IsCheckPoint || asset.IsSpawnGate || asset.IsGoalGate ||
-                        asset.IsLaser || asset.IsRotatingLaser || asset.IsTurret || asset.IsHelix)
-                    {
-                        isArch = false;
-                    }
-                    if (!isArch) continue;
-                }
-                else if (_activeBrowserCategory == "Gameplay")
-                {
-                    bool isGame = asset.IsJumper || asset.IsCheckPoint || asset.IsSpawnGate || asset.IsGoalGate ||
-                                  asset.IsSpotlight || asset.IsSunlight ||
-                                  asset.SubCategory.Equals("Gameplay", StringComparison.OrdinalIgnoreCase) ||
-                                  asset.SubCategory.Equals("Lighting", StringComparison.OrdinalIgnoreCase);
-                    if (!isGame) continue;
-                }
-                else if (_activeBrowserCategory == "Hazards")
-                {
-                    bool isHazard = asset.IsLaser || asset.IsRotatingLaser || asset.IsTurret || asset.IsHelix ||
-                                    asset.SubCategory.Equals("Hazards", StringComparison.OrdinalIgnoreCase);
-                    if (!isHazard) continue;
-                }
-                else if (_activeBrowserCategory == "Instances")
-                {
-                    bool isInst = asset.SubCategory.Equals("Instances", StringComparison.OrdinalIgnoreCase) ||
-                                  asset.DisplayName.StartsWith("[Prefab]");
-                    if (!isInst) continue;
-                }
+                if (_activeBrowserCategory == "Architecture" && (asset.Traits & ~AssetTrait.Architecture) != 0) continue;
+                if (_activeBrowserCategory == "Gameplay" && (asset.Traits & (AssetTrait.Jumper | AssetTrait.Checkpoint | AssetTrait.SpawnGate | AssetTrait.GoalGate | AssetTrait.Spotlight | AssetTrait.Sunlight | AssetTrait.Switch)) == 0) continue;
+                if (_activeBrowserCategory == "Hazards" && (asset.Traits & (AssetTrait.Laser | AssetTrait.RotatingLaser | AssetTrait.Turret | AssetTrait.Turbine)) == 0) continue;
+                if (_activeBrowserCategory == "Instances" && !asset.IsPrefabInstance) continue;
 
                 if (_activeSizeFilter != AssetSizeTier.All && asset.SizeTier != _activeSizeFilter)
                     continue;
@@ -1296,7 +1186,6 @@ namespace DeadCoreEditor
             {
                 CatalogAsset asset = matchedAssets[i];
 
-                // 1. Safe RectTransform instantiation for the card
                 GameObject card = new GameObject("Card_" + asset.DisplayName, Il2CppType.Of<RectTransform>());
                 card.transform.SetParent(_browserContent, false);
 
@@ -1305,23 +1194,13 @@ namespace DeadCoreEditor
 
                 Image bg = card.AddComponent<Image>();
                 bg.color = new Color(0.15f, 0.17f, 0.21f, 0.95f);
-                bg.raycastTarget = true; // Button target graphic
+                bg.raycastTarget = true;
 
                 Button btn = card.AddComponent<Button>();
                 btn.targetGraphic = bg;
-                ColorBlock cb = btn.colors;
-                cb.normalColor = Color.white;
-                cb.highlightedColor = new Color(1.3f, 1.3f, 1.3f, 1f);
-                cb.pressedColor = new Color(0.2f, 0.7f, 1.0f, 1f);
-                btn.colors = cb;
-
                 CatalogAsset capturedAsset = asset;
-                btn.onClick.AddListener((Action)(() =>
-                {
-                    EditorSessionManager.EquipAsset(capturedAsset);
-                }));
+                btn.onClick.AddListener((Action)(() => EditorSessionManager.EquipAsset(capturedAsset)));
 
-                // Thumbnail (raycastTarget = false)
                 GameObject preview = new GameObject("Thumbnail", Il2CppType.Of<RectTransform>());
                 preview.transform.SetParent(card.transform, false);
 
@@ -1332,21 +1211,10 @@ namespace DeadCoreEditor
 
                 Image pImg = preview.AddComponent<Image>();
                 pImg.raycastTarget = false;
+                pImg.color = new Color(0.12f, 0.15f, 0.20f, 0.9f);
 
-                if (asset.ThumbnailSprite == null)
-                    asset.ThumbnailSprite = AssetThumbnailRenderer.GenerateThumbnail(asset);
+                AssetThumbnailRenderer.RequestThumbnail(asset, pImg);
 
-                if (asset.ThumbnailSprite != null)
-                {
-                    pImg.sprite = asset.ThumbnailSprite;
-                    pImg.color = Color.white;
-                }
-                else
-                {
-                    pImg.color = asset.IsPrefabInstance ? new Color(0.6f, 0.25f, 0.85f) : new Color(0.25f, 0.35f, 0.45f);
-                }
-
-                // Size Badge (raycastTarget = false)
                 GameObject badgeObj = new GameObject("SizeBadge", Il2CppType.Of<RectTransform>());
                 badgeObj.transform.SetParent(card.transform, false);
 
@@ -1356,9 +1224,9 @@ namespace DeadCoreEditor
                 bdrt.sizeDelta = Vector2.zero;
 
                 Color badgeColor = asset.IsPrefabInstance ? new Color(0.65f, 0.2f, 0.95f, 0.9f) :
-                  (asset.SizeTier == AssetSizeTier.Small ? new Color(0.2f, 0.85f, 0.4f, 0.85f) :
-                  (asset.SizeTier == AssetSizeTier.Medium ? new Color(0.1f, 0.7f, 1.0f, 0.85f) :
-                   new Color(1.0f, 0.55f, 0.15f, 0.85f)));
+                    (asset.SizeTier == AssetSizeTier.Small ? new Color(0.2f, 0.85f, 0.4f, 0.85f) :
+                    (asset.SizeTier == AssetSizeTier.Medium ? new Color(0.1f, 0.7f, 1.0f, 0.85f) :
+                    new Color(1.0f, 0.55f, 0.15f, 0.85f)));
 
                 Image badgeImg = badgeObj.AddComponent<Image>();
                 badgeImg.color = badgeColor;
@@ -1370,7 +1238,6 @@ namespace DeadCoreEditor
                 badgeTmp.enableWordWrapping = false;
                 badgeTmp.raycastTarget = false;
 
-                // INSTANCE DELETION BUTTON [X]
                 if (asset.IsPrefabInstance && asset.PrefabTemplate != null)
                 {
                     GameObject delBtnObj = new GameObject("Btn_DeleteInstance", Il2CppType.Of<RectTransform>());
@@ -1396,13 +1263,9 @@ namespace DeadCoreEditor
                     delTxt.raycastTarget = false;
 
                     CustomPrefabTemplate capturedTemplate = asset.PrefabTemplate;
-                    delBtn.onClick.AddListener((Action)(() =>
-                    {
-                        PrefabInstanceManager.DeleteInstance(capturedTemplate);
-                    }));
+                    delBtn.onClick.AddListener((Action)(() => PrefabInstanceManager.DeleteInstance(capturedTemplate)));
                 }
 
-                // Label (raycastTarget = false)
                 GameObject labelObj = new GameObject("Label", Il2CppType.Of<RectTransform>());
                 labelObj.transform.SetParent(card.transform, false);
 
@@ -1423,20 +1286,20 @@ namespace DeadCoreEditor
                 _browserCards.Add(card);
             }
         }
+
         private static void BuildToastOverlay()
         {
             GameObject toastObj = CreatePanel(_canvasRoot.transform, "Toast_Overlay", new Vector2(0.5f, 0f), new Vector2(0.5f, 0f), new Vector2(0f, 310f), new Vector2(480f, 26f), new Color(0.08f, 0.10f, 0.12f, 0.90f));
-            _toastText = CreateText(toastObj.transform, "Studio Editor Ready", new Vector2(0f, 0f), new Vector2(1f, 1f), Vector2.zero, Vector2.zero, 12f, FontStyles.Bold, new Color(0.2f, 0.9f, 1.0f), TextAlignmentOptions.Center);
+            _toastText = CreateText(toastObj.transform, "Studio Editor Ready", Vector2.zero, Vector2.one, Vector2.zero, Vector2.zero, 12f, FontStyles.Bold, new Color(0.2f, 0.9f, 1.0f), TextAlignmentOptions.Center);
         }
 
         // =========================================================================
-        // OVERHAULED INTERACTIVE HIERARCHY REFRESH
+        // HIERARCHY REFRESH & DRAG-DROP
         // =========================================================================
 
         public static void RefreshHierarchy()
         {
             EnsureSelectableColliders();
-
             if (_hierarchyContent == null) return;
 
             _targetToRowMap.Clear();
@@ -1527,7 +1390,6 @@ namespace DeadCoreEditor
 
             float leftPadding = 6f + (depth * 14f);
 
-            // Foldout Arrow
             if (hasChildren)
             {
                 GameObject foldoutBtn = new GameObject("Foldout");
@@ -1557,7 +1419,6 @@ namespace DeadCoreEditor
                 leftPadding += 16f;
             }
 
-            // Selection Button
             Button b = row.AddComponent<Button>();
             GameObject captured = node;
             b.onClick.AddListener((Action)(() =>
@@ -1574,7 +1435,7 @@ namespace DeadCoreEditor
             string displayName = treeBranch + captured.name + parentBadge;
 
             TMP_Text rowText = CreateText(row.transform, displayName,
-                new Vector2(0f, 0f), new Vector2(1f, 1f),
+                Vector2.zero, Vector2.one,
                 new Vector2(leftPadding, 0f), new Vector2(-45f, 0f),
                 11f, hasChildren ? FontStyles.Bold : FontStyles.Normal,
                 hasChildren ? new Color(0.9f, 0.95f, 1f) : Color.white,
@@ -1584,7 +1445,6 @@ namespace DeadCoreEditor
 
             bool isChild = (node.transform.parent != null && EditorSessionManager.PlacedObjects.Contains(node.transform.parent.gameObject));
 
-            // Focus Button [F]
             GameObject focusBtnObj = new GameObject("Btn_Focus");
             focusBtnObj.transform.SetParent(row.transform, false);
             RectTransform fcrt = focusBtnObj.AddComponent<RectTransform>();
@@ -1596,14 +1456,13 @@ namespace DeadCoreEditor
 
             focusBtnObj.AddComponent<Image>().color = new Color(0.15f, 0.18f, 0.24f, 0.9f);
             Button fcBtn = focusBtnObj.AddComponent<Button>();
-            TMP_Text fcTxt = CreateText(focusBtnObj.transform, "F", Vector2.zero, Vector2.one, Vector2.zero, Vector2.zero, 10f, FontStyles.Bold, Color.white, TextAlignmentOptions.Center);
+            CreateText(focusBtnObj.transform, "F", Vector2.zero, Vector2.one, Vector2.zero, Vector2.zero, 10f, FontStyles.Bold, Color.white, TextAlignmentOptions.Center);
             fcBtn.onClick.AddListener((Action)(() =>
             {
                 EditorSessionManager.SelectObject(captured);
                 EditorViewportCamera.FocusOnObject(captured);
             }));
 
-            // Quick Unparent Button [X]
             if (isChild)
             {
                 GameObject unpBtnObj = new GameObject("Btn_Unparent");
@@ -1617,7 +1476,7 @@ namespace DeadCoreEditor
 
                 unpBtnObj.AddComponent<Image>().color = new Color(0.24f, 0.12f, 0.12f, 0.9f);
                 Button unpBtn = unpBtnObj.AddComponent<Button>();
-                TMP_Text unpTxt = CreateText(unpBtnObj.transform, "X", Vector2.zero, Vector2.one, Vector2.zero, Vector2.zero, 10f, FontStyles.Bold, new Color(1f, 0.4f, 0.4f), TextAlignmentOptions.Center);
+                CreateText(unpBtnObj.transform, "X", Vector2.zero, Vector2.one, Vector2.zero, Vector2.zero, 10f, FontStyles.Bold, new Color(1f, 0.4f, 0.4f), TextAlignmentOptions.Center);
                 unpBtn.onClick.AddListener((Action)(() =>
                 {
                     GameObject oldP = captured.transform.parent.gameObject;
@@ -1639,9 +1498,6 @@ namespace DeadCoreEditor
             }
         }
 
-        // =========================================================================
-        // DRAG & DROP PARENTING UPDATE LOOP
-        // =========================================================================
         public static void UpdateHierarchyDragDrop()
         {
             if (_hierarchyPanel == null || !_hierarchyPanel.activeInHierarchy || _hierarchyScrollRect == null) return;
@@ -1654,7 +1510,6 @@ namespace DeadCoreEditor
                     _dragCandidateNode = hovered;
                     _dragStartMousePos = Input.mousePosition;
                     _isDraggingHierarchyNode = false;
-
                     _hierarchyScrollRect.StopMovement();
                     _hierarchyScrollRect.vertical = false;
                 }
@@ -1668,13 +1523,10 @@ namespace DeadCoreEditor
                     _hierarchyScrollRect.vertical = false;
                 }
 
-                if (!_isDraggingHierarchyNode)
+                if (!_isDraggingHierarchyNode && Vector2.Distance(Input.mousePosition, _dragStartMousePos) > 8f)
                 {
-                    if (Vector2.Distance(Input.mousePosition, _dragStartMousePos) > 8f)
-                    {
-                        _isDraggingHierarchyNode = true;
-                        CreateDragGhost(_dragCandidateNode);
-                    }
+                    _isDraggingHierarchyNode = true;
+                    CreateDragGhost(_dragCandidateNode);
                 }
 
                 if (_isDraggingHierarchyNode)
@@ -1687,18 +1539,14 @@ namespace DeadCoreEditor
 
             if (Input.GetMouseButtonUp(0))
             {
-                if (_hierarchyScrollRect != null)
-                {
-                    _hierarchyScrollRect.vertical = true;
-                }
+                if (_hierarchyScrollRect != null) _hierarchyScrollRect.vertical = true;
 
                 if (_isDraggingHierarchyNode && _dragCandidateNode != null)
                 {
                     GameObject dropTarget = GetHoveredHierarchyNode();
-
                     if (dropTarget != null)
                     {
-                        if (dropTarget != _dragCandidateNode && !IsDescendantOf(_dragCandidateNode, dropTarget))
+                        if (dropTarget != _dragCandidateNode && !EditorSessionManager.IsDescendantOf(_dragCandidateNode, dropTarget))
                         {
                             GameObject prevParent = _dragCandidateNode.transform.parent != null
                                 ? _dragCandidateNode.transform.parent.gameObject : null;
@@ -1712,17 +1560,14 @@ namespace DeadCoreEditor
                             RefreshHierarchy();
                         }
                     }
-                    else
+                    else if (IsMouseOverHierarchyPanel() && _dragCandidateNode.transform.parent != null)
                     {
-                        if (IsMouseOverHierarchyPanel() && _dragCandidateNode.transform.parent != null)
-                        {
-                            GameObject oldParent = _dragCandidateNode.transform.parent.gameObject;
-                            _dragCandidateNode.transform.SetParent(null, true);
+                        GameObject oldParent = _dragCandidateNode.transform.parent.gameObject;
+                        _dragCandidateNode.transform.SetParent(null, true);
 
-                            EditorSessionManager.RecalculateParentChildCount(oldParent);
-                            EditorSessionManager.ShowNotification($"Unparented '{_dragCandidateNode.name}' to root.");
-                            RefreshHierarchy();
-                        }
+                        EditorSessionManager.RecalculateParentChildCount(oldParent);
+                        EditorSessionManager.ShowNotification($"Unparented '{_dragCandidateNode.name}' to root.");
+                        RefreshHierarchy();
                     }
 
                     CleanupDragGhost();
@@ -1739,8 +1584,7 @@ namespace DeadCoreEditor
             if (_hierarchyScrollRect == null || _hierarchyScrollRect.viewport == null) return;
 
             RectTransform vp = _hierarchyScrollRect.viewport;
-            Vector2 localPoint;
-            if (RectTransformUtility.ScreenPointToLocalPointInRectangle(vp, Input.mousePosition, null, out localPoint))
+            if (RectTransformUtility.ScreenPointToLocalPointInRectangle(vp, Input.mousePosition, null, out Vector2 localPoint))
             {
                 float halfH = vp.rect.height * 0.5f;
                 float topThreshold = halfH - 25f;
@@ -1787,18 +1631,6 @@ namespace DeadCoreEditor
             if (_hierarchyPanel == null) return false;
             RectTransform rt = _hierarchyPanel.GetComponent<RectTransform>();
             return rt != null && RectTransformUtility.RectangleContainsScreenPoint(rt, Input.mousePosition, null);
-        }
-
-        private static bool IsDescendantOf(GameObject parentNode, GameObject potentialChild)
-        {
-            if (parentNode == null || potentialChild == null) return false;
-            Transform curr = potentialChild.transform;
-            while (curr != null)
-            {
-                if (curr.gameObject == parentNode) return true;
-                curr = curr.parent;
-            }
-            return false;
         }
 
         private static void CreateDragGhost(GameObject node)
@@ -1860,7 +1692,7 @@ namespace DeadCoreEditor
 
                 if (target == dropTarget)
                 {
-                    if (dropTarget == _dragCandidateNode || IsDescendantOf(_dragCandidateNode, dropTarget))
+                    if (dropTarget == _dragCandidateNode || EditorSessionManager.IsDescendantOf(_dragCandidateNode, dropTarget))
                     {
                         bg.color = new Color(0.75f, 0.2f, 0.2f, 0.90f);
                         if (_dragGhostText != null) _dragGhostText.text = "[Invalid] Child Loop";
@@ -1943,7 +1775,7 @@ namespace DeadCoreEditor
         }
 
         // =========================================================================
-        // INSPECTOR VALUES REFRESH
+        // COMPONENT-DRIVEN INSPECTOR REFRESH
         // =========================================================================
 
         public static void RefreshInspectorValues()
@@ -1951,30 +1783,13 @@ namespace DeadCoreEditor
             GameObject obj = EditorSessionManager.SelectedObject;
             if (obj == null || !obj.activeSelf)
             {
-                if (_posXInput != null) _posXInput.text = "0";
-                if (_posYInput != null) _posYInput.text = "0";
-                if (_posZInput != null) _posZInput.text = "0";
-                if (_rotXInput != null) _rotXInput.text = "0";
-                if (_rotYInput != null) _rotYInput.text = "0";
-                if (_rotZInput != null) _rotZInput.text = "0";
-                if (_scaleXInput != null) _scaleXInput.text = "1";
-                if (_scaleYInput != null) _scaleYInput.text = "1";
-                if (_scaleZInput != null) _scaleZInput.text = "1";
-
-                if (_jumperSection != null) _jumperSection.SetActive(false);
-                if (_turbineSection != null) _turbineSection.SetActive(false);
-                if (_turretSection != null) _turretSection.SetActive(false);
-                if (_laserSection != null) _laserSection.SetActive(false);
-                if (_lightSection != null) _lightSection.SetActive(false);
-                if (_motionPathSection != null) _motionPathSection.SetActive(false);
-                if (_motionPathAxisXInput != null) _motionPathAxisXInput.text = "0";
-                if (_motionPathAxisYInput != null) _motionPathAxisYInput.text = "1";
-                if (_motionPathAxisZInput != null) _motionPathAxisZInput.text = "0";
+                ClearInspectorInputs();
                 return;
             }
 
             _suppressInspectorCallbacks = true;
 
+            // 1. Synchronize Standard Transform
             Vector3 pos = obj.transform.position;
             Vector3 rot = obj.transform.eulerAngles;
             Vector3 scl = obj.transform.localScale;
@@ -1991,72 +1806,73 @@ namespace DeadCoreEditor
             if (_scaleYInput != null) _scaleYInput.text = scl.y.ToString("F2", CultureInfo.InvariantCulture);
             if (_scaleZInput != null) _scaleZInput.text = scl.z.ToString("F2", CultureInfo.InvariantCulture);
 
+            // 2. Extract Entity Components
+            EditorEntityData data = EditorSessionManager.ExtractEntityData(obj);
             EditorSessionManager.PlacedObjectTypes.TryGetValue(obj, out PlacedObjectType type);
 
+            // 3. Jumper Section
+            bool isJumper = data.Has<JumperConfig>() || type == PlacedObjectType.Jumper;
             if (_jumperSection != null)
             {
-                bool isJ = (type == PlacedObjectType.Jumper);
-                _jumperSection.SetActive(isJ);
-                if (isJ && _jumperSlider != null)
+                _jumperSection.SetActive(isJumper);
+                if (isJumper && _jumperSlider != null)
                 {
-                    float force = EditorSessionManager.JumperForces.ContainsKey(obj) ? EditorSessionManager.JumperForces[obj] : EditorSessionManager.ActiveJumperForce;
+                    float force = data.Get<JumperConfig>()?.Force ?? (EditorSessionManager.JumperForces.TryGetValue(obj, out float jf) ? jf : 25f);
                     _jumperSlider.value = force;
                     if (_jumperValueText != null) _jumperValueText.text = $"{force:F1}";
                 }
             }
 
+            // 4. Turbine Section
+            bool isTurbine = data.Has<TurbineConfig>() || type == PlacedObjectType.Turbine;
             if (_turbineSection != null)
             {
-                bool isT = (type == PlacedObjectType.Turbine);
-                _turbineSection.SetActive(isT);
-                if (isT && _turbineSlider != null)
+                _turbineSection.SetActive(isTurbine);
+                if (isTurbine && _turbineSlider != null)
                 {
-                    float speed = EditorSessionManager.TurbineSpeeds.ContainsKey(obj) ? EditorSessionManager.TurbineSpeeds[obj] : EditorSessionManager.ActiveTurbineSpeed;
+                    float speed = data.Get<TurbineConfig>()?.Speed ?? (EditorSessionManager.TurbineSpeeds.TryGetValue(obj, out float ts) ? ts : 35f);
                     _turbineSlider.value = speed;
                     if (_turbineValueText != null) _turbineValueText.text = $"{speed:F1}";
                 }
             }
 
+            // 5. Turret Section
+            bool isTurret = data.Has<TurretConfig>() || type == PlacedObjectType.Turret;
             if (_turretSection != null)
             {
-                bool isTur = (type == PlacedObjectType.Turret);
-                _turretSection.SetActive(isTur);
-                if (isTur && _turretSlider != null)
+                _turretSection.SetActive(isTurret);
+                if (isTurret && _turretSlider != null)
                 {
-                    float delay = EditorSessionManager.TurretFireDelays.ContainsKey(obj) ? EditorSessionManager.TurretFireDelays[obj] : EditorSessionManager.ActiveTurretFireDelay;
+                    float delay = data.Get<TurretConfig>()?.FireDelay ?? (EditorSessionManager.TurretFireDelays.TryGetValue(obj, out float fd) ? fd : 1f);
                     _turretSlider.value = delay;
                     if (_turretValueText != null) _turretValueText.text = $"{delay:F2}s";
                 }
             }
 
+            // 6. Laser Section
+            bool isLaser = data.Has<LaserConfig>() || type == PlacedObjectType.RotatingLaser;
             if (_laserSection != null)
             {
-                bool isRotLaser = (type == PlacedObjectType.RotatingLaser);
-                _laserSection.SetActive(isRotLaser);
-                if (isRotLaser && _laserSlider != null)
+                _laserSection.SetActive(isLaser);
+                if (isLaser && _laserSlider != null)
                 {
-                    float speed = EditorSessionManager.LaserRotationSpeeds.ContainsKey(obj) ? EditorSessionManager.LaserRotationSpeeds[obj] : EditorSessionManager.ActiveLaserRotationSpeed;
-                    _laserSlider.value = speed;
-                    if (_laserValueText != null) _laserValueText.text = $"{speed:F0} d/s";
+                    float rotSpd = data.Get<LaserConfig>()?.RotationSpeed ?? (EditorSessionManager.LaserRotationSpeeds.TryGetValue(obj, out float ls) ? ls : 0f);
+                    _laserSlider.value = rotSpd;
+                    if (_laserValueText != null) _laserValueText.text = $"{rotSpd:F0} d/s";
                 }
             }
 
+            // 7. Light Section
+            bool isLight = data.Has<LightConfig>() || EditorSessionManager.PlacedLights.ContainsKey(obj);
             if (_lightSection != null)
             {
-                bool isLight = (type == PlacedObjectType.Spotlight || type == PlacedObjectType.Sunlight) || EditorSessionManager.PlacedLights.ContainsKey(obj);
                 _lightSection.SetActive(isLight);
-
-                if (isLight && EditorSessionManager.PlacedLights.TryGetValue(obj, out var cfg))
+                if (isLight)
                 {
+                    LightConfig cfg = data.Get<LightConfig>() ?? EditorSessionManager.PlacedLights[obj];
                     bool isSpot = !cfg.IsDirectional;
-                    if (_lightTypeBadgeText != null)
-                    {
-                        _lightTypeBadgeText.text = isSpot ? "Type: [Tech Spotlight]" : "Type: [Global Sun]";
-                    }
-                    if (_spotAngleRowObj != null)
-                    {
-                        _spotAngleRowObj.SetActive(isSpot);
-                    }
+                    if (_lightTypeBadgeText != null) _lightTypeBadgeText.text = isSpot ? "Type: [Tech Spotlight]" : "Type: [Global Sun]";
+                    if (_spotAngleRowObj != null) _spotAngleRowObj.SetActive(isSpot);
 
                     if (_lightIntensitySlider != null) { _lightIntensitySlider.value = cfg.Intensity; _lightIntensityValText.text = $"{cfg.Intensity:F1}"; }
                     if (_lightAngleSlider != null) { _lightAngleSlider.value = cfg.SpotAngle; _lightAngleValText.text = $"{cfg.SpotAngle:F0} deg"; }
@@ -2065,49 +1881,75 @@ namespace DeadCoreEditor
                     if (_lightRSlider != null) { _lightRSlider.value = cfg.Color.r * 255f; if (_lightRValText != null) _lightRValText.text = Mathf.RoundToInt(cfg.Color.r * 255f).ToString(); }
                     if (_lightGSlider != null) { _lightGSlider.value = cfg.Color.g * 255f; if (_lightGValText != null) _lightGValText.text = Mathf.RoundToInt(cfg.Color.g * 255f).ToString(); }
                     if (_lightBSlider != null) { _lightBSlider.value = cfg.Color.b * 255f; if (_lightBValText != null) _lightBValText.text = Mathf.RoundToInt(cfg.Color.b * 255f).ToString(); }
-
-                    if (_lightColorPreviewSwatch != null) { _lightColorPreviewSwatch.color = cfg.Color; }
+                    if (_lightColorPreviewSwatch != null) _lightColorPreviewSwatch.color = cfg.Color;
                 }
+            }
+
+            // 8. Switch Section
+            bool isSwitch = data.Has<SwitchConfig>() || SwitchService.PlacedSwitches.ContainsKey(obj);
+            if (_switchSection != null)
+            {
+                _switchSection.SetActive(isSwitch);
+                if (isSwitch)
+                {
+                    SwitchConfig swCfg = data.Get<SwitchConfig>() ?? SwitchService.PlacedSwitches[obj];
+                    if (_switchTimerSlider != null) { _switchTimerSlider.value = swCfg.TimeBeforeSwitch; if (_switchTimerValText != null) _switchTimerValText.text = $"{swCfg.TimeBeforeSwitch:F1}s"; }
+                    if (_switchAutoToggleText != null) _switchAutoToggleText.text = swCfg.IsAutoSwitch ? "Timed: YES" : "Timed: NO";
+                    if (_switchInvertToggleText != null) _switchInvertToggleText.text = swCfg.InvertChildren ? "Turn OFF: YES" : "Turn OFF: NO";
+                    if (_switchInitialToggleText != null) _switchInitialToggleText.text = swCfg.InitialStateOn ? "Starts Active: YES" : "Starts Active: NO";
+                }
+            }
+
+            // 9. Skybox Section
+            bool isSkybox = data.Has<SkyboxConfig>() || type == PlacedObjectType.SkyboxController;
+            if (_skyboxSection != null)
+            {
+                _skyboxSection.SetActive(isSkybox);
+                if (isSkybox)
+                {
+                    SkyboxConfig cfg = data.Get<SkyboxConfig>() ?? SkyboxControllerService.ActiveConfig;
+                    if (_skyExposureSlider != null) { _skyExposureSlider.value = cfg.Exposure; if (_skyExposureValText != null) _skyExposureValText.text = $"{cfg.Exposure:F2}x"; }
+                    if (_skyYawSlider != null) { _skyYawSlider.value = cfg.YawOffset; if (_skyYawValText != null) _skyYawValText.text = $"{cfg.YawOffset:F0}°"; }
+                    if (_skySpinSlider != null) { _skySpinSlider.value = cfg.SpinSpeed; if (_skySpinValText != null) _skySpinValText.text = $"{cfg.SpinSpeed:F1}°/s"; }
+
+                    if (_skyRSlider != null) { _skyRSlider.value = cfg.TintColor.r * 255f; if (_skyRValText != null) _skyRValText.text = Mathf.RoundToInt(cfg.TintColor.r * 255f).ToString(); }
+                    if (_skyGSlider != null) { _skyGSlider.value = cfg.TintColor.g * 255f; if (_skyGValText != null) _skyGValText.text = Mathf.RoundToInt(cfg.TintColor.g * 255f).ToString(); }
+                    if (_skyBSlider != null) { _skyBSlider.value = cfg.TintColor.b * 255f; if (_skyBValText != null) _skyBValText.text = Mathf.RoundToInt(cfg.TintColor.b * 255f).ToString(); }
+                    if (_skyColorPreviewSwatch != null) _skyColorPreviewSwatch.color = cfg.TintColor;
+                }
+            }
+
+            // 10. Motion Path Section
+            GameObject pathOwner = obj;
+            if (EditorSessionManager.IsWaypointMarker(obj, out GameObject resolvedOwner, out _)) pathOwner = resolvedOwner;
+
+            bool hasMotionPath = false;
+            ObjectMotionPath motionPath = null;
+            if (pathOwner != null)
+            {
+                hasMotionPath = EditorSessionManager.MotionPaths.TryGetValue(pathOwner, out motionPath);
             }
 
             if (_motionPathSection != null)
             {
-                GameObject pathOwner = obj;
-                if (EditorSessionManager.IsWaypointMarker(obj, out GameObject resolvedOwner, out _))
+                _motionPathSection.SetActive(hasMotionPath || pathOwner == obj);
+                if (_motionPathCreateBtnObj != null) _motionPathCreateBtnObj.SetActive(!hasMotionPath);
+                if (_motionPathActiveControlsObj != null) _motionPathActiveControlsObj.SetActive(hasMotionPath);
+
+                if (hasMotionPath && motionPath != null)
                 {
-                    pathOwner = resolvedOwner;
-                }
-
-                ObjectMotionPath motionPath = null;
-                bool hasPath = false;
-                if (pathOwner != null)
-                {
-                    hasPath = EditorSessionManager.MotionPaths.TryGetValue(pathOwner, out motionPath);
-                }
-
-                _motionPathSection.SetActive(hasPath || pathOwner == obj);
-
-                if (_motionPathCreateBtnObj != null) _motionPathCreateBtnObj.SetActive(!hasPath);
-                if (_motionPathActiveControlsObj != null) _motionPathActiveControlsObj.SetActive(hasPath);
-
-                if (hasPath && motionPath != null)
-                {
-                    float dist = motionPath.TotalDistance;
                     if (_motionPathStatusText != null)
-                        _motionPathStatusText.text = $"Distance: {dist:F1}m ({motionPath.Speed:F1} m/s)";
-
+                        _motionPathStatusText.text = $"Distance: {motionPath.TotalDistance:F1}m ({motionPath.Speed:F1} m/s)";
                     if (_motionPathSpeedSlider != null)
                     {
                         _motionPathSpeedSlider.value = motionPath.Speed;
                         if (_motionPathSpeedValText != null) _motionPathSpeedValText.text = $"{motionPath.Speed:F1} m/s";
                     }
-
                     if (_motionPathRotSlider != null)
                     {
                         _motionPathRotSlider.value = motionPath.RotationSpeed;
                         if (_motionPathRotValText != null) _motionPathRotValText.text = $"{motionPath.RotationSpeed:F0} d/s";
                     }
-
                     if (_motionPathAxisBtnText != null)
                     {
                         _motionPathAxisBtnText.text = $"Axis: [{GetRotationAxisName(motionPath.RotationAxis)}]";
@@ -2126,23 +1968,128 @@ namespace DeadCoreEditor
             _suppressInspectorCallbacks = false;
         }
 
+        private static void ClearInspectorInputs()
+        {
+            if (_posXInput != null) _posXInput.text = "0";
+            if (_posYInput != null) _posYInput.text = "0";
+            if (_posZInput != null) _posZInput.text = "0";
+            if (_rotXInput != null) _rotXInput.text = "0";
+            if (_rotYInput != null) _rotYInput.text = "0";
+            if (_rotZInput != null) _rotZInput.text = "0";
+            if (_scaleXInput != null) _scaleXInput.text = "1";
+            if (_scaleYInput != null) _scaleYInput.text = "1";
+            if (_scaleZInput != null) _scaleZInput.text = "1";
+
+            if (_jumperSection != null) _jumperSection.SetActive(false);
+            if (_turbineSection != null) _turbineSection.SetActive(false);
+            if (_turretSection != null) _turretSection.SetActive(false);
+            if (_laserSection != null) _laserSection.SetActive(false);
+            if (_lightSection != null) _lightSection.SetActive(false);
+            if (_skyboxSection != null) _skyboxSection.SetActive(false);
+            if (_switchSection != null) _switchSection.SetActive(false);
+            if (_motionPathSection != null) _motionPathSection.SetActive(false);
+        }
+
+        private static string GetRotationAxisName(int axisIndex)
+        {
+            switch (axisIndex)
+            {
+                case 0: return "X - Tumble";
+                case 1: return "Y - Turntable";
+                case 2: return "Z - Roll";
+                case 3: return "Path (A -> B)";
+                default: return "Custom Override";
+            }
+        }
+
+        private static void OnMotionPathAxisInputChanged(string val)
+        {
+            if (_suppressInspectorCallbacks || EditorSessionManager.SelectedObject == null) return;
+
+            GameObject target = EditorSessionManager.SelectedObject;
+            if (EditorSessionManager.IsWaypointMarker(target, out GameObject owner, out _)) target = owner;
+            if (!EditorSessionManager.MotionPaths.TryGetValue(target, out var mp) || mp == null) return;
+
+            float x = PersistenceUtility.ParseFloat(_motionPathAxisXInput?.text, mp.CustomAxis.x);
+            float y = PersistenceUtility.ParseFloat(_motionPathAxisYInput?.text, mp.CustomAxis.y);
+            float z = PersistenceUtility.ParseFloat(_motionPathAxisZInput?.text, mp.CustomAxis.z);
+
+            Vector3 newAxis = new Vector3(x, y, z);
+            mp.CustomAxis = newAxis.sqrMagnitude > 0.0001f ? newAxis.normalized : Vector3.up;
+            mp.RotationAxis = 4;
+            if (_motionPathAxisBtnText != null) _motionPathAxisBtnText.text = "Axis: [Custom Override]";
+        }
+
+        private static void OnLightRGBChanged()
+        {
+            if (EditorSessionManager.SelectedObject == null) return;
+            if (!EditorSessionManager.PlacedLights.TryGetValue(EditorSessionManager.SelectedObject, out var cfg)) return;
+
+            float r = (_lightRSlider != null) ? _lightRSlider.value / 255f : cfg.Color.r;
+            float g = (_lightGSlider != null) ? _lightGSlider.value / 255f : cfg.Color.g;
+            float b = (_lightBSlider != null) ? _lightBSlider.value / 255f : cfg.Color.b;
+
+            Color newCol = new Color(r, g, b, 1f);
+            cfg.Color = newCol;
+
+            if (_lightRValText != null) _lightRValText.text = Mathf.RoundToInt(_lightRSlider.value).ToString();
+            if (_lightGValText != null) _lightGValText.text = Mathf.RoundToInt(_lightGSlider.value).ToString();
+            if (_lightBValText != null) _lightBValText.text = Mathf.RoundToInt(_lightBSlider.value).ToString();
+            if (_lightColorPreviewSwatch != null) _lightColorPreviewSwatch.color = newCol;
+
+            EditorSessionManager.ApplyLightConfig(EditorSessionManager.SelectedObject, cfg);
+        }
+
+        private static void OnSkyColorSlidersChanged()
+        {
+            if (_suppressInspectorCallbacks) return;
+
+            float r = (_skyRSlider != null) ? _skyRSlider.value / 255f : 1f;
+            float g = (_skyGSlider != null) ? _skyGSlider.value / 255f : 1f;
+            float b = (_skyBSlider != null) ? _skyBSlider.value / 255f : 1f;
+
+            Color newColor = new Color(r, g, b, 1f);
+            SkyboxControllerService.ActiveConfig.TintColor = newColor;
+
+            if (_skyRValText != null) _skyRValText.text = Mathf.RoundToInt(_skyRSlider.value).ToString();
+            if (_skyGValText != null) _skyGValText.text = Mathf.RoundToInt(_skyGSlider.value).ToString();
+            if (_skyBValText != null) _skyBValText.text = Mathf.RoundToInt(_skyBSlider.value).ToString();
+            if (_skyColorPreviewSwatch != null) _skyColorPreviewSwatch.color = newColor;
+
+            SkyboxControllerService.ApplyProperties();
+        }
+
+        private static void ToggleInspectorExpansion()
+        {
+            _isInspectorExpanded = !_isInspectorExpanded;
+            if (_inspectorPanelRt != null)
+            {
+                float w = _isInspectorExpanded ? 380f : 280f;
+                _inspectorPanelRt.sizeDelta = new Vector2(w, -40f);
+                _inspectorPanelRt.anchoredPosition = new Vector2(-w * 0.5f, -20f);
+            }
+            if (_inspectorExpandBtnText != null)
+            {
+                _inspectorExpandBtnText.text = _isInspectorExpanded ? "[- Slim]" : "[+ Expand]";
+            }
+        }
+
         private static void OnTransformInputChanged(string val)
         {
             if (_suppressInspectorCallbacks || EditorSessionManager.SelectedObject == null) return;
 
             GameObject obj = EditorSessionManager.SelectedObject;
-            float x = ParseFloat(_posXInput?.text, obj.transform.position.x);
-            float y = ParseFloat(_posYInput?.text, obj.transform.position.y);
-            float z = ParseFloat(_posZInput?.text, obj.transform.position.z);
+            float x = PersistenceUtility.ParseFloat(_posXInput?.text, obj.transform.position.x);
+            float y = PersistenceUtility.ParseFloat(_posYInput?.text, obj.transform.position.y);
+            float z = PersistenceUtility.ParseFloat(_posZInput?.text, obj.transform.position.z);
 
-            float rx = ParseFloat(_rotXInput?.text, obj.transform.eulerAngles.x);
-            float ry = ParseFloat(_rotYInput?.text, obj.transform.eulerAngles.y);
-            float rz = ParseFloat(_rotZInput?.text, obj.transform.eulerAngles.z);
+            float rx = PersistenceUtility.ParseFloat(_rotXInput?.text, obj.transform.eulerAngles.x);
+            float ry = PersistenceUtility.ParseFloat(_rotYInput?.text, obj.transform.eulerAngles.y);
+            float rz = PersistenceUtility.ParseFloat(_rotZInput?.text, obj.transform.eulerAngles.z);
 
-            // Read X, Y, and Z scales independently
-            float sx = ParseFloat(_scaleXInput?.text, obj.transform.localScale.x);
-            float sy = ParseFloat(_scaleYInput?.text, obj.transform.localScale.y);
-            float sz = ParseFloat(_scaleZInput?.text, obj.transform.localScale.z);
+            float sx = PersistenceUtility.ParseFloat(_scaleXInput?.text, obj.transform.localScale.x);
+            float sy = PersistenceUtility.ParseFloat(_scaleYInput?.text, obj.transform.localScale.y);
+            float sz = PersistenceUtility.ParseFloat(_scaleZInput?.text, obj.transform.localScale.z);
 
             obj.transform.position = new Vector3(x, y, z);
             obj.transform.rotation = Quaternion.Euler(rx, ry, rz);
@@ -2150,15 +2097,6 @@ namespace DeadCoreEditor
 
             StudioGizmoController.InvalidateCachedCenter(obj);
             EditorSessionManager.UpdateSelectionHighlight();
-        }
-
-        private static float ParseFloat(string str, float def)
-        {
-            if (string.IsNullOrWhiteSpace(str)) return def;
-            str = str.Trim().Replace(',', '.');
-            if (float.TryParse(str, NumberStyles.Float, CultureInfo.InvariantCulture, out float result))
-                return result;
-            return def;
         }
 
         // =========================================================================
@@ -2178,7 +2116,6 @@ namespace DeadCoreEditor
 
             Image img = obj.AddComponent<Image>();
             img.color = color;
-
             return obj;
         }
 
@@ -2199,34 +2136,23 @@ namespace DeadCoreEditor
             tmp.fontStyle = style;
             tmp.color = color;
             tmp.alignment = align;
-
             return tmp;
         }
 
-        private static Button CreateButton(Transform parent, string name, string label, float width, Action onClick, Color? bgColor = null, Vector2? fixedPos = null)
+        private static Button CreateButton(Transform parent, string name, string label, float width, Action onClick, Color? bgColor = null)
         {
             GameObject obj = new GameObject(name);
             obj.transform.SetParent(parent, false);
 
             RectTransform rt = obj.AddComponent<RectTransform>();
-            if (fixedPos.HasValue)
-            {
-                rt.anchorMin = new Vector2(0f, 0f);
-                rt.anchorMax = new Vector2(0f, 0f);
-                rt.anchoredPosition = fixedPos.Value;
-                rt.sizeDelta = new Vector2(width, 26f);
-            }
-            else
-            {
-                rt.sizeDelta = new Vector2(width, 26f);
+            rt.sizeDelta = new Vector2(width, 26f);
 
-                LayoutElement le = obj.AddComponent<LayoutElement>();
-                le.preferredWidth = width;
-                le.preferredHeight = 26f;
-                le.minWidth = width > 0 ? Mathf.Min(width, 40f) : 0f;
-                le.minHeight = 22f;
-                le.flexibleWidth = 1f;
-            }
+            LayoutElement le = obj.AddComponent<LayoutElement>();
+            le.preferredWidth = width;
+            le.preferredHeight = 26f;
+            le.minWidth = width > 0 ? Mathf.Min(width, 40f) : 0f;
+            le.minHeight = 22f;
+            le.flexibleWidth = 1f;
 
             Image img = obj.AddComponent<Image>();
             img.color = bgColor ?? new Color(0.20f, 0.22f, 0.26f, 1f);
@@ -2237,7 +2163,6 @@ namespace DeadCoreEditor
             cb.highlightedColor = new Color(1.2f, 1.2f, 1.2f, 1f);
             cb.pressedColor = new Color(0.2f, 0.7f, 1.0f, 1f);
             btn.colors = cb;
-
             btn.onClick.AddListener((Action)(() => onClick?.Invoke()));
 
             TMP_Text btnText = CreateText(obj.transform, label, Vector2.zero, Vector2.one, Vector2.zero, Vector2.zero, 11f, FontStyles.Bold, Color.white, TextAlignmentOptions.Center);
@@ -2278,7 +2203,6 @@ namespace DeadCoreEditor
             inputField.textViewport = trt;
             inputField.textComponent = inTmp;
             inputField.onEndEdit.AddListener((Action<string>)((val) => onEndEdit?.Invoke(val)));
-
             return inputField;
         }
 
@@ -2288,7 +2212,7 @@ namespace DeadCoreEditor
             card.transform.SetParent(parent, false);
 
             RectTransform crt = card.AddComponent<RectTransform>();
-            crt.sizeDelta = new Vector2(0f, 0f);
+            crt.sizeDelta = Vector2.zero;
 
             Image bg = card.AddComponent<Image>();
             bg.color = new Color(0.15f, 0.16f, 0.19f, 0.95f);
@@ -2327,7 +2251,7 @@ namespace DeadCoreEditor
             row.transform.SetParent(parent, false);
 
             RectTransform rt = row.AddComponent<RectTransform>();
-            rt.anchorMin = new Vector2(0f, 0f);
+            rt.anchorMin = Vector2.zero;
             rt.anchorMax = new Vector2(1f, 0f);
             rt.pivot = new Vector2(0.5f, 0.5f);
             rt.sizeDelta = new Vector2(0f, height);
@@ -2342,8 +2266,7 @@ namespace DeadCoreEditor
 
         private static HorizontalLayoutGroup SetupRowHorizontalLayout(GameObject row, float spacing = 6f)
         {
-            HorizontalLayoutGroup hlg = row.GetComponent<HorizontalLayoutGroup>();
-            if (hlg == null) hlg = row.AddComponent<HorizontalLayoutGroup>();
+            HorizontalLayoutGroup hlg = row.GetComponent<HorizontalLayoutGroup>() ?? row.AddComponent<HorizontalLayoutGroup>();
             hlg.padding = new RectOffset(2, 2, 2, 2);
             hlg.spacing = spacing;
             hlg.childControlWidth = true;
@@ -2356,20 +2279,11 @@ namespace DeadCoreEditor
         private static void CreateVector3Row(Transform parent, string label, out TMP_InputField xIn, out TMP_InputField yIn, out TMP_InputField zIn, Action<string> onChange)
         {
             GameObject row = CreateRowContainer(parent, "Row_" + label, 24f);
-
             CreateText(row.transform, label, new Vector2(0f, 0.5f), new Vector2(0.22f, 0.5f), Vector2.zero, Vector2.zero, 11f, FontStyles.Normal, Color.white, TextAlignmentOptions.MidlineLeft);
 
             xIn = CreateInputField(row.transform, "X", new Vector2(0.24f, 0f), new Vector2(0.48f, 1f), Vector2.zero, Vector2.zero, "X", onChange);
             yIn = CreateInputField(row.transform, "Y", new Vector2(0.50f, 0f), new Vector2(0.74f, 1f), Vector2.zero, Vector2.zero, "Y", onChange);
             zIn = CreateInputField(row.transform, "Z", new Vector2(0.76f, 0f), new Vector2(0.98f, 1f), Vector2.zero, Vector2.zero, "Z", onChange);
-        }
-
-        private static void CreateSingleFloatRow(Transform parent, string label, out TMP_InputField valIn, Action<string> onChange)
-        {
-            GameObject row = CreateRowContainer(parent, "Row_" + label, 24f);
-
-            CreateText(row.transform, label, new Vector2(0f, 0.5f), new Vector2(0.22f, 0.5f), Vector2.zero, Vector2.zero, 11f, FontStyles.Normal, Color.white, TextAlignmentOptions.MidlineLeft);
-            valIn = CreateInputField(row.transform, "Val", new Vector2(0.24f, 0f), new Vector2(0.98f, 1f), Vector2.zero, Vector2.zero, "Value", onChange);
         }
 
         private static GameObject CreateInspectorSliderRow(Transform parent, string label, out Slider slider, out TMP_Text valText, float minVal, float maxVal, Action<float> onSliderChanged)
@@ -2379,78 +2293,80 @@ namespace DeadCoreEditor
             CreateText(row.transform, label, new Vector2(0f, 0f), new Vector2(0.32f, 1f), new Vector2(4f, 0f), Vector2.zero, 10f, FontStyles.Normal, Color.white, TextAlignmentOptions.MidlineLeft);
             valText = CreateText(row.transform, "0", new Vector2(0.80f, 0f), new Vector2(1f, 1f), Vector2.zero, new Vector2(-4f, 0f), 10f, FontStyles.Bold, new Color(0.2f, 0.85f, 1f), TextAlignmentOptions.MidlineRight);
 
-            GameObject sliderObj = new GameObject("Slider");
+            GameObject sliderObj = new GameObject("Slider", Il2CppType.Of<RectTransform>());
             sliderObj.transform.SetParent(row.transform, false);
 
-            RectTransform srt = sliderObj.AddComponent<RectTransform>();
-            srt.anchorMin = new Vector2(0.33f, 0f);
-            srt.anchorMax = new Vector2(0.78f, 1f);
-            srt.offsetMin = new Vector2(0f, 4f);
-            srt.offsetMax = new Vector2(0f, -4f);
-            srt.sizeDelta = Vector2.zero;
+            RectTransform srt = sliderObj.GetComponent<RectTransform>();
+            srt.anchorMin = new Vector2(0.33f, 0.5f);
+            srt.anchorMax = new Vector2(0.78f, 0.5f);
+            srt.pivot = new Vector2(0.5f, 0.5f);
+            srt.anchoredPosition = Vector2.zero;
+            srt.sizeDelta = new Vector2(0f, 14f);
 
             slider = sliderObj.AddComponent<Slider>();
+            slider.direction = Slider.Direction.LeftToRight;
             slider.minValue = minVal;
             slider.maxValue = maxVal;
-            slider.direction = Slider.Direction.LeftToRight;
 
-            GameObject trackObj = new GameObject("Track");
+            // Track
+            GameObject trackObj = new GameObject("Track", Il2CppType.Of<RectTransform>());
             trackObj.transform.SetParent(sliderObj.transform, false);
-            RectTransform trt = trackObj.AddComponent<RectTransform>();
-            trt.anchorMin = new Vector2(0f, 0.35f);
-            trt.anchorMax = new Vector2(1f, 0.65f);
-            trt.offsetMin = Vector2.zero;
-            trt.offsetMax = Vector2.zero;
-            trt.sizeDelta = Vector2.zero;
-            Image trackImg = trackObj.AddComponent<Image>();
-            trackImg.color = new Color(0.08f, 0.09f, 0.12f, 1f);
-            trackImg.raycastTarget = false;
+            RectTransform trt = trackObj.GetComponent<RectTransform>();
+            trt.anchorMin = new Vector2(0f, 0.5f);
+            trt.anchorMax = new Vector2(1f, 0.5f);
+            trt.pivot = new Vector2(0.5f, 0.5f);
+            trt.anchoredPosition = Vector2.zero;
+            trt.sizeDelta = new Vector2(0f, 4f);
+            trackObj.AddComponent<Image>().color = new Color(0.08f, 0.09f, 0.12f, 1f);
 
-            GameObject fillArea = new GameObject("FillArea");
+            // Fill Area
+            GameObject fillArea = new GameObject("FillArea", Il2CppType.Of<RectTransform>());
             fillArea.transform.SetParent(sliderObj.transform, false);
-            RectTransform fart = fillArea.AddComponent<RectTransform>();
-            fart.anchorMin = new Vector2(0f, 0.35f);
-            fart.anchorMax = new Vector2(1f, 0.65f);
-            fart.offsetMin = new Vector2(2f, 0f);
-            fart.offsetMax = new Vector2(-2f, 0f);
-            fart.sizeDelta = Vector2.zero;
+            RectTransform fart = fillArea.GetComponent<RectTransform>();
+            fart.anchorMin = new Vector2(0f, 0.5f);
+            fart.anchorMax = new Vector2(1f, 0.5f);
+            fart.pivot = new Vector2(0.5f, 0.5f);
+            fart.anchoredPosition = Vector2.zero;
+            fart.sizeDelta = new Vector2(-6f, 4f);
 
-            GameObject fillObj = new GameObject("Fill");
+            // Fill Image
+            GameObject fillObj = new GameObject("Fill", Il2CppType.Of<RectTransform>());
             fillObj.transform.SetParent(fillArea.transform, false);
-            RectTransform frt = fillObj.AddComponent<RectTransform>();
+            RectTransform frt = fillObj.GetComponent<RectTransform>();
             frt.anchorMin = Vector2.zero;
-            frt.anchorMax = Vector2.one;
+            frt.anchorMax = new Vector2(0f, 1f);
+            frt.pivot = new Vector2(0f, 0.5f);
             frt.offsetMin = Vector2.zero;
             frt.offsetMax = Vector2.zero;
             frt.sizeDelta = Vector2.zero;
-            Image fillImg = fillObj.AddComponent<Image>();
-            fillImg.color = new Color(0.18f, 0.65f, 0.95f, 0.9f);
-            fillImg.raycastTarget = false;
+            fillObj.AddComponent<Image>().color = new Color(0.18f, 0.65f, 0.95f, 1f);
 
-            GameObject handleArea = new GameObject("HandleArea");
+            // Handle Area
+            GameObject handleArea = new GameObject("HandleArea", Il2CppType.Of<RectTransform>());
             handleArea.transform.SetParent(sliderObj.transform, false);
-            RectTransform hart = handleArea.AddComponent<RectTransform>();
+            RectTransform hart = handleArea.GetComponent<RectTransform>();
             hart.anchorMin = Vector2.zero;
             hart.anchorMax = Vector2.one;
-            hart.offsetMin = new Vector2(6f, 0f);
-            hart.offsetMax = new Vector2(-6f, 0f);
+            hart.offsetMin = Vector2.zero;
+            hart.offsetMax = Vector2.zero;
             hart.sizeDelta = Vector2.zero;
 
-            GameObject handleObj = new GameObject("Handle");
+            // Handle Knob
+            GameObject handleObj = new GameObject("Handle", Il2CppType.Of<RectTransform>());
             handleObj.transform.SetParent(handleArea.transform, false);
-            RectTransform hrt = handleObj.AddComponent<RectTransform>();
+            RectTransform hrt = handleObj.GetComponent<RectTransform>();
             hrt.anchorMin = new Vector2(0.5f, 0.5f);
             hrt.anchorMax = new Vector2(0.5f, 0.5f);
-            hrt.sizeDelta = new Vector2(10f, 16f);
+            hrt.pivot = new Vector2(0.5f, 0.5f);
+            hrt.sizeDelta = new Vector2(6f, 14f);
             Image handleImg = handleObj.AddComponent<Image>();
             handleImg.color = Color.white;
-            handleImg.raycastTarget = true;
 
             slider.fillRect = frt;
             slider.handleRect = hrt;
             slider.targetGraphic = handleImg;
-
             slider.onValueChanged.AddListener((Action<float>)((v) => onSliderChanged?.Invoke(v)));
+
             return row;
         }
 
@@ -2499,13 +2415,12 @@ namespace DeadCoreEditor
 
             sr.viewport = vrt;
             sr.content = content;
-
             return scrollObj;
         }
     }
 
     // =========================================================================
-    // SECTION 2: NATIVE LOGS MENU HIJACKER & THUMBNAIL TEXTURE HOOK
+    // SECTION 2: NATIVE LOGS MENU HIJACKER & THUMBNAILS
     // =========================================================================
 
     public static class NativeLogsMenuHijacker
@@ -2542,11 +2457,29 @@ namespace DeadCoreEditor
             new Color(0.95f, 0.2f, 0.2f)
         };
 
+        private static TMP_Text CreateText(Transform parent, string text, Vector2 anchorMin, Vector2 anchorMax, Vector2 pos, Vector2 size, float fontSize, FontStyles style, Color color, TextAlignmentOptions align)
+        {
+            GameObject obj = new GameObject("Text");
+            obj.transform.SetParent(parent, false);
+
+            RectTransform rt = obj.AddComponent<RectTransform>();
+            rt.anchorMin = anchorMin;
+            rt.anchorMax = anchorMax;
+            rt.anchoredPosition = pos;
+            rt.sizeDelta = size;
+
+            TMP_Text tmp = obj.AddComponent<TextMeshProUGUI>();
+            tmp.text = text;
+            tmp.fontSize = fontSize;
+            tmp.fontStyle = style;
+            tmp.color = color;
+            tmp.alignment = align;
+            return tmp;
+        }
+
         public static LevelMetadata ReadLevelMetadata(string fullPath, string fallbackTitle)
         {
-            LevelMetadata meta = new LevelMetadata();
-            meta.Title = fallbackTitle;
-
+            LevelMetadata meta = new LevelMetadata { Title = fallbackTitle };
             if (!File.Exists(fullPath)) return meta;
 
             try
@@ -2557,18 +2490,12 @@ namespace DeadCoreEditor
                     if (string.IsNullOrWhiteSpace(line)) continue;
                     string trimmed = line.Trim();
 
-                    if (trimmed.StartsWith("#TITLE:", StringComparison.OrdinalIgnoreCase))
-                        meta.Title = trimmed.Substring(7).Trim();
-                    else if (trimmed.StartsWith("#AUTHOR:", StringComparison.OrdinalIgnoreCase))
-                        meta.Author = trimmed.Substring(8).Trim();
-                    else if (trimmed.StartsWith("#DIFFICULTY:", StringComparison.OrdinalIgnoreCase))
-                        meta.Difficulty = trimmed.Substring(12).Trim();
-                    else if (trimmed.StartsWith("#DESC:", StringComparison.OrdinalIgnoreCase))
-                        meta.Description = trimmed.Substring(6).Trim();
-                    else if (trimmed.StartsWith("#SCENE:", StringComparison.OrdinalIgnoreCase))
-                        meta.StagingScene = trimmed.Substring(7).Trim();
-                    else if (!trimmed.StartsWith("#"))
-                        break;
+                    if (trimmed.StartsWith("#TITLE:", StringComparison.OrdinalIgnoreCase)) meta.Title = trimmed.Substring(7).Trim();
+                    else if (trimmed.StartsWith("#AUTHOR:", StringComparison.OrdinalIgnoreCase)) meta.Author = trimmed.Substring(8).Trim();
+                    else if (trimmed.StartsWith("#DIFFICULTY:", StringComparison.OrdinalIgnoreCase)) meta.Difficulty = trimmed.Substring(12).Trim();
+                    else if (trimmed.StartsWith("#DESC:", StringComparison.OrdinalIgnoreCase)) meta.Description = trimmed.Substring(6).Trim();
+                    else if (trimmed.StartsWith("#SCENE:", StringComparison.OrdinalIgnoreCase)) meta.StagingScene = trimmed.Substring(7).Trim();
+                    else if (!trimmed.StartsWith("#")) break;
                 }
             }
             catch { }
@@ -2583,12 +2510,10 @@ namespace DeadCoreEditor
             try
             {
                 string title = (_titleInput != null && !string.IsNullOrWhiteSpace(_titleInput.text))
-                    ? _titleInput.text.Trim()
-                    : Path.GetFileNameWithoutExtension(fullPath);
+                    ? _titleInput.text.Trim() : Path.GetFileNameWithoutExtension(fullPath);
 
                 string author = (_authorInput != null && !string.IsNullOrWhiteSpace(_authorInput.text))
-                    ? _authorInput.text.Trim()
-                    : "Unknown";
+                    ? _authorInput.text.Trim() : "Unknown";
 
                 string desc = (_descInput != null) ? _descInput.text.Trim() : "";
                 string diff = DifficultyNames[_selectedDifficultyIndex];
@@ -2601,21 +2526,20 @@ namespace DeadCoreEditor
                 {
                     string l = allLines[i];
                     if (string.IsNullOrWhiteSpace(l)) continue;
-                    string t = l.Trim();
-                    if (!t.StartsWith("#"))
-                        objectLines.Add(l);
+                    if (!l.Trim().StartsWith("#")) objectLines.Add(l);
                 }
 
-                List<string> finalLines = new List<string>();
-                finalLines.Add($"#TITLE: {title}");
-                finalLines.Add($"#AUTHOR: {author}");
-                finalLines.Add($"#DIFFICULTY: {diff}");
-                finalLines.Add($"#DESC: {desc}");
-                finalLines.Add($"#SCENE: {scene}");
+                List<string> finalLines = new List<string>
+                {
+                    $"#TITLE: {title}",
+                    $"#AUTHOR: {author}",
+                    $"#DIFFICULTY: {diff}",
+                    $"#DESC: {desc}",
+                    $"#SCENE: {scene}"
+                };
                 finalLines.AddRange(objectLines);
 
                 File.WriteAllLines(fullPath, finalLines.ToArray());
-                MelonLogger.Msg($">> [Metadata] Saved '{title}' by '{author}' ({objectLines.Count} objects) directly to '{fullPath}'!");
 
                 if (_saveBtnText != null)
                 {
@@ -2633,24 +2557,26 @@ namespace DeadCoreEditor
             }
         }
 
-        public static void CreateSceneSelectorRow(Transform parent, TMP_Text sampleTmp, float posY)
+        public static void CreateSceneSelectorRow(Transform parent, TMP_Text sampleTmp, float height = 44f)
         {
             GameObject row = new GameObject("Row_SceneSelector");
             row.transform.SetParent(parent, false);
 
             RectTransform rowRt = row.AddComponent<RectTransform>();
-            rowRt.anchorMin = new Vector2(0f, 1f);
-            rowRt.anchorMax = new Vector2(1f, 1f);
-            rowRt.pivot = new Vector2(0.5f, 1f);
-            rowRt.sizeDelta = new Vector2(0f, 38f);
-            rowRt.anchoredPosition = new Vector2(0f, posY);
+            rowRt.sizeDelta = new Vector2(0f, height);
+
+            LayoutElement le = row.AddComponent<LayoutElement>();
+            le.preferredHeight = height;
+            le.minHeight = height;
+            le.flexibleWidth = 1f;
 
             GameObject labelObj = new GameObject("Label");
             labelObj.transform.SetParent(row.transform, false);
             RectTransform labelRt = labelObj.AddComponent<RectTransform>();
-            labelRt.anchorMin = new Vector2(0f, 0.5f);
-            labelRt.anchorMax = new Vector2(0.25f, 0.5f);
-            labelRt.sizeDelta = Vector2.zero;
+            labelRt.anchorMin = new Vector2(0f, 0f);
+            labelRt.anchorMax = new Vector2(0.24f, 1f);
+            labelRt.offsetMin = Vector2.zero;
+            labelRt.offsetMax = Vector2.zero;
 
             TMP_Text labelTmp = labelObj.AddComponent<TextMeshProUGUI>();
             if (sampleTmp != null) { labelTmp.font = sampleTmp.font; labelTmp.fontSharedMaterial = sampleTmp.fontSharedMaterial; }
@@ -2660,62 +2586,59 @@ namespace DeadCoreEditor
             labelTmp.text = "BASE SCENE";
             labelTmp.alignment = TextAlignmentOptions.MidlineLeft;
 
+            GameObject container = new GameObject("SceneContainer");
+            container.transform.SetParent(row.transform, false);
+            RectTransform cRt = container.AddComponent<RectTransform>();
+            cRt.anchorMin = new Vector2(0.25f, 0f);
+            cRt.anchorMax = new Vector2(1f, 1f);
+            cRt.offsetMin = Vector2.zero;
+            cRt.offsetMax = Vector2.zero;
+
+            HorizontalLayoutGroup hlg = container.AddComponent<HorizontalLayoutGroup>();
+            hlg.spacing = 8f;
+            hlg.childControlWidth = true;
+            hlg.childControlHeight = true;
+            hlg.childForceExpandWidth = false;
+            hlg.childForceExpandHeight = true;
+
+            // Previous Button
             GameObject prevBtn = new GameObject("Btn_PrevScene");
-            prevBtn.transform.SetParent(row.transform, false);
-            RectTransform prevRt = prevBtn.AddComponent<RectTransform>();
-            prevRt.anchorMin = new Vector2(0.26f, 0f);
-            prevRt.anchorMax = new Vector2(0.34f, 1f);
-            prevRt.sizeDelta = Vector2.zero;
-            prevBtn.AddComponent<Image>().color = new Color(0.1f, 0.15f, 0.25f, 0.9f);
+            prevBtn.transform.SetParent(container.transform, false);
+            LayoutElement ple = prevBtn.AddComponent<LayoutElement>();
+            ple.preferredWidth = 48f;
+            ple.minWidth = 48f;
+            ple.flexibleWidth = 0f;
+            prevBtn.AddComponent<Image>().color = new Color(0.12f, 0.18f, 0.30f, 0.95f);
             Button pb = prevBtn.AddComponent<Button>();
             pb.onClick.AddListener((Action)(() => CycleStagingScene(-1)));
 
-            GameObject prevTxt = new GameObject("Text");
-            prevTxt.transform.SetParent(prevBtn.transform, false);
-            RectTransform ptrt = prevTxt.AddComponent<RectTransform>();
-            ptrt.anchorMin = Vector2.zero; ptrt.anchorMax = Vector2.one;
-            TMP_Text pt = prevTxt.AddComponent<TextMeshProUGUI>();
+            TMP_Text pt = CreateText(prevBtn.transform, "<", Vector2.zero, Vector2.one, Vector2.zero, Vector2.zero, 24f, FontStyles.Bold, Color.white, TextAlignmentOptions.Center);
             if (sampleTmp != null) { pt.font = sampleTmp.font; pt.fontSharedMaterial = sampleTmp.fontSharedMaterial; }
-            pt.text = "<"; pt.fontSize = 22f; pt.alignment = TextAlignmentOptions.Center; pt.color = Color.white;
 
+            // Scene Display Label
             GameObject displayObj = new GameObject("SceneDisplay");
-            displayObj.transform.SetParent(row.transform, false);
-            RectTransform dispRt = displayObj.AddComponent<RectTransform>();
-            dispRt.anchorMin = new Vector2(0.35f, 0f);
-            dispRt.anchorMax = new Vector2(0.91f, 1f);
-            dispRt.sizeDelta = Vector2.zero;
-            displayObj.AddComponent<Image>().color = new Color(0.04f, 0.08f, 0.15f, 0.88f);
+            displayObj.transform.SetParent(container.transform, false);
+            LayoutElement dle = displayObj.AddComponent<LayoutElement>();
+            dle.flexibleWidth = 1f;
+            displayObj.AddComponent<Image>().color = new Color(0.06f, 0.10f, 0.18f, 0.92f);
 
-            GameObject textObj = new GameObject("Text");
-            textObj.transform.SetParent(displayObj.transform, false);
-            RectTransform trt = textObj.AddComponent<RectTransform>();
-            trt.anchorMin = Vector2.zero; trt.anchorMax = Vector2.one;
-            _sceneLabelText = textObj.AddComponent<TextMeshProUGUI>();
+            _sceneLabelText = CreateText(displayObj.transform, MapBrowserService.SelectedStagingScene, Vector2.zero, Vector2.one, Vector2.zero, Vector2.zero, 20f, FontStyles.Bold, new Color(0.2f, 0.95f, 0.4f), TextAlignmentOptions.Center);
             if (sampleTmp != null) { _sceneLabelText.font = sampleTmp.font; _sceneLabelText.fontSharedMaterial = sampleTmp.fontSharedMaterial; }
-            _sceneLabelText.fontSize = 18f;
-            _sceneLabelText.alignment = TextAlignmentOptions.Center;
-            _sceneLabelText.color = new Color(0.2f, 0.95f, 0.4f);
-            _sceneLabelText.text = MapBrowserService.SelectedStagingScene;
 
+            // Next Button
             GameObject nextBtn = new GameObject("Btn_NextScene");
-            nextBtn.transform.SetParent(row.transform, false);
-            RectTransform nextRt = nextBtn.AddComponent<RectTransform>();
-            nextRt.anchorMin = new Vector2(0.92f, 0.0f);
-            nextRt.anchorMax = new Vector2(1.0f, 1f);
-            nextRt.sizeDelta = Vector2.zero;
-            nextBtn.AddComponent<Image>().color = new Color(0.1f, 0.15f, 0.25f, 0.9f);
+            nextBtn.transform.SetParent(container.transform, false);
+            LayoutElement nle = nextBtn.AddComponent<LayoutElement>();
+            nle.preferredWidth = 48f;
+            nle.minWidth = 48f;
+            nle.flexibleWidth = 0f;
+            nextBtn.AddComponent<Image>().color = new Color(0.12f, 0.18f, 0.30f, 0.95f);
             Button nb = nextBtn.AddComponent<Button>();
             nb.onClick.AddListener((Action)(() => CycleStagingScene(1)));
 
-            GameObject nextTxt = new GameObject("Text");
-            nextTxt.transform.SetParent(nextBtn.transform, false);
-            RectTransform ntrt = nextTxt.AddComponent<RectTransform>();
-            ntrt.anchorMin = Vector2.zero; ntrt.anchorMax = Vector2.one;
-            TMP_Text nt = nextTxt.AddComponent<TextMeshProUGUI>();
+            TMP_Text nt = CreateText(nextBtn.transform, ">", Vector2.zero, Vector2.one, Vector2.zero, Vector2.zero, 24f, FontStyles.Bold, Color.white, TextAlignmentOptions.Center);
             if (sampleTmp != null) { nt.font = sampleTmp.font; nt.fontSharedMaterial = sampleTmp.fontSharedMaterial; }
-            nt.text = ">"; nt.fontSize = 22f; nt.alignment = TextAlignmentOptions.Center; pt.color = Color.white;
         }
-
         private static void CycleStagingScene(int dir)
         {
             var list = MapBrowserService.AvailableStagingScenes;
@@ -2727,8 +2650,7 @@ namespace DeadCoreEditor
             idx = (idx + dir + list.Count) % list.Count;
             MapBrowserService.SelectedStagingScene = list[idx];
 
-            if (_sceneLabelText != null)
-                _sceneLabelText.text = MapBrowserService.SelectedStagingScene;
+            if (_sceneLabelText != null) _sceneLabelText.text = MapBrowserService.SelectedStagingScene;
         }
 
         public static void RefreshRowTitlesInList(string newTitle)
@@ -2762,11 +2684,10 @@ namespace DeadCoreEditor
                 for (int i = 0; i < allTmps.Length; i++)
                 {
                     TMP_Text tmp = allTmps[i];
-                    // Skip if null, inactive, or if text is null/empty
                     if (tmp == null || !tmp.gameObject.activeInHierarchy || string.IsNullOrWhiteSpace(tmp.text)) continue;
                     if (tmp.GetComponentInParent<LogsMenu>() != null) continue;
 
-                    string t = tmp.text.Trim().ToLower();
+                    string t = tmp.text.Trim().ToLowerInvariant();
                     if (t == "logs" || t == "log" || t == "archives" || t == "codex" || t == "records")
                     {
                         tmp.text = "Level Editor";
@@ -2781,7 +2702,6 @@ namespace DeadCoreEditor
 
         public static void OpenNativeMenu()
         {
-            // Access through DeadCoreLevelEditorMod or find it safely in scene roots
             LogsMenu target = DeadCoreLevelEditorMod._cachedActiveMenu;
             if (target == null)
             {
@@ -2839,14 +2759,9 @@ namespace DeadCoreEditor
                 }
             }
 
-            if (_nativePlayButton != null && _nativePlayButton.activeInHierarchy)
-                SetButtonText(_nativePlayButton, "Play", 34f);
-
-            if (_nativeCreateButton != null && _nativeCreateButton.activeInHierarchy)
-                SetButtonText(_nativeCreateButton, "+ New", 34f);
-
-            if (_nativeDeleteButton != null && _nativeDeleteButton.activeInHierarchy)
-                SetButtonText(_nativeDeleteButton, "Delete", 34f);
+            if (_nativePlayButton != null && _nativePlayButton.activeInHierarchy) SetButtonText(_nativePlayButton, "Play", 34f);
+            if (_nativeCreateButton != null && _nativeCreateButton.activeInHierarchy) SetButtonText(_nativeCreateButton, "+ New", 34f);
+            if (_nativeDeleteButton != null && _nativeDeleteButton.activeInHierarchy) SetButtonText(_nativeDeleteButton, "Delete", 34f);
         }
 
         public static void TransformLogsMenu(LogsMenu menu, int currentTab)
@@ -2872,10 +2787,8 @@ namespace DeadCoreEditor
                     Transform child = menu._logsButtonRoot.GetChild(i);
                     if (child != null)
                     {
-                        if (child.name.StartsWith("CustomMap_"))
-                            GameObject.DestroyImmediate(child.gameObject);
-                        else
-                            child.gameObject.SetActive(false);
+                        if (child.name.StartsWith("CustomMap_")) GameObject.DestroyImmediate(child.gameObject);
+                        else child.gameObject.SetActive(false);
                     }
                 }
             }
@@ -2891,13 +2804,8 @@ namespace DeadCoreEditor
 
                 if (fileList.Count == 0)
                 {
-                    string def = Path.Combine(MapBrowserService.MyLevelsDir, "Default_Level.txt");
-                    if (!File.Exists(def))
-                    {
-                        Vector3 spawn = EditorSessionManager.LevelSpawnPosition;
-                        File.WriteAllText(def, $"#TITLE: Default Level\n#AUTHOR: Community\n#DIFFICULTY: Normal\n#DESC: Starter platform.\n#SCENE: level01_Spark01\nFloor_Platform_16x16;{spawn.x:F4};{(spawn.y - 1.2f):F4};{spawn.z:F4};0.5500;0.0000;0.0000;0.0000;1.0000;0.00\n");
-                    }
-                    fileList.Add(def);
+                    MapBrowserService.EnsureDirectories();
+                    fileList.Add(Path.Combine(MapBrowserService.MyLevelsDir, "Default_Level.txt"));
                 }
             }
             else
@@ -2936,9 +2844,7 @@ namespace DeadCoreEditor
                 Toggle tog = itemObj.GetComponent<Toggle>();
                 if (tog != null) GameObject.DestroyImmediate(tog);
 
-                Button btn = itemObj.GetComponent<Button>();
-                if (btn == null) btn = itemObj.AddComponent<Button>();
-
+                Button btn = itemObj.GetComponent<Button>() ?? itemObj.AddComponent<Button>();
                 ColorBlock cb = btn.colors;
                 cb.normalColor = Color.white;
                 cb.highlightedColor = new Color(0.3f, 0.8f, 1f, 1f);
@@ -2951,7 +2857,6 @@ namespace DeadCoreEditor
 
                 btn.onClick = new Button.ButtonClickedEvent();
                 btn.onClick.AddListener((Action)(() => OnLevelSelected(menu, capturedPath, capturedName, capturedObj)));
-
                 _spawnedRowObjects.Add(itemObj);
 
                 if (i == 0 || capturedPath == MapBrowserService.SelectedMapPath)
@@ -2970,7 +2875,6 @@ namespace DeadCoreEditor
                 if (t == null) continue;
 
                 string clean = t.text.Trim().ToLower();
-
                 if (clean.Contains("t-log") || clean == "my levels")
                 {
                     t.text = "My Levels";
@@ -3030,11 +2934,8 @@ namespace DeadCoreEditor
             catch { }
 
             LevelMetadata meta = ReadLevelMetadata(fullPath, fileName);
-
-            if (!string.IsNullOrEmpty(meta.StagingScene) && MapBrowserService.AvailableStagingScenes.Contains(meta.StagingScene))
-                MapBrowserService.SelectedStagingScene = meta.StagingScene;
-            else
-                MapBrowserService.SelectedStagingScene = "level01_Spark01";
+            MapBrowserService.SelectedStagingScene = (!string.IsNullOrEmpty(meta.StagingScene) && MapBrowserService.AvailableStagingScenes.Contains(meta.StagingScene))
+                ? meta.StagingScene : "level01_Spark01";
 
             for (int i = 0; i < _spawnedRowObjects.Count; i++)
             {
@@ -3067,33 +2968,8 @@ namespace DeadCoreEditor
             Transform parent = menu._logBigPicture.transform;
             bool isMyLevels = (DeadCoreLevelEditorMod.ActiveTab == 0);
 
-            if (menu._shortDesc != null)
-            {
-                menu._shortDesc.gameObject.SetActive(!isMyLevels);
-                if (!isMyLevels)
-                {
-                    menu._shortDesc.text = $"<b>{meta.Title.ToUpper()}</b>\nBY: {meta.Author.ToUpper()}  |  [{meta.Difficulty.ToUpper()}]  |  OBJECTS: {objectCount}\nSCENE: {meta.StagingScene}";
-                    DisableLocalizationScripts(menu._shortDesc.gameObject);
-                }
-                else
-                {
-                    menu._shortDesc.text = "";
-                }
-            }
-
-            if (menu._longDesc != null)
-            {
-                menu._longDesc.gameObject.SetActive(!isMyLevels);
-                if (!isMyLevels)
-                {
-                    menu._longDesc.text = meta.Description;
-                    DisableLocalizationScripts(menu._longDesc.gameObject);
-                }
-                else
-                {
-                    menu._longDesc.text = "";
-                }
-            }
+            if (menu._shortDesc != null) menu._shortDesc.gameObject.SetActive(false);
+            if (menu._longDesc != null) menu._longDesc.gameObject.SetActive(false);
 
             if (_nativeMetadataRoot == null || _nativeMetadataRoot.Equals(null))
             {
@@ -3101,20 +2977,37 @@ namespace DeadCoreEditor
                 _nativeMetadataRoot.transform.SetParent(parent, false);
 
                 RectTransform rootRt = _nativeMetadataRoot.AddComponent<RectTransform>();
-                rootRt.anchorMin = Vector2.zero;
-                rootRt.anchorMax = Vector2.one;
-                rootRt.offsetMin = new Vector2(30f, 25f);
-                rootRt.offsetMax = new Vector2(-30f, -25f);
+                rootRt.anchorMin = new Vector2(0f, 1f);
+                rootRt.anchorMax = new Vector2(1f, 1f);
+                rootRt.pivot = new Vector2(0.5f, 1f);
+                rootRt.anchoredPosition = new Vector2(0f, 0f);
+                rootRt.sizeDelta = new Vector2(0f, 0f);
+
+                Image bgImg = _nativeMetadataRoot.AddComponent<Image>();
+                bgImg.color = new Color(0.04f, 0.06f, 0.09f, 0.96f);
+
+                VerticalLayoutGroup vlg = _nativeMetadataRoot.AddComponent<VerticalLayoutGroup>();
+                vlg.padding = new RectOffset(16, 16, 12, 12);
+                vlg.spacing = 8f;
+                vlg.childControlWidth = true;
+                vlg.childControlHeight = false;
+                vlg.childForceExpandWidth = true;
+                vlg.childForceExpandHeight = false;
+
+                ContentSizeFitter csf = _nativeMetadataRoot.AddComponent<ContentSizeFitter>();
+                csf.horizontalFit = ContentSizeFitter.FitMode.Unconstrained;
+                csf.verticalFit = ContentSizeFitter.FitMode.PreferredSize;
 
                 TMP_Text sampleText = menu._shortDesc != null ? menu._shortDesc : menu.GetComponentInChildren<TMP_Text>(true);
 
-                CreateNativeInputRow(_nativeMetadataRoot.transform, sampleText, "LEVEL TITLE", 0f, 38f, 24f, out _titleInput);
-                CreateNativeInputRow(_nativeMetadataRoot.transform, sampleText, "AUTHOR", -44f, 38f, 20f, out _authorInput);
-                CreateDifficultyRow(_nativeMetadataRoot.transform, sampleText, -88f);
-                CreateSceneSelectorRow(_nativeMetadataRoot.transform, sampleText, -136f);
-                CreateNativeInputRow(_nativeMetadataRoot.transform, sampleText, "DESCRIPTION", -180f, 65f, 19f, out _descInput, true);
-                CreateLevelStatsHUD(_nativeMetadataRoot.transform, sampleText, -252f);
-                CreateNativeSaveButton(_nativeMetadataRoot.transform, sampleText, -342f);
+                // Enlarged row heights & font sizes matching DeadCore's native UI scale
+                CreateNativeInputRow(_nativeMetadataRoot.transform, sampleText, "LEVEL TITLE", 44f, 20f, out _titleInput);
+                CreateNativeInputRow(_nativeMetadataRoot.transform, sampleText, "AUTHOR", 44f, 20f, out _authorInput);
+                CreateDifficultyRow(_nativeMetadataRoot.transform, sampleText, 44f);
+                CreateSceneSelectorRow(_nativeMetadataRoot.transform, sampleText, 44f);
+                CreateNativeInputRow(_nativeMetadataRoot.transform, sampleText, "DESCRIPTION", 68f, 18f, out _descInput, true);
+                CreateLevelStatsHUD(_nativeMetadataRoot.transform, sampleText, 65f);
+                CreateNativeSaveButton(_nativeMetadataRoot.transform, sampleText, 46f);
             }
 
             _nativeMetadataRoot.SetActive(isMyLevels);
@@ -3139,28 +3032,29 @@ namespace DeadCoreEditor
                 }
             }
             HighlightSelectedDifficulty();
-
             UpdateLevelStatsHUD(fullPath, objectCount);
         }
 
-        private static void CreateNativeInputRow(Transform parent, TMP_Text sampleTmp, string labelName, float posY, float height, float fontSize, out TMP_InputField inputField, bool isMultiLine = false)
+        private static void CreateNativeInputRow(Transform parent, TMP_Text sampleTmp, string labelName, float height, float fontSize, out TMP_InputField inputField, bool isMultiLine = false)
         {
             GameObject row = new GameObject("Row_" + labelName);
             row.transform.SetParent(parent, false);
 
             RectTransform rowRt = row.AddComponent<RectTransform>();
-            rowRt.anchorMin = new Vector2(0f, 1f);
-            rowRt.anchorMax = new Vector2(1f, 1f);
-            rowRt.pivot = new Vector2(0.5f, 1f);
             rowRt.sizeDelta = new Vector2(0f, height);
-            rowRt.anchoredPosition = new Vector2(0f, posY);
+
+            LayoutElement le = row.AddComponent<LayoutElement>();
+            le.preferredHeight = height;
+            le.minHeight = height;
+            le.flexibleWidth = 1f;
 
             GameObject labelObj = new GameObject("Label");
             labelObj.transform.SetParent(row.transform, false);
             RectTransform labelRt = labelObj.AddComponent<RectTransform>();
-            labelRt.anchorMin = new Vector2(0f, 0.5f);
-            labelRt.anchorMax = new Vector2(0.25f, 0.5f);
-            labelRt.sizeDelta = Vector2.zero;
+            labelRt.anchorMin = new Vector2(0f, 0f);
+            labelRt.anchorMax = new Vector2(0.24f, 1f);
+            labelRt.offsetMin = Vector2.zero;
+            labelRt.offsetMax = Vector2.zero;
 
             TMP_Text labelTmp = labelObj.AddComponent<TextMeshProUGUI>();
             if (sampleTmp != null) { labelTmp.font = sampleTmp.font; labelTmp.fontSharedMaterial = sampleTmp.fontSharedMaterial; }
@@ -3173,20 +3067,19 @@ namespace DeadCoreEditor
             GameObject inputObj = new GameObject("InputField");
             inputObj.transform.SetParent(row.transform, false);
             RectTransform inRt = inputObj.AddComponent<RectTransform>();
-            inRt.anchorMin = new Vector2(0.26f, 0f);
+            inRt.anchorMin = new Vector2(0.25f, 0f);
             inRt.anchorMax = new Vector2(1f, 1f);
-            inRt.sizeDelta = Vector2.zero;
-
-            Image bg = inputObj.AddComponent<Image>();
-            bg.color = new Color(0.04f, 0.08f, 0.15f, 0.88f);
+            inRt.offsetMin = Vector2.zero;
+            inRt.offsetMax = Vector2.zero;
+            inputObj.AddComponent<Image>().color = new Color(0.06f, 0.10f, 0.18f, 0.92f);
 
             GameObject textObj = new GameObject("Text");
             textObj.transform.SetParent(inputObj.transform, false);
             RectTransform textRt = textObj.AddComponent<RectTransform>();
             textRt.anchorMin = Vector2.zero;
             textRt.anchorMax = Vector2.one;
-            textRt.offsetMin = new Vector2(12f, 5f);
-            textRt.offsetMax = new Vector2(-12f, -5f);
+            textRt.offsetMin = new Vector2(12f, 4f);
+            textRt.offsetMax = new Vector2(-12f, -4f);
 
             TMP_Text inTmp = textObj.AddComponent<TextMeshProUGUI>();
             if (sampleTmp != null) { inTmp.font = sampleTmp.font; inTmp.fontSharedMaterial = sampleTmp.fontSharedMaterial; }
@@ -3200,24 +3093,26 @@ namespace DeadCoreEditor
             inputField.lineType = isMultiLine ? TMP_InputField.LineType.MultiLineNewline : TMP_InputField.LineType.SingleLine;
         }
 
-        private static void CreateDifficultyRow(Transform parent, TMP_Text sampleTmp, float posY)
+        private static void CreateDifficultyRow(Transform parent, TMP_Text sampleTmp, float height = 44f)
         {
             GameObject row = new GameObject("Row_Difficulty");
             row.transform.SetParent(parent, false);
 
             RectTransform rowRt = row.AddComponent<RectTransform>();
-            rowRt.anchorMin = new Vector2(0f, 1f);
-            rowRt.anchorMax = new Vector2(1f, 1f);
-            rowRt.pivot = new Vector2(0.5f, 1f);
-            rowRt.sizeDelta = new Vector2(0f, 48f);
-            rowRt.anchoredPosition = new Vector2(0f, posY);
+            rowRt.sizeDelta = new Vector2(0f, height);
+
+            LayoutElement le = row.AddComponent<LayoutElement>();
+            le.preferredHeight = height;
+            le.minHeight = height;
+            le.flexibleWidth = 1f;
 
             GameObject labelObj = new GameObject("Label");
             labelObj.transform.SetParent(row.transform, false);
             RectTransform labelRt = labelObj.AddComponent<RectTransform>();
-            labelRt.anchorMin = new Vector2(0f, 0.5f);
-            labelRt.anchorMax = new Vector2(0.25f, 0.5f);
-            labelRt.sizeDelta = Vector2.zero;
+            labelRt.anchorMin = new Vector2(0f, 0f);
+            labelRt.anchorMax = new Vector2(0.24f, 1f);
+            labelRt.offsetMin = Vector2.zero;
+            labelRt.offsetMax = Vector2.zero;
 
             TMP_Text labelTmp = labelObj.AddComponent<TextMeshProUGUI>();
             if (sampleTmp != null) { labelTmp.font = sampleTmp.font; labelTmp.fontSharedMaterial = sampleTmp.fontSharedMaterial; }
@@ -3227,49 +3122,39 @@ namespace DeadCoreEditor
             labelTmp.text = "DIFFICULTY";
             labelTmp.alignment = TextAlignmentOptions.MidlineLeft;
 
+            GameObject btnContainer = new GameObject("BtnContainer");
+            btnContainer.transform.SetParent(row.transform, false);
+            RectTransform bcRt = btnContainer.AddComponent<RectTransform>();
+            bcRt.anchorMin = new Vector2(0.25f, 0f);
+            bcRt.anchorMax = new Vector2(1f, 1f);
+            bcRt.offsetMin = Vector2.zero;
+            bcRt.offsetMax = Vector2.zero;
+
+            HorizontalLayoutGroup bchlg = btnContainer.AddComponent<HorizontalLayoutGroup>();
+            bchlg.spacing = 6f;
+            bchlg.childControlWidth = true;
+            bchlg.childControlHeight = true;
+            bchlg.childForceExpandWidth = true;
+            bchlg.childForceExpandHeight = true;
+
             _diffButtons.Clear();
-            float btnW = 0.74f / 5f;
 
             for (int i = 0; i < DifficultyNames.Length; i++)
             {
                 int captureIdx = i;
                 GameObject btn = new GameObject("Diff_" + DifficultyNames[i]);
-                btn.transform.SetParent(row.transform, false);
+                btn.transform.SetParent(btnContainer.transform, false);
 
-                RectTransform brt = btn.AddComponent<RectTransform>();
-                brt.anchorMin = new Vector2(0.26f + (i * btnW), 0.02f);
-                brt.anchorMax = new Vector2(0.26f + ((i + 1) * btnW) - 0.012f, 0.98f);
-                brt.sizeDelta = Vector2.zero;
-
-                Image bImg = btn.AddComponent<Image>();
-                bImg.color = new Color(0.08f, 0.14f, 0.22f, 0.9f);
-
+                btn.AddComponent<Image>().color = new Color(0.08f, 0.14f, 0.22f, 0.9f);
                 Button bComp = btn.AddComponent<Button>();
-                ColorBlock cb = bComp.colors;
-                cb.normalColor = Color.white;
-                cb.highlightedColor = new Color(1.3f, 1.3f, 1.3f, 1f);
-                cb.pressedColor = new Color(0.7f, 0.7f, 0.7f, 1f);
-                bComp.colors = cb;
-
                 bComp.onClick.AddListener((Action)(() =>
                 {
                     _selectedDifficultyIndex = captureIdx;
                     HighlightSelectedDifficulty();
                 }));
 
-                GameObject bText = new GameObject("Text");
-                bText.transform.SetParent(btn.transform, false);
-                RectTransform trt = bText.AddComponent<RectTransform>();
-                trt.anchorMin = Vector2.zero;
-                trt.anchorMax = Vector2.one;
-
-                TMP_Text bTmp = bText.AddComponent<TextMeshProUGUI>();
+                TMP_Text bTmp = CreateText(btn.transform, DifficultyNames[i], Vector2.zero, Vector2.one, Vector2.zero, Vector2.zero, 18f, FontStyles.Bold, DifficultyColors[i], TextAlignmentOptions.Center);
                 if (sampleTmp != null) { bTmp.font = sampleTmp.font; bTmp.fontSharedMaterial = sampleTmp.fontSharedMaterial; }
-                bTmp.fontSize = 20f;
-                bTmp.fontStyle = FontStyles.Bold;
-                bTmp.text = DifficultyNames[i];
-                bTmp.alignment = TextAlignmentOptions.Center;
-                bTmp.color = DifficultyColors[i];
 
                 _diffButtons.Add(btn);
             }
@@ -3295,45 +3180,47 @@ namespace DeadCoreEditor
             }
         }
 
-        private static void CreateLevelStatsHUD(Transform parent, TMP_Text sampleTmp, float posY)
+        private static void CreateLevelStatsHUD(Transform parent, TMP_Text sampleTmp, float height = 65f)
         {
             GameObject statsBox = new GameObject("HUD_LevelStats");
             statsBox.transform.SetParent(parent, false);
 
             RectTransform srt = statsBox.AddComponent<RectTransform>();
-            srt.anchorMin = new Vector2(0.26f, 1f);
-            srt.anchorMax = new Vector2(1f, 1f);
-            srt.pivot = new Vector2(0.5f, 1f);
-            srt.sizeDelta = new Vector2(0f, 86f);
-            srt.anchoredPosition = new Vector2(0f, posY);
+            srt.sizeDelta = new Vector2(0f, height);
 
-            Image bg = statsBox.AddComponent<Image>();
-            bg.color = new Color(0.03f, 0.06f, 0.12f, 0.75f);
+            LayoutElement le = statsBox.AddComponent<LayoutElement>();
+            le.preferredHeight = height;
+            le.minHeight = height;
+            le.flexibleWidth = 1f;
+
+            statsBox.AddComponent<Image>().color = new Color(0.03f, 0.06f, 0.12f, 0.90f);
 
             GameObject leftObj = new GameObject("StatsLeft");
             leftObj.transform.SetParent(statsBox.transform, false);
             RectTransform lrt = leftObj.AddComponent<RectTransform>();
-            lrt.anchorMin = new Vector2(0.04f, 0f);
+            lrt.anchorMin = new Vector2(0.03f, 0f);
             lrt.anchorMax = new Vector2(0.50f, 1f);
-            lrt.sizeDelta = Vector2.zero;
+            lrt.offsetMin = Vector2.zero;
+            lrt.offsetMax = Vector2.zero;
 
             _statsLabelLeft = leftObj.AddComponent<TextMeshProUGUI>();
             if (sampleTmp != null) { _statsLabelLeft.font = sampleTmp.font; _statsLabelLeft.fontSharedMaterial = sampleTmp.fontSharedMaterial; }
-            _statsLabelLeft.fontSize = 17f;
-            _statsLabelLeft.color = new Color(0.6f, 0.85f, 1f, 0.9f);
+            _statsLabelLeft.fontSize = 16f;
+            _statsLabelLeft.color = new Color(0.6f, 0.85f, 1f, 0.95f);
             _statsLabelLeft.alignment = TextAlignmentOptions.MidlineLeft;
 
             GameObject rightObj = new GameObject("StatsRight");
             rightObj.transform.SetParent(statsBox.transform, false);
             RectTransform rrt = rightObj.AddComponent<RectTransform>();
             rrt.anchorMin = new Vector2(0.52f, 0f);
-            rrt.anchorMax = new Vector2(0.96f, 1f);
-            rrt.sizeDelta = Vector2.zero;
+            rrt.anchorMax = new Vector2(0.97f, 1f);
+            rrt.offsetMin = Vector2.zero;
+            rrt.offsetMax = Vector2.zero;
 
             _statsLabelRight = rightObj.AddComponent<TextMeshProUGUI>();
             if (sampleTmp != null) { _statsLabelRight.font = sampleTmp.font; _statsLabelRight.fontSharedMaterial = sampleTmp.fontSharedMaterial; }
-            _statsLabelRight.fontSize = 17f;
-            _statsLabelRight.color = new Color(0.6f, 0.85f, 1f, 0.9f);
+            _statsLabelRight.fontSize = 16f;
+            _statsLabelRight.color = new Color(0.6f, 0.85f, 1f, 0.95f);
             _statsLabelRight.alignment = TextAlignmentOptions.MidlineLeft;
         }
 
@@ -3347,13 +3234,13 @@ namespace DeadCoreEditor
                 string[] lines = File.ReadAllLines(fullPath);
                 for (int i = 0; i < lines.Length; i++)
                 {
-                    string l = lines[i].ToLower();
+                    string l = lines[i].ToLowerInvariant();
                     if (l.StartsWith("#")) continue;
                     if (l.Contains("laser")) lasers++;
                     else if (l.Contains("jumper")) jumpers++;
                     else if (l.Contains("helix")) turbines++;
                     else if (l.Contains("turret")) turrets++;
-                    if (l.Contains(";path:1")) paths++;
+                    if (l.Contains(";path:1") || l.Contains(";comp:path:")) paths++;
                 }
             }
             catch { }
@@ -3363,44 +3250,26 @@ namespace DeadCoreEditor
             _statsLabelRight.text = $"- MOVING PATHS: <b><color=#E040FB>{paths}</color></b>\n- TURRET ENEMIES: <b><color=#FF4081>{turrets}</color></b>\n- LAST SAVED: <color=#B0BEC5>{mod:dd/MM/yyyy HH:mm}</color>";
         }
 
-        private static void CreateNativeSaveButton(Transform parent, TMP_Text sampleTmp, float posY)
+        private static void CreateNativeSaveButton(Transform parent, TMP_Text sampleTmp, float height = 46f)
         {
             GameObject saveBtn = new GameObject("Btn_SaveMetadata");
             saveBtn.transform.SetParent(parent, false);
 
             RectTransform srt = saveBtn.AddComponent<RectTransform>();
-            srt.anchorMin = new Vector2(0.26f, 1f);
-            srt.anchorMax = new Vector2(0.66f, 1f);
-            srt.pivot = new Vector2(0f, 1f);
-            srt.sizeDelta = new Vector2(0f, 48f);
-            srt.anchoredPosition = new Vector2(0f, posY);
+            srt.sizeDelta = new Vector2(0f, height);
 
-            Image img = saveBtn.AddComponent<Image>();
-            img.color = new Color(0.12f, 0.65f, 0.95f, 0.95f);
+            LayoutElement le = saveBtn.AddComponent<LayoutElement>();
+            le.preferredHeight = height;
+            le.minHeight = height;
+            le.flexibleWidth = 1f;
 
+            saveBtn.AddComponent<Image>().color = new Color(0.14f, 0.62f, 0.92f, 0.98f);
             Button b = saveBtn.AddComponent<Button>();
-            ColorBlock cb = b.colors;
-            cb.normalColor = Color.white;
-            cb.highlightedColor = new Color(1.25f, 1.25f, 1.25f, 1f);
-            cb.pressedColor = new Color(0.2f, 1f, 0.5f, 1f);
-            b.colors = cb;
-
             b.onClick.RemoveAllListeners();
             b.onClick.AddListener((Action)(() => SaveCurrentMetadata(MapBrowserService.SelectedMapPath)));
 
-            GameObject txt = new GameObject("Text");
-            txt.transform.SetParent(saveBtn.transform, false);
-            RectTransform trt = txt.AddComponent<RectTransform>();
-            trt.anchorMin = Vector2.zero;
-            trt.anchorMax = Vector2.one;
-
-            _saveBtnText = txt.AddComponent<TextMeshProUGUI>();
+            _saveBtnText = CreateText(saveBtn.transform, "SAVE DETAILS", Vector2.zero, Vector2.one, Vector2.zero, Vector2.zero, 22f, FontStyles.Bold, Color.white, TextAlignmentOptions.Center);
             if (sampleTmp != null) { _saveBtnText.font = sampleTmp.font; _saveBtnText.fontSharedMaterial = sampleTmp.fontSharedMaterial; }
-            _saveBtnText.fontSize = 22f;
-            _saveBtnText.text = "SAVE DETAILS";
-            _saveBtnText.fontStyle = FontStyles.Bold;
-            _saveBtnText.color = Color.white;
-            _saveBtnText.alignment = TextAlignmentOptions.Center;
         }
 
         private static void SetupBottomBarButtons(LogsMenu menu)
@@ -3439,16 +3308,12 @@ namespace DeadCoreEditor
             TintChevron(_nativePlayButton, new Color(0.1f, 0.85f, 1f, 1f));
             SetButtonText(_nativePlayButton, "Play", nativeFontSize);
 
-            Button playBtn = _nativePlayButton.GetComponent<Button>();
-            if (playBtn == null) playBtn = _nativePlayButton.AddComponent<Button>();
+            Button playBtn = _nativePlayButton.GetComponent<Button>() ?? _nativePlayButton.AddComponent<Button>();
             playBtn.onClick = new Button.ButtonClickedEvent();
             playBtn.onClick.AddListener((Action)(() =>
             {
                 if (!string.IsNullOrEmpty(MapBrowserService.SelectedMapPath))
-                {
-                    MelonLogger.Msg($">> Launching selected map: '{MapBrowserService.SelectedMapName}' from '{MapBrowserService.SelectedMapPath}'");
                     MapBrowserService.LaunchSelectedMap();
-                }
             }));
 
             if (_nativeCreateButton == null || _nativeCreateButton.Equals(null) || _nativeCreateButton.transform.parent != parentBar)
@@ -3472,8 +3337,7 @@ namespace DeadCoreEditor
             TintChevron(_nativeCreateButton, new Color(0.25f, 0.9f, 0.45f, 1f));
             SetButtonText(_nativeCreateButton, "+ New", nativeFontSize);
 
-            Button createBtn = _nativeCreateButton.GetComponent<Button>();
-            if (createBtn == null) createBtn = _nativeCreateButton.AddComponent<Button>();
+            Button createBtn = _nativeCreateButton.GetComponent<Button>() ?? _nativeCreateButton.AddComponent<Button>();
             createBtn.onClick = new Button.ButtonClickedEvent();
             createBtn.onClick.AddListener((Action)(() => CreateNewLevel(menu)));
 
@@ -3498,8 +3362,7 @@ namespace DeadCoreEditor
             TintChevron(_nativeDeleteButton, new Color(0.95f, 0.25f, 0.25f, 1f));
             SetButtonText(_nativeDeleteButton, "Delete", nativeFontSize);
 
-            Button deleteBtn = _nativeDeleteButton.GetComponent<Button>();
-            if (deleteBtn == null) deleteBtn = _nativeDeleteButton.AddComponent<Button>();
+            Button deleteBtn = _nativeDeleteButton.GetComponent<Button>() ?? _nativeDeleteButton.AddComponent<Button>();
             deleteBtn.onClick = new Button.ButtonClickedEvent();
             deleteBtn.onClick.AddListener((Action)(() => DeleteCurrentSelectedLevel(menu)));
 
@@ -3509,10 +3372,7 @@ namespace DeadCoreEditor
         public static void DeleteCurrentSelectedLevel(LogsMenu menu)
         {
             if (string.IsNullOrEmpty(MapBrowserService.SelectedMapPath) || !File.Exists(MapBrowserService.SelectedMapPath))
-            {
-                MelonLogger.Warning("No level selected to delete.");
                 return;
-            }
 
             try
             {
@@ -3521,8 +3381,6 @@ namespace DeadCoreEditor
 
                 string pngFile = Path.ChangeExtension(deletingFile, ".png");
                 if (File.Exists(pngFile)) File.Delete(pngFile);
-
-                MelonLogger.Msg($">> Deleted custom level: '{deletingFile}'");
 
                 MapBrowserService.SelectedMapPath = "";
                 MapBrowserService.SelectedMapName = "";
@@ -3554,10 +3412,8 @@ namespace DeadCoreEditor
             Vector3 spawn = EditorSessionManager.LevelSpawnPosition;
             string scene = !string.IsNullOrEmpty(MapBrowserService.SelectedStagingScene) ? MapBrowserService.SelectedStagingScene : "level01_Spark01";
             string starterContent = $"#TITLE: New Level {idx}\n#AUTHOR: Player\n#DIFFICULTY: Normal\n#DESC: Custom level created with DeadCore Level Editor.\n#SCENE: {scene}\n" +
-                                   $"Floor_Platform_16x16;{spawn.x:F4};{(spawn.y - 1.2f):F4};{spawn.z:F4};0.5500;0.0000;0.0000;0.0000;1.0000;0.00\n";
+                                    $"Floor_Platform_16x16;{spawn.x:F4};{(spawn.y - 1.2f):F4};{spawn.z:F4};0.5500;0.0000;0.0000;0.0000;1.0000;0.00;SCALE3:0.5500:0.5500:0.5500\n";
             File.WriteAllText(newPath, starterContent);
-
-            MelonLogger.Msg($">> Created new level with solid floor platform: '{newName}.txt'");
 
             DeadCoreLevelEditorMod.SwitchTab(0, menu);
             MapBrowserService.SelectedMapPath = newPath;
@@ -3628,7 +3484,6 @@ namespace DeadCoreEditor
         private static void DisableLocalizationScripts(GameObject root)
         {
             if (root == null) return;
-
             try
             {
                 Component[] comps = root.GetComponentsInChildren<Component>(true);
@@ -3637,10 +3492,7 @@ namespace DeadCoreEditor
                     Component c = comps[i];
                     if (c == null) continue;
 
-                    var il2Type = c.GetIl2CppType();
-                    if (il2Type == null) continue;
-
-                    string typeName = il2Type.Name;
+                    string typeName = c.GetIl2CppType().Name;
                     if (typeName == "TextLabel" || typeName.Contains("Translate") || typeName.Contains("Localization"))
                     {
                         MonoBehaviour mb = c.TryCast<MonoBehaviour>();
@@ -3653,7 +3505,7 @@ namespace DeadCoreEditor
     }
 
     // =========================================================================
-    // SECTION 3: MELONMOD ENTRY POINT & MAIN RUNTIME LOOP
+    // SECTION 3: MELONMOD RUNTIME ENTRY POINT
     // =========================================================================
 
     public class DeadCoreLevelEditorMod : MelonMod
@@ -3667,7 +3519,7 @@ namespace DeadCoreEditor
         public override void OnInitializeMelon()
         {
             LoggerInstance.Msg("===============================================================");
-            LoggerInstance.Msg("   DeadCore Level Editor Suite - Unified Studio Edition        ");
+            LoggerInstance.Msg("   DeadCore Level Editor Suite - Modular Studio Edition        ");
             LoggerInstance.Msg("===============================================================");
             MapBrowserService.EnsureDirectories();
             MapBrowserService.ScanStagingScenes();
@@ -3712,9 +3564,7 @@ namespace DeadCoreEditor
                 if (Input.GetKeyDown(KeyCode.F2))
                     NativeLogsMenuHijacker.OpenNativeMenu();
 
-                // ONLY find and transform the LogsMenu when it is actually OPEN and ACTIVE
                 LogsMenu activeMenu = GameObject.FindObjectOfType<LogsMenu>();
-
                 if (activeMenu != null && activeMenu.gameObject.activeInHierarchy)
                 {
                     if (_lastTransformedLogsMenu != activeMenu)
@@ -3764,6 +3614,7 @@ namespace DeadCoreEditor
             }
 
             StudioUIManager.EnsureSelectableColliders();
+            StudioUIManager.AssetThumbnailRenderer.ProcessQueueTick();
             EditorSessionManager.UpdateSession();
         }
 
