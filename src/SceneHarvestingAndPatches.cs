@@ -28,7 +28,7 @@ namespace DeadCoreEditor
             "shadow", "collision", "collider", "gizmo", "proxy",
             "wireframe", "highlight", "beacon", "skybox", "horizon", "fog",
             "cloud", "backdrop", "ambiance", "dust", "font", "text",
-            "ui-", "tmp", "cursor", "sprite", "lightdata"
+            "ui-", "tmp", "cursor", "sprite", "lightdata", "cylinder"
         };
 
         public static bool ShouldIgnoreMesh(Mesh mesh, string meshName, string goName)
@@ -39,8 +39,8 @@ namespace DeadCoreEditor
             string gLow = goName.ToLowerInvariant();
 
             // 1. Purge lower LOD duplicates (keep only LOD0 and base meshes)
-            if (mLow.Contains("lod1") || mLow.Contains("lod2") || mLow.Contains("lod3") || mLow.Contains("lod4") ||
-                gLow.Contains("lod1") || gLow.Contains("lod2") || gLow.Contains("lod3") || gLow.Contains("lod4"))
+            if (mLow.Contains("lod1") || mLow.Contains("lod2") || mLow.Contains("lod3") ||
+                gLow.Contains("lod1") || gLow.Contains("lod2") || gLow.Contains("lod3"))
                 return true;
 
             // 2. Filter out internal small gameplay debris only (Spark/Child unblocked so level geometry is kept)
