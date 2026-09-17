@@ -1,4 +1,4 @@
-# DeadCore Level Editor Suite — Studio Edition
+# DeadCore Level Editor
 
 A real-time, in-engine 3D level editor and custom map studio for **DeadCore Redux**. Build intricate parkour courses, place native mechanics (jump pads, turbines, defense turrets, rotating lasers, switches, checkpoints), create reusable multi-object prefab instances, configure kinematic motion paths with continuous rotation, tune physical HDRP scene lighting and celestial skyboxes, and playtest instantly with one keystroke.
 
