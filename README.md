@@ -66,7 +66,7 @@ A real-time, in-engine 3D level editor and custom map studio for **DeadCore Redu
 
 ## Quick Start Guide
 
-1. **Open the Editor Browser**: On the game's Main Menu, click **Level Editor** (or press `F2`).
+1. **Open the Editor Browser**: On the game's Main Menu, click **Level Editor**.
 2. **Create a Course**: Click **`+ New`** on the bottom bar to generate a starter level.
 3. **Configure Details**: Fill in the title, author, difficulty rating, description, and base staging scene, then click **`SAVE DETAILS`**.
 4. **Launch**: Select your level from the list and click **`Play`** (or press `Enter`).
