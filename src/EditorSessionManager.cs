@@ -1948,28 +1948,25 @@ namespace DeadCoreEditor
             if (turbineObj == null) return;
             TurbineSpeeds[turbineObj] = speed;
 
-            HelixPushingZone zone = turbineObj.GetComponentInChildren<HelixPushingZone>();
+            HelixPushingZone zone = turbineObj.GetComponentInChildren<HelixPushingZone>(true);
             if (zone != null)
             {
-                zone.enabled = true;
                 zone._maxForce = speed;
                 zone._maxVelocity = speed * 2.0f;
             }
 
-            Helix h = turbineObj.GetComponentInChildren<Helix>();
+            Helix h = turbineObj.GetComponentInChildren<Helix>(true);
             if (h != null)
             {
-                h.enabled = true;
                 h._maximumVelocity = speed * 20f;
                 CachedHelixScripts[turbineObj] = h;
 
                 if (h._hingeJoint != null)
                 {
-                    h._hingeJoint.useMotor = true;
                     JointMotor m = h._hingeJoint.motor;
                     m.targetVelocity = speed * 20f;
                     m.force = 1000f;
-                    m.freeSpin = true;
+                    m.freeSpin = false; // MUST be false so it brakes when targetVelocity is set to 0
                     h._hingeJoint.motor = m;
                 }
             }
@@ -2605,7 +2602,6 @@ namespace DeadCoreEditor
                     MelonLogger.Msg($">> [VICTORY] Level completed in {LevelTimer:F2} seconds!");
                 }
             }
-
             private static void CheckHelixWindPushing(GameObject player, CharacterController cc)
             {
                 if (PlacedTurbines.Count == 0 || cc == null) return;
@@ -2618,13 +2614,35 @@ namespace DeadCoreEditor
                     GameObject obj = PlacedTurbines[i];
                     if (obj == null || !obj.activeSelf) continue;
 
-                    float speed = TurbineSpeeds.ContainsKey(obj) ? TurbineSpeeds[obj] : ActiveTurbineSpeed;
-
                     if (!CachedHelixScripts.TryGetValue(obj, out Helix helixScript) || helixScript == null)
                     {
-                        helixScript = obj.GetComponentInChildren<Helix>();
+                        helixScript = obj.GetComponentInChildren<Helix>(true);
                         CachedHelixScripts[obj] = helixScript;
                     }
+
+                    // 1. Verify Helix component state
+                    if (helixScript != null && !helixScript.enabled)
+                        continue;
+
+                    // 2. Check native DeadCore Pushing Zone (DeadCore disables this when the helix shuts off)
+                    HelixPushingZone zone = obj.GetComponentInChildren<HelixPushingZone>(true);
+                    if (zone != null && !zone.enabled)
+                        continue;
+
+                    // 3. Check the native fin switch:
+                    // In DeadCore, shooting the fin target activates the switch (_isOn == true) to disable the turbine temporarily.
+                    Interuptor finSwitch = obj.GetComponentInChildren<Interuptor>(true);
+                    if (finSwitch != null && finSwitch._isOn)
+                        continue;
+
+                    // 4. Check if the joint motor is off or has slowed down to a halt
+                    if (helixScript != null && helixScript._hingeJoint != null)
+                    {
+                        if (!helixScript._hingeJoint.useMotor || Mathf.Abs(helixScript._hingeJoint.velocity) < 10f)
+                            continue;
+                    }
+
+                    float speed = TurbineSpeeds.ContainsKey(obj) ? TurbineSpeeds[obj] : ActiveTurbineSpeed;
 
                     Vector3 hPos = obj.transform.position;
                     Vector3 forward = obj.transform.forward;
@@ -2650,7 +2668,6 @@ namespace DeadCoreEditor
                     }
                 }
             }
-
             private static void CheckLaserBarriers(GameObject player, CharacterController cc)
             {
                 if (PlacedLaserBarriers.Count == 0 || cc == null) return;
