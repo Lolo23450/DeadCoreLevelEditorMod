@@ -2786,6 +2786,9 @@ namespace DeadCoreEditor
             Cursor.lockState = CursorLockMode.Locked;
             Cursor.visible = false;
 
+            // Reset all switches and their connected objects back to their initial state
+            SwitchService.ResetAllSwitchesForPlaytest(enteringPlaytest: true);
+
             UnfreezePlayerControls();
             MelonLogger.Msg(">> [Restart] Restarted run cleanly from Entry Gate!");
         }
@@ -2803,6 +2806,9 @@ namespace DeadCoreEditor
 
                 player.transform.position = targetPos;
                 player.transform.rotation = targetRot;
+
+                // Reset all switches and their connected objects back to their initial state
+                SwitchService.ResetAllSwitchesForPlaytest(enteringPlaytest: true);
 
                 MelonLogger.Msg(">> [Respawn] Returned to active Checkpoint!");
             }

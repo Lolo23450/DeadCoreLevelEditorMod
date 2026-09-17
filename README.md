@@ -1,29 +1,38 @@
 # DeadCore Level Editor Suite — Studio Edition
 
-A real-time, in-engine 3D level editor and custom map studio for **DeadCore Redux**. Build intricate parkour courses, place native mechanics (jump pads, turbines, defense turrets, rotating lasers, checkpoints), configure kinematic motion paths with custom spinning axis overrides, tune physical HDRP scene lighting, and playtest instantly with one keystroke.
+A real-time, in-engine 3D level editor and custom map studio for **DeadCore Redux**. Build intricate parkour courses, place native mechanics (jump pads, turbines, defense turrets, rotating lasers, switches, checkpoints), create reusable multi-object prefab instances, configure kinematic motion paths with continuous rotation, tune physical HDRP scene lighting and celestial skyboxes, and playtest instantly with one keystroke.
 
 ---
 
 ## Key Features
 
-* **Complete Studio Workspace**: Docked UGUI panels including an interactive Scene Hierarchy, Contextual Inspector, Top Toolbar, and an Asset Browser with live 3D isometric previews.
-* **3D Transform Gizmos**: Native Translation, Rotation, and Scaling gizmos (including uniform center-scale and independent 3D non-uniform axis scaling).
+* **Complete Studio Workspace**: Docked UGUI panels including an interactive Scene Hierarchy, expandable Contextual Inspector, Top Toolbar, and an Asset Browser with live 3D isometric previews.
+* **3D Transform Gizmos**: Translation, Rotation, and Scaling gizmos (including uniform center-box scaling and independent 3D non-uniform axis scaling) with adjustable gizmo handle sizes.
+* **Prefab & Instance System**:
+  * Save any selected multi-object group as a reusable prefab template directly into `UserData/MyPrefabs/`.
+  * Spawn, position, scale, and rotate saved instances as single cohesive assets from the Asset Browser, with single-click deletion.
+* **Interactive Switch Targets**:
+  * Place target switches (`Interuptor`) that control all parented child objects when shot by the player's weapon.
+  * Configurable auto-timer duration, invert state (turns hazards OFF or platforms ON), and initial power state.
 * **Kinematic Motion Paths & Visual Waypoints**:
   * In-scene interactive waypoint handles (Point A = Green sphere, Point B = Orange sphere) with real-time vector connection lines.
-  * Standing player momentum carry and friction transfer.
-  * **Spinning Axis Override**: Rotate platforms around canonical axes (`X`, `Y`, `Z`), align rotation along the motion path vector (`Point A -> Point B`), or define a custom 3D vector override `(X, Y, Z)` with one-click path alignment and normalization tools.
+  * Standing player tangential momentum carry and friction transfer.
+  * **Spinning Axis Override**: Rotate platforms around canonical axes (`X - Tumble`, `Y - Turntable`, `Z - Roll`), align continuous rotation along the travel trajectory (`Point A -> Point B`), or enter arbitrary $(X, Y, Z)$ vector overrides with automatic normalization.
 * **Scene Hierarchy with Drag & Drop**:
   * Parent and unparent objects via keybinds (`Ctrl+P`, `Alt+P`) or by dragging rows in the hierarchy tree.
   * Cycle-detection prevents recursive parenting loops.
   * Quick-focus (`[F]`) and instant unparent (`[X]`) buttons per row.
 * **Catalog Asset Browser**:
-  * Categorized filtering: `Architecture`, `Platforms`, `Gameplay`, `Hazards`, `All`.
-  * Size-tier filters (`Small <4m`, `Medium 4–15m`, `Large 15–45m`, `Giant >45m`) and ascending/descending physical size sorting.
-  * Color-coded physical size badges (`16x2x16`, `12m`, etc.) rendered on every thumbnail.
-* **Physical HDRP Lighting & Atmosphere**:
-  * Direct control over Global Sunlight and focused Tech Spotlights.
-  * Calibrated physical Lux/Lumens intensity, cone spot angles, volumetric scattering/fog dimmers, and an RGB color swatch with instant presets.
-* **Automated 3D Isometric Thumbnails**: Captures 18° low-FOV isometric `.png` snapshots of your courses automatically upon saving.
+  * Categorized filtering: `Architecture`, `Gameplay`, `Hazards`, `Instances`, `All`.
+  * Size-tier filters (`ALL SIZES`, `SMALL 0-3m`, `MEDIUM 3-11m`, `LARGE 11m+`) with ascending and descending dimension sorting.
+  * Color-coded physical size badges (`16x2x16`, `PREFAB`, `4.2m`, etc.) rendered on every thumbnail.
+* **Physical HDRP Lighting & Celestial Skybox**:
+  * Direct control over focused Tech Spotlights and scene-wide Global Sunlight (physical Lux/Lumens, cone angles, volumetric dimmers, and 0–255 RGB color sliders).
+  * Dedicated **Skybox Controller** prop allowing live adjustment of exposure, yaw alignment, continuous orbital spin speed, and custom sky tint grading dynamically injected into HDRP volumes.
+* **Gameplay Flow & Checkpoint Tracking**:
+  * Dedicated Start (Entry Gate), Finish (Goal Gate), and intermediate Checkpoint objects.
+  * Dynamic void-fall death barrier calculation, checkpoint respawning, run timer HUD, and level completion victory overlay.
+* **Automated 3D Isometric Thumbnails**: Automatically captures 18° low-FOV isometric `.png` snapshots of your courses upon saving.
 * **Non-Destructive Playtesting**: Instantly toggle between First-Person gameplay and freecam editing (`F1`) without reloading the scene.
 
 ---
@@ -58,36 +67,36 @@ A real-time, in-engine 3D level editor and custom map studio for **DeadCore Redu
 ## Quick Start Guide
 
 1. **Open the Editor Browser**: On the game's Main Menu, click **Level Editor** (or press `F2`).
-2. **Create a Course**: Click **`+ New`** on the bottom bar to generate a starter level with a floor platform.
-3. **Configure Details**: Fill in the title, author, difficulty rating, and description, then click **`SAVE DETAILS`**.
+2. **Create a Course**: Click **`+ New`** on the bottom bar to generate a starter level.
+3. **Configure Details**: Fill in the title, author, difficulty rating, description, and base staging scene, then click **`SAVE DETAILS`**.
 4. **Launch**: Select your level from the list and click **`Play`** (or press `Enter`).
 5. **Switch to Studio Edit Mode**: Press **`F1`** to enter freecam editing.
-6. **Equip & Place**: Click any prop in the bottom **Asset Browser** to spawn a placement hologram, then **Left-Click** into the scene to place it.
+6. **Equip & Place**: Click any asset in the bottom **Asset Browser** to spawn a placement hologram, then **Left-Click** in the scene to place it.
 7. **Select & Transform**: Click **`MODE: [SELECT]`** (or press `Esc`) and click placed objects to position, rotate, or scale them using the 3D Gizmos or Inspector coordinates.
-8. **Test & Save**: Press **`F1`** to drop back into first-person gameplay immediately. Press **`F5`** at any time to quick-save.
+8. **Test & Save**: Press **`F1`** to drop back into first-person playtesting immediately. Press **`F5`** at any time to quick-save.
 
 ---
 
 ## Studio Interface Overview
 
 ```text
-┌──────────────────────────────────────────────────────────────────────────────────┐
-│ [MODE: SELECT/PLACEMENT] [Move] [Rotate] [Scale] [Align] [Snap] [SNAP 3D] [PLAYTEST] [Save] [Load] │ (Top Toolbar)
-├──────────────────────┬────────────────────────────────────┬──────────────────────┤
-│ SCENE HIERARCHY      │                                    │ INSPECTOR            │
-│                      │                                    │                      │
-│ [ Filter...        ] │                                    │ Selection: Platform  │
-│                      │                                    │                      │
-│ ▼ Platform_Base (2)  │         3D VIEWPORT & GIZMOS       │ ► Transform (Pos/Rot)│
-│   ├── Jumper_Pad [F] │                                    │ ► Non-Uniform Scale  │
-│   └── Turret_01  [F] │                                    │ ► Hazard / Pad Tuning│
-│                      │                                    │ ► Lighting & RGB     │
-│ [ Delete Selected  ] │                                    │ ► Kinematic Path     │
-├──────────────────────┴────────────────────────────────────┴──────────────────────┤
-│ ASSET BROWSER: [Architecture] [Platforms] [Gameplay] [Hazards] [All]   [Search...]│
-│ [ALL SIZES] [SMALL <4m] [MEDIUM 4-15m] [LARGE 15-45m] [GIANT >45m]   [SIZE: ▲ ASC]│
-│ [Card: Floor 16x16] [Card: Launch Jumper] [Card: Turret] [Card: Laser 8m] ...     │
-└──────────────────────────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
+│ [MODE: SELECT/PLACEMENT] [Move] [Rotate] [Scale] [+ Instance] [Align] [Snap] [SNAP 3D] [PLAYTEST]│
+├──────────────────────┬────────────────────────────────────────────┬──────────────────────────────┤
+│ SCENE HIERARCHY      │                                            │ INSPECTOR        [+ Expand]  │
+│                      │                                            │                              │
+│ [ Filter...        ] │                                            │ Selection: Platform          │
+│                      │                                            │                              │
+│ ▼ Platform_Base (2)  │             3D VIEWPORT & GIZMOS           │ ► Transform (Pos/Rot/Scale)  │
+│   ├── Jumper_Pad [F] │                                            │ ► Jumper / Turbine / Turret  │
+│   └── Switch_01  [F] │                                            │ ► Switch Target Logic        │
+│                      │                                            │ ► Lighting & Skybox Controls │
+│ [ Delete Selected  ] │                                            │ ► Kinematic Motion Path      │
+├──────────────────────┴────────────────────────────────────────────┴──────────────────────────────┤
+│ ASSET BROWSER: [Architecture] [Gameplay] [Hazards] [Instances] [All]                 [Search...] │
+│ [ALL SIZES] [SMALL 0-3m] [MEDIUM 3-11m] [LARGE 11m+]                              [SIZE: ▲ ASC]  │
+│ [Card: Floor 16x16] [Card: Launch Jumper] [Card: Switch] [Card: Prefab Instance] ...             │
+└──────────────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ---
