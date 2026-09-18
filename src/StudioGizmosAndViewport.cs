@@ -1134,6 +1134,47 @@ namespace DeadCoreEditor
             {
                 if (hovered != -1)
                 {
+                    bool isShift = Input.GetKey(KeyCode.LeftShift) || Input.GetKey(KeyCode.RightShift);
+
+                    // =========================================================================
+                    // SHIFT + DRAG TO CLONE IN-PLACE (Unreal / Blender Style)
+                    // =========================================================================
+                    if (isShift && mode == EditorGizmoMode.Translate && hovered >= 0 && hovered <= 2)
+                    {
+                        List<Vector3> origPositions = new List<Vector3>();
+                        List<Quaternion> origRotations = new List<Quaternion>();
+                        List<Vector3> origScales = new List<Vector3>();
+
+                        for (int i = 0; i < targets.Count; i++)
+                        {
+                            origPositions.Add(targets[i].transform.position);
+                            origRotations.Add(targets[i].transform.rotation);
+                            origScales.Add(targets[i].transform.localScale);
+                        }
+
+                        // Duplicate selection
+                        EditorSessionManager.DuplicateSelectedObjects();
+
+                        // Snap clones directly in-place (removes the default diagonal offset jump)
+                        for (int i = 0; i < EditorSessionManager.SelectedObjects.Count && i < origPositions.Count; i++)
+                        {
+                            GameObject clone = EditorSessionManager.SelectedObjects[i];
+                            if (clone != null)
+                            {
+                                clone.transform.position = origPositions[i];
+                                clone.transform.rotation = origRotations[i];
+                                clone.transform.localScale = origScales[i];
+                                StudioGizmoController.InvalidateCachedCenter(clone);
+                            }
+                        }
+
+                        // Switch active drag targets to the new clones
+                        targets.Clear();
+                        targets.AddRange(EditorSessionManager.SelectedObjects);
+
+                        EditorSessionManager.ShowNotification($"Cloned & Dragging {targets.Count} object(s) [Shift+Drag]");
+                    }
+
                     _activeDragAxis = hovered;
                     _dragStartCenterPos = center3D;
                     _dragStartMousePos = Input.mousePosition;

@@ -309,6 +309,44 @@ namespace DeadCoreEditor
         }
     }
 
+    public class NeonConfig : IEditorComponent
+    {
+        public string ComponentTag => "NEON";
+        public Color Color = Color.cyan;
+        public float Intensity = 2.0f;
+        public bool IsActive = true;
+
+        // Strongly-typed Clone returning NeonConfig
+        public NeonConfig Clone() => new NeonConfig
+        {
+            Color = this.Color,
+            Intensity = this.Intensity,
+            IsActive = this.IsActive
+        };
+
+        // Explicit interface implementation
+        IEditorComponent IEditorComponent.Clone() => Clone();
+
+        public string Serialize()
+        {
+            var inv = CultureInfo.InvariantCulture;
+            string hex = PersistenceUtility.ColorToHex(Color);
+            return $"{(IsActive ? 1 : 0)}:{hex}:{Intensity.ToString("F2", inv)}";
+        }
+
+        public void Deserialize(string rawData)
+        {
+            if (string.IsNullOrWhiteSpace(rawData)) return;
+            string[] p = rawData.Split(':');
+            var inv = CultureInfo.InvariantCulture;
+
+            if (p.Length >= 1) IsActive = p[0] == "1";
+            if (p.Length >= 2) Color = PersistenceUtility.HexToColor(p[1], Color.cyan);
+            if (p.Length >= 3 && float.TryParse(p[2], NumberStyles.Float, inv, out float inten))
+                Intensity = inten;
+        }
+    }
+
     public class SkyboxConfig : IEditorComponent
     {
         public string ComponentTag => "SKYBOX";

@@ -878,34 +878,34 @@ namespace DeadCoreEditor
             hlg.childForceExpandWidth = false;
             hlg.childForceExpandHeight = true;
 
-            // 1. Dropdown: Options ▼
-            CreateDropdownMenuButton(_toolbarPanel.transform, "Options ▼", 95f, (anchor) =>
+            // 1. Dropdown: Options
+            CreateDropdownMenuButton(_toolbarPanel.transform, "Options", 80f, (anchor) =>
             {
                 OpenDropdownMenu(anchor, new List<DropdownItem>
                 {
-                    new DropdownItem("⚙ Preferences & Shortcuts", () => _preferencesWin?.Toggle()),
-                    new DropdownItem("💾 Save Level (F5)", () => LevelPersistenceService.SaveLevel(MapBrowserService.SelectedMapName)),
-                    new DropdownItem("📂 Load Level (F6)", () => LevelPersistenceService.LoadLevel(MapBrowserService.SelectedMapName)),
-                    new DropdownItem("📷 Capture Snapshot (F4)", () => ThumbnailCaptureService.CaptureLevelThumbnail(MapBrowserService.SelectedMapPath, EditorSessionManager.PlacedObjects, EditorSessionManager.LevelSpawnPosition)),
-                    new DropdownItem("⚠ Reset Level", () => EditorSessionManager.ClearAllPlacedObjects(), new Color(0.9f, 0.3f, 0.3f))
+                    new DropdownItem("Preferences & Shortcuts", () => _preferencesWin?.Toggle()),
+                    new DropdownItem("Save Level (F5)", () => LevelPersistenceService.SaveLevel(MapBrowserService.SelectedMapName)),
+                    new DropdownItem("Load Level (F6)", () => LevelPersistenceService.LoadLevel(MapBrowserService.SelectedMapName)),
+                    new DropdownItem("Capture Snapshot (F4)", () => ThumbnailCaptureService.CaptureLevelThumbnail(MapBrowserService.SelectedMapPath, EditorSessionManager.PlacedObjects, EditorSessionManager.LevelSpawnPosition)),
+                    new DropdownItem("Reset Level", () => EditorSessionManager.ClearAllPlacedObjects(), new Color(0.9f, 0.3f, 0.3f))
                 });
             });
 
-            // 2. Dropdown: Tools ▼
-            CreateDropdownMenuButton(_toolbarPanel.transform, "Tools ▼", 85f, (anchor) =>
+            // 2. Dropdown: Tools
+            CreateDropdownMenuButton(_toolbarPanel.transform, "Tools", 75f, (anchor) =>
             {
                 OpenDropdownMenu(anchor, new List<DropdownItem>
                 {
-                    new DropdownItem("🔍 Find Occurrences...", () => OpenOccurrencesWindowForSelection()),
-                    new DropdownItem("📐 Uniform Scaler Tool...", () => _uniformScalerWin?.Show()),
-                    new DropdownItem("↔ Distribute Spacing Tool...", () => _distributeSpacingWin?.Show()),
-                    new DropdownItem("🏷 Batch Renamer & Indexer...", () => _batchRenamerWin?.Show()),
-                    new DropdownItem("🔄 Replace with Equipped Prop", () => SwapSelectedObjectsWithEquipped())
+                    new DropdownItem("Find Occurrences...", () => OpenOccurrencesWindowForSelection()),
+                    new DropdownItem("Uniform Scaler Tool...", () => _uniformScalerWin?.Show()),
+                    new DropdownItem("Distribute Spacing Tool...", () => _distributeSpacingWin?.Show()),
+                    new DropdownItem("Batch Renamer & Indexer...", () => _batchRenamerWin?.Show()),
+                    new DropdownItem("Replace with Equipped Prop", () => SwapSelectedObjectsWithEquipped())
                 });
             });
 
-            // 3. Dropdown: Edit ▼
-            CreateDropdownMenuButton(_toolbarPanel.transform, "Edit ▼", 75f, (anchor) =>
+            // 3. Dropdown: Edit
+            CreateDropdownMenuButton(_toolbarPanel.transform, "Edit", 70f, (anchor) =>
             {
                 OpenDropdownMenu(anchor, new List<DropdownItem>
                 {
@@ -913,8 +913,8 @@ namespace DeadCoreEditor
                     new DropdownItem("Redo (Ctrl+Y)", () => EditorSessionManager.PerformRedo()),
                     new DropdownItem("Duplicate (Ctrl+D)", () => EditorSessionManager.DuplicateSelectedObjects()),
                     new DropdownItem("Create Prefab from Selected", () => QuickAutoCreatePrefab()),
-                    new DropdownItem("Snap Rotation to 90° (Alt+R)", () => ExecuteSnap90()),
-                    new DropdownItem("Reset Rotation to 0° (Alt+Shift+R)", () => ExecuteResetRotation()),
+                    new DropdownItem("Snap Rotation to 90 (Alt+R)", () => ExecuteSnap90()),
+                    new DropdownItem("Reset Rotation to 0 (Alt+Shift+R)", () => ExecuteResetRotation()),
                     new DropdownItem("Parent Selected (Ctrl+P)", () => EditorSessionManager.ParentSelectedObjects()),
                     new DropdownItem("Unparent Selected (Alt+P)", () => EditorSessionManager.UnparentSelectedObjects())
                 });
@@ -1331,7 +1331,7 @@ namespace DeadCoreEditor
 
             _browserSearchInput = CreateInputFieldPrimitive(controlStrip.transform, "BrowserSearch",
                 Vector2.zero, Vector2.one, Vector2.zero, Vector2.zero,
-                "🔍 Search asset palette...", (s) => RefreshAssetBrowser());
+                "Search asset palette...", (s) => RefreshAssetBrowser());
             if (_browserSearchInput != null)
             {
                 LayoutElement searchLe = _browserSearchInput.gameObject.AddComponent<LayoutElement>();
@@ -1571,7 +1571,7 @@ namespace DeadCoreEditor
 
                 dotsObj.AddComponent<Image>().color = new Color(0.18f, 0.22f, 0.30f, 0.8f);
                 Button dotsBtn = dotsObj.AddComponent<Button>();
-                CreateTextPrimitive(dotsObj.transform, "⋮", Vector2.zero, Vector2.one, Vector2.zero, Vector2.zero, 11f, FontStyles.Bold, Color.white, TextAlignmentOptions.Center);
+                CreateTextPrimitive(dotsObj.transform, "...", Vector2.zero, Vector2.one, Vector2.zero, Vector2.zero, 11f, FontStyles.Bold, Color.white, TextAlignmentOptions.Center);
                 dotsBtn.onClick.AddListener((Action)(() => ShowContextMenuForAsset(capturedAsset, Input.mousePosition)));
 
                 // Label
@@ -2368,9 +2368,12 @@ namespace DeadCoreEditor
 
             _inspectorTitleText = CreateTextPrimitive(titleBar.transform, "Inspector",
                 Vector2.zero, Vector2.one,
-                new Vector2(10f, 0f), new Vector2(-75f, 0f),
+                new Vector2(10f, 0f), new Vector2(-80f, 0f),
                 11f, FontStyles.Bold, Color.white, TextAlignmentOptions.MidlineLeft);
             _inspectorTitleText.enableWordWrapping = false;
+            _inspectorTitleText.overflowMode = TextOverflowModes.Ellipsis;
+
+            _inspectorTitleText.rectTransform.offsetMax = new Vector2(-85f, 0f);
             _inspectorTitleText.overflowMode = TextOverflowModes.Ellipsis;
 
             _inspectorExpandBtn = CreateButtonPrimitive(titleBar.transform, "Btn_ExpandInspector", "[+ Expand]", 68f, ToggleInspectorExpansion, new Color(0.20f, 0.23f, 0.28f, 1f));
@@ -2673,6 +2676,58 @@ namespace DeadCoreEditor
                 _activeInspectorCards.Add(card);
             }
 
+            // 10. Neon & Emissive Accent Card (For architecture, platforms, and decor)
+            Renderer[] rends = obj.GetComponentsInChildren<Renderer>(true);
+            bool hasMeshes = rends != null && rends.Length > 0 &&
+                             type != PlacedObjectType.Spotlight &&
+                             type != PlacedObjectType.Sunlight &&
+                             type != PlacedObjectType.SkyboxController;
+
+            if (hasMeshes)
+            {
+                var card = CreateModularSection(_inspectorContent, "Neon", "Neon & Emissive Accent");
+                var nc = data.GetOrCreate<NeonConfig>();
+
+                // Quick Palette Presets
+                GameObject presetRow = CreateRowContainerPrimitive(card.transform, "Row_NeonPresets", 24f);
+                SetupRowHorizontalLayoutPrimitive(presetRow, 4f);
+
+                var presets = new (string name, Color col)[]
+                {
+                    ("Cyan", new Color(0f, 0.9f, 1f)),
+                    ("Orange", new Color(1f, 0.45f, 0.05f)),
+                    ("Pink", new Color(1f, 0.1f, 0.6f)),
+                    ("Green", new Color(0.1f, 1f, 0.35f)),
+                    ("Purple", new Color(0.7f, 0.15f, 1f)),
+                    ("Red", new Color(1f, 0.15f, 0.15f))
+                };
+
+                for (int p = 0; p < presets.Length; p++)
+                {
+                    var pr = presets[p];
+                    CreateButtonPrimitive(presetRow.transform, "Btn_Preset_" + pr.name, pr.name, 48f, () =>
+                    {
+                        nc.Color = pr.col;
+                        EditorSessionManager.ApplyNeonConfig(obj, nc);
+                        RebuildModularInspectorCards(obj);
+                    }, pr.col * 0.35f);
+                }
+
+                AddSliderRow(card.transform, "Glow Power", 0.5f, 8.0f, nc.Intensity, "{0:F1}x", (v) =>
+                {
+                    nc.Intensity = v;
+                    EditorSessionManager.ApplyNeonConfig(obj, nc);
+                });
+
+                AddColorControl(card.transform, "Accent Tint", nc.Color, (newCol) =>
+                {
+                    nc.Color = newCol;
+                    EditorSessionManager.ApplyNeonConfig(obj, nc);
+                });
+
+                _activeInspectorCards.Add(card);
+            }
+
             LayoutRebuilder.ForceRebuildLayoutImmediate(_inspectorContent);
         }
         public static void RefreshInspectorValues()
@@ -2757,7 +2812,7 @@ namespace DeadCoreEditor
             _hierarchySearchInput = CreateInputFieldPrimitive(searchRow.transform, "SearchInput",
                 Vector2.zero, Vector2.one,
                 new Vector2(6f, 2f), new Vector2(-6f, -2f),
-                "🔍 Search scene props...", (val) => RefreshHierarchy());
+                "Search scene props...", (val) => RefreshHierarchy());
 
             // Scroll View starts strictly at -62px and stops at +38px (above bottom bar)
             GameObject scrollObj = CreateScrollViewPrimitive(_hierarchyPanel.transform, "Hierarchy_Scroll",
@@ -2804,96 +2859,154 @@ namespace DeadCoreEditor
             _targetToRowMap.Clear();
             _rowToTargetMap.Clear();
 
-            for (int i = 0; i < _hierarchyRows.Count; i++)
+            // Destroy existing rows immediately to avoid ghost references
+            if (_hierarchyContent != null)
             {
-                if (_hierarchyRows[i] != null) GameObject.Destroy(_hierarchyRows[i]);
+                for (int i = _hierarchyContent.childCount - 1; i >= 0; i--)
+                {
+                    Transform child = _hierarchyContent.GetChild(i);
+                    if (child != null && child.gameObject != null)
+                        GameObject.DestroyImmediate(child.gameObject);
+                }
             }
             _hierarchyRows.Clear();
 
-            string search = (_hierarchySearchInput != null && !string.IsNullOrEmpty(_hierarchySearchInput.text)) ? _hierarchySearchInput.text.ToLower() : "";
+            string search = (_hierarchySearchInput != null && !string.IsNullOrEmpty(_hierarchySearchInput.text))
+                ? _hierarchySearchInput.text.Trim().ToLowerInvariant() : "";
 
             List<GameObject> rootNodes = new List<GameObject>();
             Dictionary<GameObject, List<GameObject>> childrenMap = new Dictionary<GameObject, List<GameObject>>();
 
+            if (EditorSessionManager.PlacedObjects == null) return;
+
             for (int i = 0; i < EditorSessionManager.PlacedObjects.Count; i++)
             {
                 GameObject obj = EditorSessionManager.PlacedObjects[i];
-                if (obj == null || !obj.activeSelf) continue;
+                // Rigorous validity check against dead/destroyed Il2Cpp pointers
+                if (obj == null || !obj || obj.Equals(null)) continue;
 
-                GameObject parent = (obj.transform.parent != null && EditorSessionManager.PlacedObjects.Contains(obj.transform.parent.gameObject))
-                    ? obj.transform.parent.gameObject : null;
-
-                if (parent == null)
+                try
                 {
-                    rootNodes.Add(obj);
+                    if (obj.transform == null || !obj.activeSelf) continue;
+
+                    GameObject parent = (obj.transform.parent != null &&
+                                         obj.transform.parent.gameObject != null &&
+                                         EditorSessionManager.PlacedObjects.Contains(obj.transform.parent.gameObject))
+                        ? obj.transform.parent.gameObject : null;
+
+                    if (parent == null || !parent || parent.Equals(null))
+                    {
+                        rootNodes.Add(obj);
+                    }
+                    else
+                    {
+                        if (!childrenMap.ContainsKey(parent)) childrenMap[parent] = new List<GameObject>();
+                        childrenMap[parent].Add(obj);
+                    }
                 }
-                else
+                catch
                 {
-                    if (!childrenMap.ContainsKey(parent)) childrenMap[parent] = new List<GameObject>();
-                    childrenMap[parent].Add(obj);
+                    continue;
                 }
             }
 
             for (int i = 0; i < rootNodes.Count; i++)
             {
-                RenderHierarchyTreeNode(rootNodes[i], 0, childrenMap, search);
+                if (rootNodes[i] != null && rootNodes[i] && !rootNodes[i].Equals(null))
+                {
+                    RenderHierarchyTreeNode(rootNodes[i], 0, childrenMap, search);
+                }
             }
 
-            LayoutRebuilder.ForceRebuildLayoutImmediate(_hierarchyContent);
+            try
+            {
+                LayoutRebuilder.ForceRebuildLayoutImmediate(_hierarchyContent);
+            }
+            catch { }
         }
 
         private static string GetCleanEntityLabel(GameObject go, out string typeTag, out Color tagColor)
         {
-            string n = go.name;
+            typeTag = "PROP";
+            tagColor = new Color(0.4f, 0.5f, 0.65f);
+            if (go == null || !go || go.Equals(null)) return "Unknown";
+
+            string n = "Unknown";
+            try { n = go.name ?? "Unknown"; } catch { return "Unknown"; }
             if (n.StartsWith("Custom_")) n = n.Substring(7);
             n = n.Replace("_", " ");
 
-            typeTag = "PROP";
-            tagColor = new Color(0.4f, 0.5f, 0.65f);
-
-            if (EditorSessionManager.PlacedObjectTypes.TryGetValue(go, out PlacedObjectType pType))
+            try
             {
-                switch (pType)
+                if (EditorSessionManager.PlacedObjectTypes != null &&
+                    EditorSessionManager.PlacedObjectTypes.TryGetValue(go, out PlacedObjectType pType))
                 {
-                    case PlacedObjectType.Jumper: typeTag = "JUMP"; tagColor = new Color(0.95f, 0.75f, 0.1f); break;
-                    case PlacedObjectType.Turbine: typeTag = "TURB"; tagColor = new Color(0.2f, 0.85f, 0.4f); break;
-                    case PlacedObjectType.Turret: typeTag = "TURR"; tagColor = new Color(0.95f, 0.35f, 0.35f); break;
-                    case PlacedObjectType.Laser:
-                    case PlacedObjectType.RotatingLaser: typeTag = "LASR"; tagColor = new Color(1.0f, 0.2f, 0.2f); break;
-                    case PlacedObjectType.Spotlight:
-                    case PlacedObjectType.Sunlight: typeTag = "LGHT"; tagColor = new Color(0.2f, 0.85f, 1.0f); break;
-                    case PlacedObjectType.Checkpoint:
-                    case PlacedObjectType.SpawnGate:
-                    case PlacedObjectType.GoalGate: typeTag = "GATE"; tagColor = new Color(0.3f, 0.65f, 1.0f); break;
-                    case PlacedObjectType.Switch: typeTag = "SWTH"; tagColor = new Color(0.85f, 0.4f, 0.95f); break;
-                    case PlacedObjectType.SkyboxController: typeTag = "SKYB"; tagColor = new Color(0.5f, 0.8f, 1.0f); break;
+                    switch (pType)
+                    {
+                        case PlacedObjectType.Jumper: typeTag = "JUMP"; tagColor = new Color(0.95f, 0.75f, 0.1f); break;
+                        case PlacedObjectType.Turbine: typeTag = "TURB"; tagColor = new Color(0.2f, 0.85f, 0.4f); break;
+                        case PlacedObjectType.Turret: typeTag = "TURR"; tagColor = new Color(0.95f, 0.35f, 0.35f); break;
+                        case PlacedObjectType.Laser:
+                        case PlacedObjectType.RotatingLaser: typeTag = "LASR"; tagColor = new Color(1.0f, 0.2f, 0.2f); break;
+                        case PlacedObjectType.Spotlight:
+                        case PlacedObjectType.Sunlight: typeTag = "LGHT"; tagColor = new Color(0.2f, 0.85f, 1.0f); break;
+                        case PlacedObjectType.Checkpoint:
+                        case PlacedObjectType.SpawnGate:
+                        case PlacedObjectType.GoalGate: typeTag = "GATE"; tagColor = new Color(0.3f, 0.65f, 1.0f); break;
+                        case PlacedObjectType.Switch: typeTag = "SWTH"; tagColor = new Color(0.85f, 0.4f, 0.95f); break;
+                        case PlacedObjectType.SkyboxController: typeTag = "SKYB"; tagColor = new Color(0.5f, 0.8f, 1.0f); break;
+                    }
                 }
             }
+            catch { }
 
             return n;
         }
 
         private static void RenderHierarchyTreeNode(GameObject node, int depth, Dictionary<GameObject, List<GameObject>> childrenMap, string searchFilter)
         {
-            if (node == null || !node.activeSelf) return;
+            // 1. Guard against dead/destroyed objects during deletion cycles
+            if (node == null || !node || node.Equals(null)) return;
+            try
+            {
+                if (node.transform == null || !node.activeSelf) return;
+            }
+            catch
+            {
+                return;
+            }
 
-            bool hasChildren = childrenMap.ContainsKey(node) && childrenMap[node].Count > 0;
-            bool isCollapsed = _collapsedParents.Contains(node);
+            string nodeName = "Object";
+            try { nodeName = node.name ?? "Object"; } catch { return; }
 
-            bool matchesSearch = string.IsNullOrEmpty(searchFilter) || node.name.ToLower().Contains(searchFilter);
+            bool hasChildren = childrenMap != null && childrenMap.ContainsKey(node) && childrenMap[node] != null && childrenMap[node].Count > 0;
+            bool isCollapsed = _collapsedParents != null && _collapsedParents.Contains(node);
+
+            bool matchesSearch = string.IsNullOrEmpty(searchFilter) || nodeName.ToLowerInvariant().Contains(searchFilter);
             bool childMatches = false;
 
             if (hasChildren && !string.IsNullOrEmpty(searchFilter))
             {
-                for (int c = 0; c < childrenMap[node].Count; c++)
+                var childList = childrenMap[node];
+                for (int c = 0; c < childList.Count; c++)
                 {
-                    if (childrenMap[node][c].name.ToLower().Contains(searchFilter)) { childMatches = true; break; }
+                    GameObject child = childList[c];
+                    if (child == null || !child || child.Equals(null)) continue;
+                    try
+                    {
+                        if (child.name != null && child.name.ToLowerInvariant().Contains(searchFilter))
+                        {
+                            childMatches = true;
+                            break;
+                        }
+                    }
+                    catch { }
                 }
             }
 
             if (!matchesSearch && !childMatches) return;
 
-            GameObject row = new GameObject($"Row_{node.name}", Il2CppType.Of<RectTransform>());
+            GameObject row = new GameObject($"Row_{nodeName}", Il2CppType.Of<RectTransform>());
             row.transform.SetParent(_hierarchyContent, false);
 
             LayoutElement le = row.AddComponent<LayoutElement>();
@@ -2903,8 +3016,13 @@ namespace DeadCoreEditor
             _targetToRowMap[node] = row;
             _rowToTargetMap[row] = node;
 
-            bool isDirectlySelected = (EditorSessionManager.SelectedObjects != null && EditorSessionManager.SelectedObjects.Contains(node)) ||
+            bool isDirectlySelected = false;
+            try
+            {
+                isDirectlySelected = (EditorSessionManager.SelectedObjects != null && EditorSessionManager.SelectedObjects.Contains(node)) ||
                                       (EditorSessionManager.SelectedObject == node);
+            }
+            catch { }
 
             Image bg = row.AddComponent<Image>();
             bg.color = isDirectlySelected ? new Color(0.18f, 0.52f, 0.88f, 0.95f) :
@@ -2924,8 +3042,8 @@ namespace DeadCoreEditor
                 fbrt.sizeDelta = new Vector2(14f, 20f);
 
                 TMP_Text ft = foldoutBtn.AddComponent<TextMeshProUGUI>();
-                ft.text = isCollapsed ? "▶" : "▼";
-                ft.fontSize = 8.5f;
+                ft.text = isCollapsed ? ">" : "v";
+                ft.fontSize = 9.5f;
                 ft.alignment = TextAlignmentOptions.Center;
                 ft.color = new Color(0.3f, 0.85f, 1f);
 
@@ -2933,6 +3051,7 @@ namespace DeadCoreEditor
                 GameObject capturedNode = node;
                 fb.onClick.AddListener((Action)(() =>
                 {
+                    if (capturedNode == null || !capturedNode || capturedNode.Equals(null)) return;
                     if (_collapsedParents.Contains(capturedNode)) _collapsedParents.Remove(capturedNode);
                     else _collapsedParents.Add(capturedNode);
                     RefreshHierarchy();
@@ -2945,6 +3064,7 @@ namespace DeadCoreEditor
             GameObject captured = node;
             b.onClick.AddListener((Action)(() =>
             {
+                if (captured == null || !captured || captured.Equals(null)) return;
                 if (!_isDraggingHierarchyNode)
                 {
                     bool isCtrl = Input.GetKey(KeyCode.LeftControl) || Input.GetKey(KeyCode.RightControl);
@@ -2967,16 +3087,20 @@ namespace DeadCoreEditor
             CreateTextPrimitive(tagObj.transform, typeTag, Vector2.zero, Vector2.one, Vector2.zero, Vector2.zero, 8f, FontStyles.Bold, Color.white, TextAlignmentOptions.Center);
             leftPadding += 38f;
 
-            string parentBadge = hasChildren ? $" ({childrenMap[node].Count})" : "";
+            int childCount = (hasChildren && childrenMap[node] != null) ? childrenMap[node].Count : 0;
+            string parentBadge = childCount > 0 ? $" ({childCount})" : "";
             TMP_Text rowText = CreateTextPrimitive(row.transform, cleanTitle + parentBadge,
                 Vector2.zero, Vector2.one,
                 new Vector2(leftPadding, 0f), new Vector2(-60f, 0f),
                 10f, hasChildren ? FontStyles.Bold : FontStyles.Normal,
                 Color.white, TextAlignmentOptions.MidlineLeft);
-            rowText.enableWordWrapping = false;
-            rowText.overflowMode = TextOverflowModes.Ellipsis;
+            if (rowText != null)
+            {
+                rowText.enableWordWrapping = false;
+                rowText.overflowMode = TextOverflowModes.Ellipsis;
+            }
 
-            // Visibility Eye Toggle
+            // Visibility Toggle Button
             GameObject eyeBtnObj = new GameObject("Btn_Eye", Il2CppType.Of<RectTransform>());
             eyeBtnObj.transform.SetParent(row.transform, false);
             RectTransform eyert = eyeBtnObj.GetComponent<RectTransform>();
@@ -2987,15 +3111,27 @@ namespace DeadCoreEditor
             eyert.sizeDelta = new Vector2(17f, 17f);
             eyeBtnObj.AddComponent<Image>().color = new Color(0.16f, 0.20f, 0.26f, 0.9f);
             Button eyeBtn = eyeBtnObj.AddComponent<Button>();
-            TMP_Text eyeTxt = CreateTextPrimitive(eyeBtnObj.transform, captured.activeSelf ? "👁" : "Ø", Vector2.zero, Vector2.one, Vector2.zero, Vector2.zero, 9f, FontStyles.Bold, captured.activeSelf ? Color.white : Color.gray, TextAlignmentOptions.Center);
+
+            bool isActive = true;
+            try { isActive = captured.activeSelf; } catch { }
+            TMP_Text eyeTxt = CreateTextPrimitive(eyeBtnObj.transform, isActive ? "V" : "-", Vector2.zero, Vector2.one, Vector2.zero, Vector2.zero, 9.5f, FontStyles.Bold, isActive ? new Color(0.3f, 0.9f, 1f) : Color.gray, TextAlignmentOptions.Center);
+
             eyeBtn.onClick.AddListener((Action)(() =>
             {
-                captured.SetActive(!captured.activeSelf);
-                eyeTxt.text = captured.activeSelf ? "👁" : "Ø";
-                eyeTxt.color = captured.activeSelf ? Color.white : Color.gray;
+                if (captured == null || !captured || captured.Equals(null)) return;
+                try
+                {
+                    captured.SetActive(!captured.activeSelf);
+                    if (eyeTxt != null)
+                    {
+                        eyeTxt.text = captured.activeSelf ? "V" : "-";
+                        eyeTxt.color = captured.activeSelf ? new Color(0.3f, 0.9f, 1f) : Color.gray;
+                    }
+                }
+                catch { }
             }));
 
-            // Focus '⌖' Button
+            // Focus Button
             GameObject focusBtnObj = new GameObject("Btn_Focus", Il2CppType.Of<RectTransform>());
             focusBtnObj.transform.SetParent(row.transform, false);
             RectTransform fcrt = focusBtnObj.GetComponent<RectTransform>();
@@ -3006,14 +3142,15 @@ namespace DeadCoreEditor
             fcrt.sizeDelta = new Vector2(17f, 17f);
             focusBtnObj.AddComponent<Image>().color = new Color(0.18f, 0.24f, 0.32f, 0.9f);
             Button fcBtn = focusBtnObj.AddComponent<Button>();
-            CreateTextPrimitive(focusBtnObj.transform, "⌖", Vector2.zero, Vector2.one, Vector2.zero, Vector2.zero, 10f, FontStyles.Bold, Color.white, TextAlignmentOptions.Center);
+            CreateTextPrimitive(focusBtnObj.transform, "F", Vector2.zero, Vector2.one, Vector2.zero, Vector2.zero, 10f, FontStyles.Bold, Color.white, TextAlignmentOptions.Center);
             fcBtn.onClick.AddListener((Action)(() =>
             {
+                if (captured == null || !captured || captured.Equals(null)) return;
                 EditorSessionManager.SelectObject(captured);
                 EditorViewportCamera.FocusOnObject(captured);
             }));
 
-            // Delete ✕ Button
+            // Delete Button
             GameObject delBtnObj = new GameObject("Btn_Del", Il2CppType.Of<RectTransform>());
             delBtnObj.transform.SetParent(row.transform, false);
             RectTransform drt = delBtnObj.GetComponent<RectTransform>();
@@ -3024,23 +3161,29 @@ namespace DeadCoreEditor
             drt.sizeDelta = new Vector2(17f, 17f);
             delBtnObj.AddComponent<Image>().color = new Color(0.35f, 0.15f, 0.15f, 0.9f);
             Button dBtn = delBtnObj.AddComponent<Button>();
-            CreateTextPrimitive(delBtnObj.transform, "✕", Vector2.zero, Vector2.one, Vector2.zero, Vector2.zero, 9f, FontStyles.Bold, new Color(1f, 0.4f, 0.4f), TextAlignmentOptions.Center);
+            CreateTextPrimitive(delBtnObj.transform, "X", Vector2.zero, Vector2.one, Vector2.zero, Vector2.zero, 9.5f, FontStyles.Bold, new Color(1f, 0.4f, 0.4f), TextAlignmentOptions.Center);
             dBtn.onClick.AddListener((Action)(() =>
             {
+                if (captured == null || !captured || captured.Equals(null)) return;
                 EditorSessionManager.DeleteSpecifiedObject(captured);
             }));
 
             _hierarchyRows.Add(row);
 
-            if (hasChildren && !isCollapsed)
+            // Safe child node recursion
+            if (hasChildren && !isCollapsed && childrenMap[node] != null)
             {
-                for (int c = 0; c < childrenMap[node].Count; c++)
+                var list = childrenMap[node];
+                for (int c = 0; c < list.Count; c++)
                 {
-                    RenderHierarchyTreeNode(childrenMap[node][c], depth + 1, childrenMap, searchFilter);
+                    GameObject child = list[c];
+                    if (child != null && child && !child.Equals(null))
+                    {
+                        RenderHierarchyTreeNode(child, depth + 1, childrenMap, searchFilter);
+                    }
                 }
             }
         }
-
         private static void UpdateHierarchyHighlightOnly()
         {
             if (_targetToRowMap == null || _targetToRowMap.Count == 0) return;
@@ -3285,17 +3428,21 @@ namespace DeadCoreEditor
 
         public static TMP_Text CreateTextPrimitive(Transform parent, string text, Vector2 anchorMin, Vector2 anchorMax, Vector2 pos, Vector2 size, float fontSize, FontStyles style, Color color, TextAlignmentOptions align)
         {
+            if (parent == null) return null;
             GameObject obj = new GameObject("Text", Il2CppType.Of<RectTransform>());
             obj.transform.SetParent(parent, false);
 
             RectTransform rt = obj.GetComponent<RectTransform>();
-            rt.anchorMin = anchorMin;
-            rt.anchorMax = anchorMax;
-            rt.anchoredPosition = pos;
-            rt.sizeDelta = size;
+            if (rt != null)
+            {
+                rt.anchorMin = anchorMin;
+                rt.anchorMax = anchorMax;
+                rt.anchoredPosition = pos;
+                rt.sizeDelta = size;
+            }
 
             TMP_Text tmp = obj.AddComponent<TextMeshProUGUI>();
-            tmp.text = text;
+            tmp.text = text ?? "";
             tmp.fontSize = fontSize;
             tmp.fontStyle = style;
             tmp.color = color;
@@ -3706,6 +3853,8 @@ namespace DeadCoreEditor
                 }
             }
 
+            private static Light _studioFillLight = null;
+
             private static void EnsureStudio()
             {
                 if (_studioStage != null) return;
@@ -3714,11 +3863,12 @@ namespace DeadCoreEditor
                 _studioStage.transform.position = StagePosition;
                 _studioStage.layer = 2;
 
+                // Camera setup
                 GameObject camObj = new GameObject("Studio_Cam");
                 camObj.transform.SetParent(_studioStage.transform, false);
                 _previewCam = camObj.AddComponent<Camera>();
                 _previewCam.clearFlags = CameraClearFlags.Color;
-                _previewCam.backgroundColor = new Color(0.08f, 0.10f, 0.14f, 1f);
+                _previewCam.backgroundColor = new Color(0.10f, 0.12f, 0.16f, 1f); // Neutral studio dark gray
                 _previewCam.cullingMask = 1 << 2;
                 _previewCam.fieldOfView = 22f;
                 _previewCam.nearClipPlane = 0.1f;
@@ -3727,16 +3877,26 @@ namespace DeadCoreEditor
                 _previewRt = new RenderTexture(128, 128, 16, RenderTextureFormat.ARGB32);
                 _previewCam.targetTexture = _previewRt;
 
+                // 1. Key Light: Lowered from 15,000f to 2,400f to eliminate clipped white highlights
                 GameObject keyObj = new GameObject("Studio_KeyLight");
                 keyObj.transform.SetParent(_studioStage.transform, false);
                 _studioKeyLight = keyObj.AddComponent<Light>();
                 _studioKeyLight.type = LightType.Directional;
-                _studioKeyLight.color = new Color(1f, 0.96f, 0.90f);
-                _studioKeyLight.intensity = 15000f;
+                _studioKeyLight.color = new Color(1f, 0.97f, 0.92f);
+                _studioKeyLight.intensity = 2400f;
                 _studioKeyLight.cullingMask = 1 << 2;
-                keyObj.transform.rotation = Quaternion.Euler(32f, -38f, 0f);
-            }
+                keyObj.transform.rotation = Quaternion.Euler(35f, -40f, 0f);
 
+                // 2. Fill Light: Soft cool light to illuminate dark faces so dark props stay clearly visible
+                GameObject fillObj = new GameObject("Studio_FillLight");
+                fillObj.transform.SetParent(_studioStage.transform, false);
+                _studioFillLight = fillObj.AddComponent<Light>();
+                _studioFillLight.type = LightType.Directional;
+                _studioFillLight.color = new Color(0.65f, 0.75f, 0.90f);
+                _studioFillLight.intensity = 900f;
+                _studioFillLight.cullingMask = 1 << 2;
+                fillObj.transform.rotation = Quaternion.Euler(-25f, 140f, 0f);
+            }
             public static void ProcessQueueTick()
             {
                 if (_renderQueue.Count == 0) return;
@@ -4803,8 +4963,16 @@ namespace DeadCoreEditor
 
             Vector3 spawn = EditorSessionManager.LevelSpawnPosition;
             string scene = !string.IsNullOrEmpty(MapBrowserService.SelectedStagingScene) ? MapBrowserService.SelectedStagingScene : "level01_Spark01";
-            string starterContent = $"#TITLE: New Level {idx}\n#AUTHOR: Player\n#DIFFICULTY: Normal\n#DESC: Custom level created with DeadCore Level Editor.\n#SCENE: {scene}\n" +
-                                    $"Floor_Platform_16x16;{spawn.x:F4};{(spawn.y - 1.2f):F4};{spawn.z:F4};0.5500;0.0000;0.0000;0.0000;1.0000;0.00;SCALE3:0.5500:0.5500:0.5500\n";
+            string starterContent =
+                $"#TITLE: New Level {idx}\n" +
+                $"#AUTHOR: Player\n" +
+                $"#DIFFICULTY: Normal\n" +
+                $"#DESC: Custom level created with DeadCore Level Editor.\n" +
+                $"#SCENE: {scene}\n" +
+                "Floor_Platform_16x16;-241.0000;-97.7000;-6.0000;1.0000;0.0000;0.0000;0.7071;0.7071;0.00;PARENT:-1;SCALE3:1.0000:1.0000:1.0000\n" +
+                "Spawn_Gate;-241.0000;-96.7000;-6.0000;1.0000;0.0000;0.0000;0.0000;1.0000;0.00;COMP:GATE:1:0:0;COMP:NEON:1:FF730D:8.00;PARENT:-1;SCALE3:1.0000:1.0000:1.0000\n" +
+                "Skybox_Controller;-247.0000;-96.4750;-0.5000;1.0000;0.0000;0.0000;0.0000;1.0000;0.00;COMP:SKYBOX:4.00:FFEEF5:0.0:0.00;PARENT:-1;SCALE3:1.0000:1.0000:1.0000\n" +
+                "Global_Sunlight;-247.0000;-95.3547;-4.0000;1.0000;0.4082;-0.2346;0.1094;0.8754;3.00;COMP:LIGHT:3.00:60.0:F1DBCA:1.00:1;PARENT:-1;SCALE3:1.0000:1.0000:1.0000\n";
             File.WriteAllText(newPath, starterContent);
 
             DeadCoreLevelEditorMod.SwitchTab(0, menu);

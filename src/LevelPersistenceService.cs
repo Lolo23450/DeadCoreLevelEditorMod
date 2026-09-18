@@ -755,6 +755,7 @@ namespace DeadCoreEditor
                 case "SKYBOX": return new SkyboxConfig();
                 case "SWITCH": return new SwitchConfig();
                 case "GATE": return new GateConfig();
+                case "NEON": return new NeonConfig();
                 default: return null;
             }
         }
@@ -790,10 +791,18 @@ namespace DeadCoreEditor
             string defaultMyPath = Path.Combine(MyLevelsDir, "Default_Level.txt");
             if (!File.Exists(defaultMyPath))
             {
-                Vector3 spawn = EditorSessionManager.LevelSpawnPosition;
-                File.WriteAllText(defaultMyPath,
-                    $"#TITLE: Default Level\n#AUTHOR: Community\n#DIFFICULTY: Normal\n#DESC: Starter platform.\n#SCENE: level01_Spark01\n" +
-                    $"Floor_Platform_16x16;{spawn.x:F4};{(spawn.y - 1.2f):F4};{spawn.z:F4};0.5500;0.0000;0.0000;0.0000;1.0000;0.00;SCALE3:0.5500:0.5500:0.5500\n");
+                string defaultContent =
+                    "#TITLE: Default Level\n" +
+                    "#AUTHOR: Community\n" +
+                    "#DIFFICULTY: Normal\n" +
+                    "#DESC: Starter platform.\n" +
+                    "#SCENE: level01_Spark01\n" +
+                    "Floor_Platform_16x16;-241.0000;-97.7000;-6.0000;1.0000;0.0000;0.0000;0.7071;0.7071;0.00;PARENT:-1;SCALE3:1.0000:1.0000:1.0000\n" +
+                    "Spawn_Gate;-241.0000;-96.7000;-6.0000;1.0000;0.0000;0.0000;0.0000;1.0000;0.00;COMP:GATE:1:0:0;COMP:NEON:1:FF730D:8.00;PARENT:-1;SCALE3:1.0000:1.0000:1.0000\n" +
+                    "Skybox_Controller;-247.0000;-96.4750;-0.5000;1.0000;0.0000;0.0000;0.0000;1.0000;0.00;COMP:SKYBOX:4.00:FFEEF5:0.0:0.00;PARENT:-1;SCALE3:1.0000:1.0000:1.0000\n" +
+                    "Global_Sunlight;-247.0000;-95.3547;-4.0000;1.0000;0.4082;-0.2346;0.1094;0.8754;3.00;COMP:LIGHT:3.00:60.0:F1DBCA:1.00:1;PARENT:-1;SCALE3:1.0000:1.0000:1.0000\n";
+
+                File.WriteAllText(defaultMyPath, defaultContent);
             }
 
             RefreshFiles();

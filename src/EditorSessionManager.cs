@@ -2,6 +2,7 @@
 using System.Collections.Generic;
 using MelonLoader;
 using UnityEngine;
+using UnityEngine.Rendering;
 using SceneManager = UnityEngine.SceneManagement.SceneManager;
 using Il2Cpp;
 
@@ -99,6 +100,7 @@ namespace DeadCoreEditor
         public static Dictionary<GameObject, float> LaserRotationSpeeds = new Dictionary<GameObject, float>();
         public static Dictionary<GameObject, LightConfig> PlacedLights = new Dictionary<GameObject, LightConfig>();
         public static Dictionary<GameObject, bool> JumperActiveStates = new Dictionary<GameObject, bool>();
+        public static Dictionary<GameObject, NeonConfig> PlacedNeonConfigs = new Dictionary<GameObject, NeonConfig>();
 
         // History Undo/Redo Stacks
         public static Stack<HistoryRecord> UndoHistory = new Stack<HistoryRecord>();
@@ -196,6 +198,11 @@ namespace DeadCoreEditor
                 data.Set(swCfg.Clone());
             }
 
+            if (PlacedNeonConfigs.TryGetValue(obj, out var neonCfg))
+            {
+                data.Set(neonCfg.Clone());
+            }
+
             if (PlacedObjectTypes.TryGetValue(obj, out var pType))
             {
                 if (pType == PlacedObjectType.SpawnGate || pType == PlacedObjectType.GoalGate || pType == PlacedObjectType.Checkpoint)
@@ -243,6 +250,11 @@ namespace DeadCoreEditor
             if (data.TryGetComponent<LightConfig>(out var lightC))
             {
                 ApplyLightConfig(obj, lightC.Clone());
+            }
+
+            if (data.TryGetComponent<NeonConfig>(out var nc))
+            {
+                ApplyNeonConfig(obj, nc.Clone());
             }
 
             if (data.TryGetComponent<ObjectMotionPath>(out var mp) && mp.IsActive && (mp.TotalDistance > 0.05f || Mathf.Abs(mp.RotationSpeed) > 0.01f))
@@ -1662,6 +1674,7 @@ namespace DeadCoreEditor
             PlacedLights.Remove(target);
             MotionPaths.Remove(target);
             DestroyWaypointVisuals(target);
+            PlacedNeonConfigs.Remove(target);
 
             if (PathEditTarget == target) PathEditTarget = null;
             if (ParentingChildTarget == target) ParentingChildTarget = null;
@@ -1739,6 +1752,7 @@ namespace DeadCoreEditor
             PlacedRotatingLasers.Clear();
             PlacedCheckpoints.Clear();
             PlacedGoalGate = null;
+            PlacedNeonConfigs.Clear();
             ActiveCustomCheckpoint = null;
 
             JumperForces.Clear();
@@ -2059,6 +2073,140 @@ namespace DeadCoreEditor
                     m.SetColor("_EmissionColor", cfg.Color * (cfg.Intensity * 0.75f));
                     m.EnableKeyword("_EMISSION");
                 }
+            }
+        }
+
+        private static readonly HashSet<string> _loggedShaderNames = new HashSet<string>();
+
+        public static void ApplyNeonConfig(GameObject obj, NeonConfig cfg)
+        {
+            if (obj == null || cfg == null) return;
+            PlacedNeonConfigs[obj] = cfg.Clone();
+
+            if (!cfg.IsActive) return;
+
+            Renderer[] rends = obj.GetComponentsInChildren<Renderer>(true);
+            if (rends == null || rends.Length == 0) return;
+
+            Color finalEmissive = cfg.Color * cfg.Intensity;
+
+            for (int r = 0; r < rends.Length; r++)
+            {
+                Renderer rend = rends[r];
+                if (rend == null || rend.gameObject.name == "Editor_Snapping_Proxy") continue;
+
+                // 1. DYNAMIC PROPERTY BLOCK (For GPU Instanced shaders)
+                MaterialPropertyBlock mpb = new MaterialPropertyBlock();
+                rend.GetPropertyBlock(mpb);
+
+                mpb.SetColor("_EmissionColor", finalEmissive);
+                mpb.SetColor("_EmissiveColor", finalEmissive);
+                mpb.SetColor("_EmissiveColorLDR", cfg.Color);
+                mpb.SetColor("_Color", cfg.Color);
+                mpb.SetColor("_BaseColor", cfg.Color);
+                mpb.SetColor("_TintColor", cfg.Color);
+                mpb.SetColor("_GlowColor", finalEmissive);
+                mpb.SetColor("_LineColor", finalEmissive);
+                mpb.SetFloat("_EmissiveIntensity", cfg.Intensity);
+                mpb.SetFloat("_UseEmissiveIntensity", 1.0f);
+
+                rend.SetPropertyBlock(mpb);
+
+                // 2. MATERIAL INSTANCE INSPECTION & APPLICATION
+                Material[] mats = rend.materials;
+                if (mats == null || mats.Length == 0) continue;
+
+                for (int m = 0; m < mats.Length; m++)
+                {
+                    Material mat = mats[m];
+                    if (mat == null || mat.shader == null) continue;
+
+                    Shader shader = mat.shader;
+                    string sName = shader.name;
+
+                    // One-time diagnostic dump per unique shader to MelonLogger
+                    if (_loggedShaderNames.Add(sName))
+                    {
+                        MelonLogger.Msg($"--------------------------------------------------");
+                        MelonLogger.Msg($"[Neon Diagnostic] Prop '{obj.name}' uses Shader '{sName}'");
+                        try
+                        {
+                            int count = shader.GetPropertyCount();
+                            for (int p = 0; p < count; p++)
+                            {
+                                string pName = shader.GetPropertyName(p);
+                                var pType = shader.GetPropertyType(p);
+                                MelonLogger.Msg($"   • Property #{p}: {pName} ({pType})");
+                            }
+                        }
+                        catch { }
+                        MelonLogger.Msg($"--------------------------------------------------");
+                    }
+
+                    // A. Dynamic Shader Property Scanner (Checks all native properties on this specific shader)
+                    try
+                    {
+                        int pCount = shader.GetPropertyCount();
+                        for (int p = 0; p < pCount; p++)
+                        {
+                            string pName = shader.GetPropertyName(p);
+                            var pType = shader.GetPropertyType(p);
+                            string pLow = pName.ToLowerInvariant();
+
+                            // Auto-detect color and emission properties
+                            if (pType == ShaderPropertyType.Color)
+                            {
+                                if (pLow.Contains("emiss") || pLow.Contains("glow") || pLow.Contains("line") ||
+                                    pLow.Contains("circuit") || pLow.Contains("energy") || pLow.Contains("pulse") ||
+                                    pLow.Contains("neon") || pLow.Contains("accent") || pLow.Contains("light"))
+                                {
+                                    mat.SetColor(pName, finalEmissive);
+                                }
+                                else if (pLow.Contains("tint") || pLow.Contains("color") || pLow.Contains("albedo"))
+                                {
+                                    mat.SetColor(pName, cfg.Color);
+                                }
+                            }
+                            else if (pType == ShaderPropertyType.Float || pType == ShaderPropertyType.Range)
+                            {
+                                if (pLow.Contains("emissiveintensity") || pLow.Contains("emissionintensity") ||
+                                    pLow.Contains("glowintensity") || pLow.Contains("emissivemultiplier"))
+                                {
+                                    mat.SetFloat(pName, cfg.Intensity);
+                                }
+                                else if (pLow.Contains("useemissiveintensity"))
+                                {
+                                    mat.SetFloat(pName, 1.0f);
+                                }
+                            }
+                        }
+                    }
+                    catch { }
+
+                    // B. Direct Property Fallback Suite (Direct IDs)
+                    if (mat.HasProperty("_EmissionColor")) mat.SetColor("_EmissionColor", finalEmissive);
+                    if (mat.HasProperty("_EmissiveColor")) mat.SetColor("_EmissiveColor", finalEmissive);
+                    if (mat.HasProperty("_EmissiveColorLDR")) mat.SetColor("_EmissiveColorLDR", cfg.Color);
+                    if (mat.HasProperty("_GlowColor")) mat.SetColor("_GlowColor", finalEmissive);
+                    if (mat.HasProperty("_LineColor")) mat.SetColor("_LineColor", finalEmissive);
+                    if (mat.HasProperty("_TintColor")) mat.SetColor("_TintColor", cfg.Color);
+                    if (mat.HasProperty("_Color")) mat.SetColor("_Color", cfg.Color);
+                    if (mat.HasProperty("_BaseColor")) mat.SetColor("_BaseColor", cfg.Color);
+
+                    // HDRP specific emission controls
+                    if (mat.HasProperty("_UseEmissiveIntensity")) mat.SetFloat("_UseEmissiveIntensity", 1.0f);
+                    if (mat.HasProperty("_EmissiveIntensity")) mat.SetFloat("_EmissiveIntensity", cfg.Intensity);
+                    if (mat.HasProperty("_EmissiveIntensityUnit")) mat.SetFloat("_EmissiveIntensityUnit", 0f);
+
+                    // Enable common emission keywords
+                    mat.EnableKeyword("_EMISSION");
+                    mat.EnableKeyword("_EMISSIVE_COLOR_MAP");
+                    mat.EnableKeyword("_EMISSIVE_ENABLE");
+                    mat.EnableKeyword("_EMISSIVE_ANIMATED");
+                }
+
+                // 3. CRITICAL: Commit the modified materials array back to the renderer!
+                rend.materials = mats;
             }
         }
 
