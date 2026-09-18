@@ -1,6 +1,5 @@
 ﻿using System;
 using System.Collections.Generic;
-using System.IO;
 using HarmonyLib;
 using MelonLoader;
 using UnityEngine;
@@ -19,7 +18,7 @@ namespace DeadCoreEditor
     {
         private static readonly HashSet<string> IgnoredMeshPrefixes = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
         {
-            "ucx_", "ubx_", "usp_", "bb_", "col_", "proxy_"
+            "ucx_", "ubx_", "usp_", "bb_", "col_", "proxy_", "dec_"
         };
 
         private static readonly string[] IgnoredKeywords = new string[]
@@ -28,7 +27,8 @@ namespace DeadCoreEditor
             "shadow", "collision", "collider", "gizmo", "proxy",
             "wireframe", "highlight", "beacon", "skybox", "horizon", "fog",
             "cloud", "backdrop", "ambiance", "dust", "font", "text",
-            "ui-", "tmp", "cursor", "sprite", "lightdata", "cylinder"
+            "ui-", "tmp", "cursor", "sprite", "lightdata", "cylinder",
+            "poignee", "carenage", "rail" // Cull tiny internal mechanics
         };
 
         public static bool ShouldIgnoreMesh(Mesh mesh, string meshName, string goName)
@@ -39,11 +39,11 @@ namespace DeadCoreEditor
             string gLow = goName.ToLowerInvariant();
 
             // 1. Purge lower LOD duplicates (keep only LOD0 and base meshes)
-            if (mLow.Contains("lod1") || mLow.Contains("lod2") || mLow.Contains("lod3") ||
-                gLow.Contains("lod1") || gLow.Contains("lod2") || gLow.Contains("lod3"))
+            if (mLow.Contains("lod1") || mLow.Contains("lod2") || mLow.Contains("lod3") || mLow.Contains("lod4") ||
+                gLow.Contains("lod1") || gLow.Contains("lod2") || gLow.Contains("lod3") || gLow.Contains("lod4"))
                 return true;
 
-            // 2. Filter out internal small gameplay debris only (Spark/Child unblocked so level geometry is kept)
+            // 2. Filter out internal gameplay debris and bugs
             if (mLow.Contains("mosquito") || gLow.Contains("mosquito") ||
                 mLow.Contains("robot") || gLow.Contains("robot") ||
                 mLow.Contains("gauge") || gLow.Contains("gauge"))
@@ -73,10 +73,11 @@ namespace DeadCoreEditor
             return false;
         }
 
-        public static bool IsValidHarvestSize(Bounds bounds, float minSize = 0.2f, float maxSize = 450.0f)
+        public static bool IsValidHarvestSize(Bounds bounds, float minSize = 1.0f, float maxSize = 450.0f)
         {
             Vector3 s = bounds.size;
             float maxDim = Mathf.Max(s.x, Mathf.Max(s.y, s.z));
+            // Filter out microscopic nuts, bolts and tiny debris below 1.0m directly at harvest time
             return maxDim >= minSize && maxDim <= maxSize;
         }
     }
@@ -116,9 +117,22 @@ namespace DeadCoreEditor
                     : goName.Replace("_", " ").Trim();
             }
 
+            // Strip prefix tags
             if (baseName.StartsWith("SM ", StringComparison.OrdinalIgnoreCase)) baseName = baseName.Substring(3);
             if (baseName.StartsWith("m ", StringComparison.OrdinalIgnoreCase)) baseName = baseName.Substring(2);
             if (baseName.StartsWith("geo ", StringComparison.OrdinalIgnoreCase)) baseName = baseName.Substring(4);
+
+            // Strip ugly LOD indicators
+            int lodIdx = baseName.IndexOf("LOD", StringComparison.OrdinalIgnoreCase);
+            if (lodIdx > 0) baseName = baseName.Substring(0, lodIdx).Trim();
+
+            // Translate common french tags to clean labels
+            baseName = baseName.Replace("plateforme", "Platform")
+                               .Replace("tourelle", "Turret Base")
+                               .Replace("anneau", "Ring")
+                               .Replace("corps", "Chassis")
+                               .Replace("canon", "Cannon Tube")
+                               .Trim();
 
             if (string.IsNullOrWhiteSpace(baseName) || baseName.Length < 2)
             {
@@ -335,7 +349,7 @@ namespace DeadCoreEditor
                     Mesh mesh = mf.sharedMesh;
                     int instanceID = mesh.GetInstanceID();
 
-                    // Skip gameplay hazards
+                    // Skip gameplay components handled explicitly
                     if (mf.GetComponent<Jumper>() != null || mf.GetComponent<TurretScript>() != null ||
                         mf.GetComponent<LaserScript>() != null || mf.GetComponent<Helix>() != null ||
                         mf.GetComponent<CheckPointScript>() != null)
@@ -351,7 +365,6 @@ namespace DeadCoreEditor
 
                     if (!seenMeshIDs.Add(instanceID)) continue;
 
-                    // Create isolated template without native movers or animations
                     GameObject templateObj = CreateCleanVaultTemplate(mesh, goName, mName, mf.GetComponent<MeshRenderer>(), meshToOriginalMaterials);
                     _proceduralTemplates.Add(templateObj);
 
@@ -450,6 +463,8 @@ namespace DeadCoreEditor
             asset.ComputeSizeMetrics();
             EditorSessionManager.AllAssets.Add(asset);
         }
+
+        // Keep HarvestNativeGameplayEntities and HarvestProceduralHazardsAndLights unchanged...
 
         // =========================================================================
         // SECTION 3: NATIVE GAMEPLAY HARVESTING

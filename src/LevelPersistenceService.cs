@@ -1,11 +1,8 @@
 ﻿using System;
-using System.IO;
 using System.Collections.Generic;
 using System.Globalization;
-using MelonLoader;
 using UnityEngine;
 using Il2Cpp;
-using Il2CppDeadCore;
 
 using File = System.IO.File;
 using Directory = System.IO.Directory;

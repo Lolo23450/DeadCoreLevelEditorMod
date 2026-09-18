@@ -1,9 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
-using MelonLoader;
 using UnityEngine;
-using Il2Cpp;
-using Il2CppDeadCore;
 
 namespace DeadCoreEditor
 {
@@ -93,6 +90,7 @@ namespace DeadCoreEditor
         private static float _yaw = 0f;
         private static float _pitch = 0f;
         private static bool _isCameraDetached = false;
+        private static bool _isFlying = false; // Tracks flycam state
         private static readonly List<MonoBehaviour> _disabledCameraScripts = new List<MonoBehaviour>();
 
         public static void InitializeCamera(Camera sourceCam)
@@ -174,14 +172,22 @@ namespace DeadCoreEditor
                 cam.useOcclusionCulling = false;
             }
         }
-
         public static void UpdateCamera()
         {
             Camera cam = ViewportCamera;
             if (cam == null || !_isCameraDetached) return;
 
-            bool isFlying = Input.GetMouseButton(1);
-            if (isFlying)
+            // Only engage flycam if right-click did NOT start over a UI element
+            if (Input.GetMouseButtonDown(1))
+            {
+                _isFlying = !StudioUIManager.IsPointerOverUI();
+            }
+            if (Input.GetMouseButtonUp(1))
+            {
+                _isFlying = false;
+            }
+
+            if (_isFlying)
             {
                 GUIUtility.keyboardControl = 0;
                 Cursor.lockState = CursorLockMode.Locked;
@@ -216,7 +222,7 @@ namespace DeadCoreEditor
             }
 
             Vector3 moveDir = Vector3.zero;
-            bool allowMove = isFlying || (!StudioUIManager.IsPointerOverUI() && GUIUtility.keyboardControl == 0);
+            bool allowMove = _isFlying || (!StudioUIManager.IsPointerOverUI() && GUIUtility.keyboardControl == 0);
 
             if (allowMove)
             {
@@ -224,8 +230,8 @@ namespace DeadCoreEditor
                 if (Input.GetKey(KeyCode.S)) moveDir -= cam.transform.forward;
                 if (Input.GetKey(KeyCode.D)) moveDir += cam.transform.right;
                 if (Input.GetKey(KeyCode.A)) moveDir -= cam.transform.right;
-                if (Input.GetKey(KeyCode.Space) || (Input.GetKey(KeyCode.E) && isFlying)) moveDir += Vector3.up;
-                if (Input.GetKey(KeyCode.Q) && isFlying) moveDir -= Vector3.up;
+                if (Input.GetKey(KeyCode.Space) || (Input.GetKey(KeyCode.E) && _isFlying)) moveDir += Vector3.up;
+                if (Input.GetKey(KeyCode.Q) && _isFlying) moveDir -= Vector3.up;
             }
 
             if (EditorSessionManager.InteractionMode == EditorInteractionMode.SelectMode && !StudioUIManager.IsPointerOverUI())
@@ -243,6 +249,7 @@ namespace DeadCoreEditor
                 cam.transform.position += moveDir.normalized * (speed * Time.deltaTime);
             }
         }
+
 
         public static void DestroyCamera()
         {

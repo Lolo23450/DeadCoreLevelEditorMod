@@ -1,21 +1,11 @@
 ﻿using System;
-using System.IO;
-using System.Collections;
 using System.Collections.Generic;
-using System.Globalization;
 using MelonLoader;
 using UnityEngine;
-using UnityEngine.UI;
 using SceneManager = UnityEngine.SceneManagement.SceneManager;
 using Il2Cpp;
-using Il2CppInterop.Runtime;
-using Il2CppTMPro;
-using Il2CppDeadCore;
-using Il2CppDeadCore.UI;
 
 using File = System.IO.File;
-using Directory = System.IO.Directory;
-using Path = System.IO.Path;
 
 namespace DeadCoreEditor
 {
@@ -1218,7 +1208,7 @@ namespace DeadCoreEditor
             if (Input.GetKeyDown(KeyCode.F1)) ToggleEditMode();
             if (Input.GetKeyDown(KeyCode.F4)) SceneHarvestingService.DebugDumpSceneLighting();
             if (Input.GetKeyDown(KeyCode.F5)) LevelPersistenceService.SaveLevel(MapBrowserService.SelectedMapName);
-            if (Input.GetKeyDown(KeyCode.F6)) LevelPersistenceService.LoadLevel(MapBrowserService.SelectedMapName);
+            //if (Input.GetKeyDown(KeyCode.F6)) LevelPersistenceService.LoadLevel(MapBrowserService.SelectedMapName);
         }
 
         // =========================================================================

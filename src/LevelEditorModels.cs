@@ -4,7 +4,6 @@ using System.Collections.Generic;
 using System.Globalization;
 using MelonLoader;
 using UnityEngine;
-using UnityEngine.UI;
 
 [assembly: MelonInfo(typeof(DeadCoreEditor.DeadCoreLevelEditorMod), "DeadCore Level Editor Suite - Studio Edition", "9.6.1", "Trufa")]
 [assembly: MelonGame(null, null)]
