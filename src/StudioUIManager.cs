@@ -636,6 +636,54 @@ namespace DeadCoreEditor
 
         private static bool _suppressInspectorCallbacks = false;
 
+        public static void UpdateUI()
+        {
+            UpdateRebindingTick();
+
+            // Direct mouse-wheel scroll listener for Asset Browser
+            if (_assetBrowserScrollRect != null && _assetBrowserPanel != null && _assetBrowserPanel.activeInHierarchy)
+            {
+                Vector2 mousePos = Input.mousePosition;
+                RectTransform abrt = _assetBrowserPanel.GetComponent<RectTransform>();
+                if (abrt != null && RectTransformUtility.RectangleContainsScreenPoint(abrt, mousePos))
+                {
+                    float scrollWheel = Input.GetAxis("Mouse ScrollWheel");
+                    if (Mathf.Abs(scrollWheel) > 0.001f)
+                    {
+                        float contentH = _browserContent != null ? _browserContent.rect.height : 1000f;
+                        float viewH = (_assetBrowserScrollRect.viewport != null) ? _assetBrowserScrollRect.viewport.rect.height : 220f;
+                        float scrollableH = Mathf.Max(1f, contentH - viewH);
+
+                        float step = (90f / scrollableH) * (scrollWheel > 0 ? 1f : -1f);
+                        _assetBrowserScrollRect.verticalNormalizedPosition = Mathf.Clamp01(_assetBrowserScrollRect.verticalNormalizedPosition + step);
+                    }
+                }
+            }
+
+            // Auto-close open dropdowns when clicking outside
+            if (_activeDropdownMenu != null && Input.GetMouseButtonDown(0))
+            {
+                RectTransform dmRt = _activeDropdownMenu.GetComponent<RectTransform>();
+                if (dmRt != null && !RectTransformUtility.RectangleContainsScreenPoint(dmRt, Input.mousePosition))
+                {
+                    if (_activeDropdownAnchor == null || !RectTransformUtility.RectangleContainsScreenPoint(_activeDropdownAnchor, Input.mousePosition))
+                    {
+                        CloseAllDropdowns();
+                    }
+                }
+            }
+
+            // Auto-close context menu when clicking outside
+            if (_contextMenuRoot != null && _contextMenuRoot.activeSelf && (Input.GetMouseButtonDown(0) || Input.GetMouseButtonDown(1)))
+            {
+                RectTransform cmRt = _contextMenuRoot.GetComponent<RectTransform>();
+                if (cmRt != null && !RectTransformUtility.RectangleContainsScreenPoint(cmRt, Input.mousePosition))
+                {
+                    CloseContextMenu();
+                }
+            }
+        }
+
         public static bool IsPointerOverUI()
         {
             if (_canvasRoot == null || !_canvasRoot.activeInHierarchy) return false;
@@ -1291,7 +1339,7 @@ namespace DeadCoreEditor
                 searchLe.flexibleWidth = 1f;
             }
 
-            // Use the tested CreateScrollViewPrimitive instead of raw uninitialized objects
+            // Scroll View Container
             GameObject scrollObj = CreateScrollViewPrimitive(_assetBrowserPanel.transform, "Browser_Scroll",
                 Vector2.zero, Vector2.one,
                 new Vector2(8f, 6f), new Vector2(-16f, -42f),
@@ -1299,17 +1347,30 @@ namespace DeadCoreEditor
 
             if (scrollObj != null)
             {
+                // Ensure the background of the scroll view catches raycasts
+                Image scrollImg = scrollObj.GetComponent<Image>() ?? scrollObj.AddComponent<Image>();
+                scrollImg.color = Color.clear;
+                scrollImg.raycastTarget = true;
+
                 _assetBrowserScrollRect = scrollObj.GetComponent<ScrollRect>();
                 if (_assetBrowserScrollRect != null)
                 {
                     _assetBrowserScrollRect.movementType = ScrollRect.MovementType.Clamped;
-                    _assetBrowserScrollRect.scrollSensitivity = 22f;
+                    _assetBrowserScrollRect.scrollSensitivity = 35f;
+                }
+
+                // Ensure the viewport catches raycasts over empty margins
+                Transform vp = scrollObj.transform.Find("Viewport");
+                if (vp != null)
+                {
+                    Image vpImg = vp.GetComponent<Image>() ?? vp.gameObject.AddComponent<Image>();
+                    vpImg.color = Color.clear;
+                    vpImg.raycastTarget = true;
                 }
             }
 
             if (_browserContent != null)
             {
-                // Replace default VerticalLayoutGroup with 1:1 square GridLayoutGroup
                 VerticalLayoutGroup oldVlg = _browserContent.GetComponent<VerticalLayoutGroup>();
                 if (oldVlg != null) GameObject.DestroyImmediate(oldVlg);
 
@@ -1429,8 +1490,9 @@ namespace DeadCoreEditor
                     RefreshModeDisplay();
                 }));
 
-                // EventTrigger safely captures Right-Click on the card to open context menu
+                // EventTrigger captures Right-Click AND forwards Scroll/Drag so it doesn't block scrolling
                 EventTrigger trigger = card.AddComponent<EventTrigger>();
+
                 var clickEntry = new EventTrigger.Entry { eventID = EventTriggerType.PointerClick };
                 clickEntry.callback.AddListener((Action<BaseEventData>)((e) =>
                 {
@@ -1441,6 +1503,24 @@ namespace DeadCoreEditor
                     }
                 }));
                 trigger.triggers.Add(clickEntry);
+
+                // FORWARD SCROLL TO SCROLLRECT
+                var scrollEntry = new EventTrigger.Entry { eventID = EventTriggerType.Scroll };
+                scrollEntry.callback.AddListener((Action<BaseEventData>)((e) =>
+                {
+                    if (_assetBrowserScrollRect != null)
+                        _assetBrowserScrollRect.OnScroll(e.Cast<PointerEventData>());
+                }));
+                trigger.triggers.Add(scrollEntry);
+
+                // FORWARD DRAG TO SCROLLRECT
+                var dragEntry = new EventTrigger.Entry { eventID = EventTriggerType.Drag };
+                dragEntry.callback.AddListener((Action<BaseEventData>)((e) =>
+                {
+                    if (_assetBrowserScrollRect != null)
+                        _assetBrowserScrollRect.OnDrag(e.Cast<PointerEventData>());
+                }));
+                trigger.triggers.Add(dragEntry);
 
                 // Strict 1:1 Square Thumbnail Container
                 GameObject preview = new GameObject("Thumbnail", Il2CppType.Of<RectTransform>());
@@ -4853,7 +4933,6 @@ namespace DeadCoreEditor
                 StudioGizmoController.DestroyGizmo();
             }
         }
-
         public override void OnUpdate()
         {
             string currentScene = SceneManager.GetActiveScene().name.ToLower();
@@ -4929,16 +5008,35 @@ namespace DeadCoreEditor
             // Interactive Shortcut Rebinder Listening Tick
             StudioUIManager.UpdateRebindingTick();
 
+            // Inside DeadCoreLevelEditorMod.OnUpdate():
+            if (!EditorSessionManager.IsCustomSessionActive) return;
+
+            if (!EditorSessionManager.IsLevelInitialized)
+            {
+                bool isLevelScene = currentScene.Contains("level") || currentScene.Contains("spark");
+                if (isLevelScene)
+                {
+                    GameObject player = EditorSessionManager.FindPlayerEntity();
+                    if (player != null && player.GetComponentInChildren<CharacterController>() != null)
+                    {
+                        MelonLogger.Msg($">> [Lifecycle] Player detected in '{currentScene}'. Initializing Studio Editor!");
+                        EditorSessionManager.InitializeCustomLevel();
+                    }
+                }
+                return;
+            }
+
+            // Run UI ticks, scrolling & click-outside detectors
+            StudioUIManager.UpdateUI();
+
             // Configurable Keyboard Shortcuts Routing
             if (GUIUtility.keyboardControl == 0)
             {
-                // Only trigger if re-bound away from F1 (EditorSessionManager natively handles default F1)
                 if (EditorConfigService.IsCustomShortcutTriggered("TogglePlaytest", "F1"))
                     EditorSessionManager.ToggleEditMode();
 
                 if (EditorSessionManager.IsEditModeActive)
                 {
-                    // Built-in actions: only fire if customized to avoid double-triggering
                     if (EditorConfigService.IsCustomShortcutTriggered("SaveLevel", "F5"))
                         LevelPersistenceService.SaveLevel(MapBrowserService.SelectedMapName);
                     else if (EditorConfigService.IsCustomShortcutTriggered("LoadLevel", "F6"))
@@ -4956,7 +5054,6 @@ namespace DeadCoreEditor
                     else if (EditorConfigService.IsCustomShortcutTriggered("Delete", "Delete") && !StudioUIManager.IsPointerOverUI())
                         EditorSessionManager.DeleteSelectedObjects();
 
-                    // New shortcuts (no native collision in EditorSessionManager)
                     if (EditorConfigService.IsShortcutTriggered("CreatePrefab"))
                         StudioUIManager.QuickAutoCreatePrefab();
                     else if (EditorConfigService.IsShortcutTriggered("Snap90"))
@@ -4972,6 +5069,7 @@ namespace DeadCoreEditor
             StudioUIManager.AssetThumbnailRenderer.ProcessQueueTick();
             EditorSessionManager.UpdateSession();
         }
+
 
         public override void OnGUI()
         {
