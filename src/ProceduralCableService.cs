@@ -13,9 +13,16 @@ namespace DeadCoreEditor
 
     public enum CableStyle
     {
-        NeonStriped = 0,    // Dark matte body + glowing neon spine line
+        NeonStriped = 0,    // Dark matte jacket + glowing neon spine line
         FullNeon = 1,       // Fully glowing energy conduit
-        IndustrialSolid = 2 // Dark rubber/metal power line
+        IndustrialSolid = 2 // Dark rubber/metal conduit
+    }
+
+    public enum CableBundleType
+    {
+        Single = 0,
+        Twin = 1,
+        Triple = 2
     }
 
     public class CableConfig : IEditorComponent
@@ -24,12 +31,14 @@ namespace DeadCoreEditor
 
         public Vector3 LocalPointA = new Vector3(-3f, 0f, 0f);
         public Vector3 LocalPointB = new Vector3(3f, 0f, 0f);
-        public float Radius = 0.06f;       // Cable thickness
-        public float SagAmount = 1.2f;     // How far gravity pulls it down
-        public float SlackPercent = 0.15f; // Extra length ratio
+        public float Radius = 0.06f;            // Cable thickness
+        public float SagAmount = 1.2f;          // Gravity sag distance
         public CableStyle Style = CableStyle.NeonStriped;
+        public CableBundleType Bundle = CableBundleType.Single;
         public Color NeonColor = new Color(0f, 0.9f, 1f);
         public float GlowIntensity = 3.5f;
+        public bool HasMountSockets = true;     // Metal junction collars at ends
+        public float EnergyFlowSpeed = 1.5f;    // Flowing neon UV speed (0 = static)
 
         public CableConfig Clone()
         {
@@ -39,10 +48,12 @@ namespace DeadCoreEditor
                 LocalPointB = this.LocalPointB,
                 Radius = this.Radius,
                 SagAmount = this.SagAmount,
-                SlackPercent = this.SlackPercent,
                 Style = this.Style,
+                Bundle = this.Bundle,
                 NeonColor = this.NeonColor,
-                GlowIntensity = this.GlowIntensity
+                GlowIntensity = this.GlowIntensity,
+                HasMountSockets = this.HasMountSockets,
+                EnergyFlowSpeed = this.EnergyFlowSpeed
             };
         }
 
@@ -54,7 +65,8 @@ namespace DeadCoreEditor
             string hex = PersistenceUtility.ColorToHex(NeonColor);
             return $"{LocalPointA.x.ToString("F3", inv)}:{LocalPointA.y.ToString("F3", inv)}:{LocalPointA.z.ToString("F3", inv)}:" +
                    $"{LocalPointB.x.ToString("F3", inv)}:{LocalPointB.y.ToString("F3", inv)}:{LocalPointB.z.ToString("F3", inv)}:" +
-                   $"{Radius.ToString("F3", inv)}:{SagAmount.ToString("F2", inv)}:{(int)Style}:{hex}:{GlowIntensity.ToString("F2", inv)}";
+                   $"{Radius.ToString("F3", inv)}:{SagAmount.ToString("F2", inv)}:{(int)Style}:{hex}:{GlowIntensity.ToString("F2", inv)}:" +
+                   $"{(HasMountSockets ? 1 : 0)}:{(int)Bundle}:{EnergyFlowSpeed.ToString("F2", inv)}";
         }
 
         public void Deserialize(string rawData)
@@ -73,43 +85,123 @@ namespace DeadCoreEditor
             if (p.Length >= 9) Style = (CableStyle)PersistenceUtility.ParseInt(p[8], 0);
             if (p.Length >= 10) NeonColor = PersistenceUtility.HexToColor(p[9], Color.cyan);
             if (p.Length >= 11) GlowIntensity = PersistenceUtility.ParseFloat(p[10], 3.5f);
+            if (p.Length >= 12) HasMountSockets = p[11] == "1";
+            if (p.Length >= 13) Bundle = (CableBundleType)PersistenceUtility.ParseInt(p[12], 0);
+            if (p.Length >= 14) EnergyFlowSpeed = PersistenceUtility.ParseFloat(p[13], 1.5f);
         }
     }
 
     // =========================================================================
-    // SECTION 2: PROCEDURAL MESH GENERATOR & CATENARY MATHEMATICS
+    // SECTION 2: PROCEDURAL MESH GENERATOR & TUBE EXTRUDER
     // =========================================================================
 
     public static class ProceduralCableMeshBuilder
     {
-        private const int Subdivisions = 24; // Points along the curve
-        private const int RadialSides = 8;   // Octagonal tube cross-section
+        private const int RadialSides = 8; // Octagonal cross-section
 
-        public static Mesh BuildExtrudedCableMesh(Vector3 start, Vector3 end, float radius, float sag, CableStyle style)
+        public static Mesh BuildExtrudedCableMesh(Vector3 start, Vector3 end, float radius, float sag, CableStyle style, CableBundleType bundle, bool sockets)
         {
             Mesh mesh = new Mesh { name = "Procedural_Cable_Mesh" };
 
-            float dist = Vector3.Distance(start, end);
-            Vector3 diff = end - start;
+            float span = Vector3.Distance(start, end);
+            int subdivisions = Mathf.Clamp(Mathf.RoundToInt(span * 3.5f), 12, 64);
 
-            // Generate curve points with catenary/parabolic gravity hang
-            Vector3[] curvePoints = new Vector3[Subdivisions + 1];
-            for (int i = 0; i <= Subdivisions; i++)
+            List<Vector3> allVertices = new List<Vector3>();
+            List<Vector3> allNormals = new List<Vector3>();
+            List<Vector2> allUVs = new List<Vector2>();
+            List<int> bodyTris = new List<int>();
+            List<int> neonTris = new List<int>();
+
+            // Calculate radial separation vectors for multi-strand cables
+            List<Vector3> strandOffsets = GetStrandOffsets(start, end, radius, bundle);
+
+            for (int s = 0; s < strandOffsets.Count; s++)
             {
-                float t = i / (float)Subdivisions;
-                Vector3 linear = Vector3.Lerp(start, end, t);
-
-                // Natural parabolic hang: max at t = 0.5, zero at t = 0 and 1
-                float hangFactor = 4f * t * (1f - t);
-                Vector3 gravityDrop = Vector3.down * (sag * hangFactor);
-
-                curvePoints[i] = linear + gravityDrop;
+                Vector3 sOffset = strandOffsets[s];
+                BuildSingleStrand(start + sOffset, end + sOffset, radius, sag, subdivisions, style, allVertices, allNormals, allUVs, bodyTris, neonTris);
             }
 
-            // Compute Rotation Minimizing Frames (RMF) along curve to prevent tube twisting
-            Vector3[] tangents = new Vector3[Subdivisions + 1];
-            Vector3[] normals = new Vector3[Subdivisions + 1];
-            Vector3[] binormals = new Vector3[Subdivisions + 1];
+            // Procedural wall socket collars at both ends
+            if (sockets)
+            {
+                float collarRadius = radius * (strandOffsets.Count > 1 ? 2.3f : 1.65f);
+                BuildMountSocket(start, (end - start).normalized, collarRadius, allVertices, allNormals, allUVs, bodyTris);
+                BuildMountSocket(end, (start - end).normalized, collarRadius, allVertices, allNormals, allUVs, bodyTris);
+            }
+
+            // Convert to managed arrays to avoid Il2CppSystem.Collections.Generic.List conversion mismatch
+            mesh.vertices = allVertices.ToArray();
+            mesh.normals = allNormals.ToArray();
+            mesh.uv = allUVs.ToArray();
+
+            if (style == CableStyle.NeonStriped)
+            {
+                mesh.subMeshCount = 2;
+                mesh.SetTriangles(bodyTris.ToArray(), 0);
+                mesh.SetTriangles(neonTris.ToArray(), 1);
+            }
+            else if (style == CableStyle.FullNeon)
+            {
+                mesh.subMeshCount = 1;
+                mesh.SetTriangles(neonTris.ToArray(), 0);
+            }
+            else
+            {
+                mesh.subMeshCount = 1;
+                mesh.SetTriangles(bodyTris.ToArray(), 0);
+            }
+
+            mesh.RecalculateBounds();
+            return mesh;
+        }
+
+        private static List<Vector3> GetStrandOffsets(Vector3 start, Vector3 end, float radius, CableBundleType bundle)
+        {
+            List<Vector3> offsets = new List<Vector3>();
+            Vector3 fwd = (end - start).normalized;
+            if (fwd.sqrMagnitude < 0.001f) fwd = Vector3.forward;
+
+            Vector3 right = Vector3.Cross(fwd, Vector3.up).normalized;
+            if (right.sqrMagnitude < 0.001f) right = Vector3.Cross(fwd, Vector3.right).normalized;
+            Vector3 up = Vector3.Cross(right, fwd).normalized;
+
+            float spacing = radius * 2.2f;
+
+            switch (bundle)
+            {
+                case CableBundleType.Twin:
+                    offsets.Add(right * (spacing * 0.5f));
+                    offsets.Add(-right * (spacing * 0.5f));
+                    break;
+                case CableBundleType.Triple:
+                    offsets.Add(up * (spacing * 0.577f));
+                    offsets.Add(-up * (spacing * 0.288f) + right * (spacing * 0.5f));
+                    offsets.Add(-up * (spacing * 0.288f) - right * (spacing * 0.5f));
+                    break;
+                default:
+                    offsets.Add(Vector3.zero);
+                    break;
+            }
+
+            return offsets;
+        }
+
+        private static void BuildSingleStrand(Vector3 start, Vector3 end, float radius, float sag, int subdivisions, CableStyle style,
+            List<Vector3> verts, List<Vector3> norms, List<Vector2> uvs, List<int> bodyTris, List<int> neonTris)
+        {
+            Vector3[] curvePoints = new Vector3[subdivisions + 1];
+            for (int i = 0; i <= subdivisions; i++)
+            {
+                float t = i / (float)subdivisions;
+                Vector3 linear = Vector3.Lerp(start, end, t);
+                float hangFactor = 4f * t * (1f - t);
+                curvePoints[i] = linear + Vector3.down * (sag * hangFactor);
+            }
+
+            // Rotation Minimizing Frames (RMF) along curve to prevent tube twisting
+            Vector3[] tangents = new Vector3[subdivisions + 1];
+            Vector3[] normals = new Vector3[subdivisions + 1];
+            Vector3[] binormals = new Vector3[subdivisions + 1];
 
             tangents[0] = (curvePoints[1] - curvePoints[0]).normalized;
             Vector3 initUp = Vector3.up;
@@ -117,10 +209,10 @@ namespace DeadCoreEditor
             normals[0] = Vector3.Cross(tangents[0], initUp).normalized;
             binormals[0] = Vector3.Cross(tangents[0], normals[0]).normalized;
 
-            for (int i = 1; i <= Subdivisions; i++)
+            for (int i = 1; i <= subdivisions; i++)
             {
                 Vector3 prevT = tangents[i - 1];
-                Vector3 curT = (i < Subdivisions) ? (curvePoints[i + 1] - curvePoints[i]).normalized : prevT;
+                Vector3 curT = (i < subdivisions) ? (curvePoints[i + 1] - curvePoints[i]).normalized : prevT;
                 tangents[i] = curT;
 
                 Vector3 axis = Vector3.Cross(prevT, curT);
@@ -138,16 +230,11 @@ namespace DeadCoreEditor
                 }
             }
 
-            // Assemble vertices and normals
+            int baseVertexIndex = verts.Count;
             int ringVertexCount = RadialSides + 1;
-            int totalRings = Subdivisions + 1;
-            Vector3[] vertices = new Vector3[totalRings * ringVertexCount];
-            Vector3[] vNormals = new Vector3[totalRings * ringVertexCount];
-            Vector2[] uvs = new Vector2[totalRings * ringVertexCount];
-
             float lengthAcc = 0f;
 
-            for (int ring = 0; ring < totalRings; ring++)
+            for (int ring = 0; ring <= subdivisions; ring++)
             {
                 if (ring > 0) lengthAcc += Vector3.Distance(curvePoints[ring], curvePoints[ring - 1]);
 
@@ -160,32 +247,25 @@ namespace DeadCoreEditor
                     float u = side / (float)RadialSides;
                     float angle = u * Mathf.PI * 2f;
 
-                    float cos = Mathf.Cos(angle);
-                    float sin = Mathf.Sin(angle);
+                    Vector3 localRadial = (rVec * Mathf.Cos(angle) + uVec * Mathf.Sin(angle)).normalized;
 
-                    Vector3 localRadial = (rVec * cos + uVec * sin).normalized;
-                    int idx = ring * ringVertexCount + side;
-
-                    vertices[idx] = center + localRadial * radius;
-                    vNormals[idx] = localRadial;
-                    uvs[idx] = new Vector2(u, lengthAcc * 0.75f);
+                    verts.Add(center + localRadial * radius);
+                    norms.Add(localRadial);
+                    uvs.Add(new Vector2(u, lengthAcc * 1.25f));
                 }
             }
 
-            // Build Triangles and split into submeshes
-            List<int> bodyTris = new List<int>();
-            List<int> neonTris = new List<int>();
-
-            for (int ring = 0; ring < Subdivisions; ring++)
+            // Triangulate cylindrical body segments
+            for (int ring = 0; ring < subdivisions; ring++)
             {
                 for (int side = 0; side < RadialSides; side++)
                 {
-                    int current = ring * ringVertexCount + side;
+                    int current = baseVertexIndex + ring * ringVertexCount + side;
                     int next = current + ringVertexCount;
 
-                    bool isNeonSpineSegment = (style == CableStyle.NeonStriped) && (side == 0);
+                    bool isNeonSpine = (style == CableStyle.NeonStriped) && (side == 0);
 
-                    if (style == CableStyle.FullNeon || isNeonSpineSegment)
+                    if (style == CableStyle.FullNeon || isNeonSpine)
                     {
                         neonTris.Add(current);
                         neonTris.Add(next);
@@ -208,29 +288,92 @@ namespace DeadCoreEditor
                 }
             }
 
-            mesh.vertices = vertices;
-            mesh.normals = vNormals;
-            mesh.uv = uvs;
+            // Closed end-caps to prevent visible hollow backfaces
+            BuildCap(curvePoints[0], -tangents[0], radius, verts, norms, uvs, bodyTris, true);
+            BuildCap(curvePoints[subdivisions], tangents[subdivisions], radius, verts, norms, uvs, bodyTris, false);
+        }
 
-            if (style == CableStyle.NeonStriped)
+        private static void BuildCap(Vector3 center, Vector3 normal, float radius, List<Vector3> verts, List<Vector3> norms, List<Vector2> uvs, List<int> tris, bool reverse)
+        {
+            int centerIdx = verts.Count;
+            verts.Add(center);
+            norms.Add(normal);
+            uvs.Add(new Vector2(0.5f, 0.5f));
+
+            Vector3 rVec = Vector3.Cross(normal, Vector3.up).normalized;
+            if (rVec.sqrMagnitude < 0.001f) rVec = Vector3.Cross(normal, Vector3.right).normalized;
+            Vector3 uVec = Vector3.Cross(rVec, normal).normalized;
+
+            int ringStart = verts.Count;
+            for (int i = 0; i < RadialSides; i++)
             {
-                mesh.subMeshCount = 2;
-                mesh.SetTriangles(bodyTris.ToArray(), 0);
-                mesh.SetTriangles(neonTris.ToArray(), 1);
-            }
-            else if (style == CableStyle.FullNeon)
-            {
-                mesh.subMeshCount = 1;
-                mesh.SetTriangles(neonTris.ToArray(), 0);
-            }
-            else
-            {
-                mesh.subMeshCount = 1;
-                mesh.SetTriangles(bodyTris.ToArray(), 0);
+                float a = (i / (float)RadialSides) * Mathf.PI * 2f;
+                Vector3 p = center + (rVec * Mathf.Cos(a) + uVec * Mathf.Sin(a)) * radius;
+                verts.Add(p);
+                norms.Add(normal);
+                uvs.Add(new Vector2(Mathf.Cos(a) * 0.5f + 0.5f, Mathf.Sin(a) * 0.5f + 0.5f));
             }
 
-            mesh.RecalculateBounds();
-            return mesh;
+            for (int i = 0; i < RadialSides; i++)
+            {
+                int next = (i + 1) % RadialSides;
+                if (reverse)
+                {
+                    tris.Add(centerIdx);
+                    tris.Add(ringStart + next);
+                    tris.Add(ringStart + i);
+                }
+                else
+                {
+                    tris.Add(centerIdx);
+                    tris.Add(ringStart + i);
+                    tris.Add(ringStart + next);
+                }
+            }
+        }
+
+        private static void BuildMountSocket(Vector3 origin, Vector3 outwardDir, float collarRadius, List<Vector3> verts, List<Vector3> norms, List<Vector2> uvs, List<int> tris)
+        {
+            int baseIdx = verts.Count;
+            float collarDepth = collarRadius * 0.75f;
+            Vector3 backCenter = origin - outwardDir * collarDepth;
+
+            Vector3 rVec = Vector3.Cross(outwardDir, Vector3.up).normalized;
+            if (rVec.sqrMagnitude < 0.001f) rVec = Vector3.Cross(outwardDir, Vector3.right).normalized;
+            Vector3 uVec = Vector3.Cross(rVec, outwardDir).normalized;
+
+            for (int i = 0; i < RadialSides; i++)
+            {
+                float a = (i / (float)RadialSides) * Mathf.PI * 2f;
+                Vector3 offset = (rVec * Mathf.Cos(a) + uVec * Mathf.Sin(a)) * collarRadius;
+
+                // Front ring
+                verts.Add(origin + offset);
+                norms.Add(offset.normalized);
+                uvs.Add(new Vector2(i / (float)RadialSides, 1f));
+
+                // Back ring
+                verts.Add(backCenter + offset);
+                norms.Add(offset.normalized);
+                uvs.Add(new Vector2(i / (float)RadialSides, 0f));
+            }
+
+            for (int i = 0; i < RadialSides; i++)
+            {
+                int next = (i + 1) % RadialSides;
+                int f1 = baseIdx + i * 2;
+                int b1 = f1 + 1;
+                int f2 = baseIdx + next * 2;
+                int b2 = f2 + 1;
+
+                tris.Add(f1);
+                tris.Add(b1);
+                tris.Add(f2);
+
+                tris.Add(f2);
+                tris.Add(b1);
+                tris.Add(b2);
+            }
         }
     }
 
@@ -284,8 +427,8 @@ namespace DeadCoreEditor
             cableObj.transform.rotation = Quaternion.identity;
             cableObj.transform.localScale = Vector3.one;
 
-            MeshFilter mf = cableObj.AddComponent<MeshFilter>();
-            MeshRenderer mr = cableObj.AddComponent<MeshRenderer>();
+            cableObj.AddComponent<MeshFilter>();
+            cableObj.AddComponent<MeshRenderer>();
 
             CableConfig cfg = new CableConfig
             {
@@ -294,8 +437,11 @@ namespace DeadCoreEditor
                 Radius = radius,
                 SagAmount = sag,
                 Style = style,
+                Bundle = CableBundleType.Single,
                 NeonColor = new Color(0f, 0.9f, 1f),
-                GlowIntensity = 4.0f
+                GlowIntensity = 4.0f,
+                HasMountSockets = true,
+                EnergyFlowSpeed = 1.5f
             };
 
             ApplyCableConfig(cableObj, cfg);
@@ -313,7 +459,8 @@ namespace DeadCoreEditor
             MeshRenderer mr = cableObj.GetComponent<MeshRenderer>() ?? cableObj.AddComponent<MeshRenderer>();
 
             // Generate procedural mesh
-            Mesh cableMesh = ProceduralCableMeshBuilder.BuildExtrudedCableMesh(cfg.LocalPointA, cfg.LocalPointB, cfg.Radius, cfg.SagAmount, cfg.Style);
+            Mesh cableMesh = ProceduralCableMeshBuilder.BuildExtrudedCableMesh(
+                cfg.LocalPointA, cfg.LocalPointB, cfg.Radius, cfg.SagAmount, cfg.Style, cfg.Bundle, cfg.HasMountSockets);
             mf.sharedMesh = cableMesh;
 
             // Generate dedicated neon emissive material instance
@@ -352,7 +499,7 @@ namespace DeadCoreEditor
         }
 
         // =========================================================================
-        // SECTION 4: 3D INTERACTIVE HANDLES
+        // SECTION 4: 3D INTERACTIVE HANDLES & SURFACE SNAPPING
         // =========================================================================
 
         public static bool IsCableHandle(GameObject go, out GameObject cableOwner, out bool isPointB)
@@ -420,12 +567,21 @@ namespace DeadCoreEditor
             _handleMarkersA.Remove(cableObj);
             _handleMarkersB.Remove(cableObj);
         }
+
         public static void DestroyAllCableHandles()
         {
             foreach (var kvp in _handleMarkersA) if (kvp.Value != null) GameObject.DestroyImmediate(kvp.Value);
             foreach (var kvp in _handleMarkersB) if (kvp.Value != null) GameObject.DestroyImmediate(kvp.Value);
             _handleMarkersA.Clear();
             _handleMarkersB.Clear();
+        }
+
+        public static void AddAllCableHandles()
+        {
+            foreach (var kvp in PlacedCables)
+            {
+                UpdateCableVisualHandles(kvp.Key);
+            }
         }
 
         public static void OnHandleDragged(GameObject cableObj, bool isPointB, Vector3 newWorldPos)
@@ -438,6 +594,75 @@ namespace DeadCoreEditor
 
             ApplyCableConfig(cableObj, cfg);
             UpdateCableVisualHandles(cableObj);
+        }
+
+        public static void SnapHandleToSurface(GameObject cableObj, bool isPointB)
+        {
+            if (cableObj == null || !PlacedCables.TryGetValue(cableObj, out CableConfig cfg)) return;
+
+            Vector3 currentLocal = isPointB ? cfg.LocalPointB : cfg.LocalPointA;
+            Vector3 worldPos = cableObj.transform.TransformPoint(currentLocal);
+
+            Vector3[] castDirs = new Vector3[] { Vector3.down, Vector3.up, Vector3.forward, -Vector3.forward, Vector3.right, -Vector3.right };
+            RaycastHit bestHit = default;
+            float closestDist = float.MaxValue;
+            bool hitFound = false;
+
+            for (int i = 0; i < castDirs.Length; i++)
+            {
+                if (Physics.Raycast(worldPos + castDirs[i] * -0.5f, castDirs[i], out RaycastHit hit, 8.0f))
+                {
+                    if (hit.collider != null && hit.collider.gameObject != cableObj && !hit.collider.name.Contains("Handle"))
+                    {
+                        if (hit.distance < closestDist)
+                        {
+                            closestDist = hit.distance;
+                            bestHit = hit;
+                            hitFound = true;
+                        }
+                    }
+                }
+            }
+
+            if (hitFound)
+            {
+                Vector3 newLocal = cableObj.transform.InverseTransformPoint(bestHit.point);
+                if (isPointB) cfg.LocalPointB = newLocal;
+                else cfg.LocalPointA = newLocal;
+
+                ApplyCableConfig(cableObj, cfg);
+                UpdateCableVisualHandles(cableObj);
+                EditorSessionManager.ShowNotification($"Snapped Point {(isPointB ? "B" : "A")} to surface!");
+            }
+            else
+            {
+                EditorSessionManager.ShowNotification("No surface found nearby to snap to.");
+            }
+        }
+
+        public static void UpdateEnergyFlowTick(float dt)
+        {
+            if (PlacedCables.Count == 0) return;
+
+            foreach (var kvp in PlacedCables)
+            {
+                GameObject cable = kvp.Key;
+                CableConfig cfg = kvp.Value;
+                if (cable == null || !cable.activeSelf || cfg == null) continue;
+                if (cfg.Style == CableStyle.IndustrialSolid || Mathf.Abs(cfg.EnergyFlowSpeed) < 0.01f) continue;
+
+                Renderer rend = cable.GetComponent<Renderer>();
+                if (rend == null) continue;
+
+                Material[] mats = rend.materials;
+                int neonMatIdx = (cfg.Style == CableStyle.NeonStriped) ? 1 : 0;
+                if (neonMatIdx < mats.Length && mats[neonMatIdx] != null)
+                {
+                    Vector2 curOffset = mats[neonMatIdx].mainTextureOffset;
+                    curOffset.y -= cfg.EnergyFlowSpeed * dt;
+                    mats[neonMatIdx].mainTextureOffset = curOffset;
+                }
+            }
         }
     }
 }

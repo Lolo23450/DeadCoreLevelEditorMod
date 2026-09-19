@@ -757,6 +757,8 @@ namespace DeadCoreEditor
                 case "GATE": return new GateConfig();
                 case "NEON": return new NeonConfig();
                 case "CABLE": return new CableConfig();
+                case "TRUSS": return new TrussConfig();
+                case "MONOLITH": return new MonolithConfig();
                 default: return null;
             }
         }

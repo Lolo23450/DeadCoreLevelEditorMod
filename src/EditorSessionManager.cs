@@ -208,6 +208,16 @@ namespace DeadCoreEditor
                 data.Set(cableCfg.Clone());
             }
 
+            if (StructuralTrussService.PlacedTrusses.TryGetValue(obj, out var trussCfg))
+            {
+                data.Set(trussCfg.Clone());
+            }
+
+            if (TechMonolithService.PlacedMonoliths.TryGetValue(obj, out var monoCfg))
+            {
+                data.Set(monoCfg.Clone());
+            }
+
             if (PlacedObjectTypes.TryGetValue(obj, out var pType))
             {
                 if (pType == PlacedObjectType.SpawnGate || pType == PlacedObjectType.GoalGate || pType == PlacedObjectType.Checkpoint)
@@ -265,6 +275,16 @@ namespace DeadCoreEditor
             if (data.TryGetComponent<CableConfig>(out var cblCfg))
             {
                 ProceduralCableService.ApplyCableConfig(obj, cblCfg.Clone());
+            }
+
+            if (data.TryGetComponent<TrussConfig>(out var trc))
+            {
+                StructuralTrussService.ApplyTrussConfig(obj, trc.Clone());
+            }
+
+            if (data.TryGetComponent<MonolithConfig>(out var mc))
+            {
+                TechMonolithService.ApplyMonolithConfig(obj, mc.Clone());
             }
 
             if (data.TryGetComponent<ObjectMotionPath>(out var mp) && mp.IsActive && (mp.TotalDistance > 0.05f || Mathf.Abs(mp.RotationSpeed) > 0.01f))
@@ -1240,6 +1260,31 @@ namespace DeadCoreEditor
                 ProceduralCableService.UpdateCableVisualHandles(SelectedObject);
             }
 
+            // Destroy Handles on playtest, add them back on edit mode
+            if (!IsEditModeActive)
+            {
+                ProceduralCableService.DestroyAllCableHandles();
+            }
+            else
+            {
+                ProceduralCableService.AddAllCableHandles();
+            }
+
+            ProceduralCableService.UpdateEnergyFlowTick(Time.deltaTime);
+
+            // Check if user clicked a truss handle in the viewport
+            if (SelectedObject != null && StructuralTrussService.IsTrussHandle(SelectedObject, out GameObject trussOwner, out bool isTrussB))
+            {
+                StructuralTrussService.OnHandleDragged(trussOwner, isTrussB, SelectedObject.transform.position);
+            }
+            else if (SelectedObject != null && StructuralTrussService.PlacedTrusses.ContainsKey(SelectedObject))
+            {
+                StructuralTrussService.UpdateTrussVisualHandles(SelectedObject);
+            }
+
+            // Strobe tick for background monolith warning beacons
+            TechMonolithService.UpdateBeaconTick(Time.deltaTime);
+
             if (Input.GetKeyDown(KeyCode.F1)) ToggleEditMode();
             if (Input.GetKeyDown(KeyCode.F4)) SceneHarvestingService.DebugDumpSceneLighting();
             if (Input.GetKeyDown(KeyCode.F5)) LevelPersistenceService.SaveLevel(MapBrowserService.SelectedMapName);
@@ -1710,7 +1755,11 @@ namespace DeadCoreEditor
             MotionPaths.Remove(target);
             DestroyWaypointVisuals(target);
             PlacedNeonConfigs.Remove(target);
+
             ProceduralCableService.PlacedCables.Remove(target);
+            StructuralTrussService.PlacedTrusses.Remove(target);
+            StructuralTrussService.DestroyTrussHandles(target);
+            TechMonolithService.PlacedMonoliths.Remove(target);
 
             if (PathEditTarget == target) PathEditTarget = null;
             if (ParentingChildTarget == target) ParentingChildTarget = null;
@@ -1792,7 +1841,12 @@ namespace DeadCoreEditor
             PlacedCheckpoints.Clear();
             PlacedGoalGate = null;
             PlacedNeonConfigs.Clear();
+
             ProceduralCableService.DestroyAllCableHandles();
+            StructuralTrussService.DestroyAllTrussHandles();
+            StructuralTrussService.PlacedTrusses.Clear();
+            TechMonolithService.PlacedMonoliths.Clear();
+
             ActiveCustomCheckpoint = null;
 
             JumperForces.Clear();
@@ -3258,7 +3312,7 @@ namespace DeadCoreEditor
 
             Array.Sort(hits, (a, b) => a.distance.CompareTo(b.distance));
 
-            // PRIORITY 1: WAYPOINT MARKERS & CABLE HANDLES
+            // PRIORITY 1: WAYPOINT MARKERS & HANDLES
             for (int h = 0; h < hits.Length; h++)
             {
                 Collider col = hits[h].collider;
@@ -3268,11 +3322,10 @@ namespace DeadCoreEditor
                 if (IsWaypointMarker(hitGo, out _, out _))
                     return hitGo;
 
-                // Use a separate variable so hitGo is never overwritten with null
-                if (IsChildOfAnyWaypoint(hitGo, out GameObject waypointRoot) && waypointRoot != null)
-                    return waypointRoot;
-
                 if (ProceduralCableService.IsCableHandle(hitGo, out _, out _))
+                    return hitGo;
+
+                if (StructuralTrussService.IsTrussHandle(hitGo, out _, out _))
                     return hitGo;
             }
 
