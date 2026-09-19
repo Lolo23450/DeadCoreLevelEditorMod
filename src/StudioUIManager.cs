@@ -917,16 +917,6 @@ namespace DeadCoreEditor
                         EditorSessionManager.SelectObject(cable);
                         RefreshHierarchy();
                     }),
-                    new DropdownItem("+ Procedural Wire / Cable", () =>
-                    {
-                        Vector3 camPos = EditorViewportCamera.ViewportCamera != null
-                            ? EditorViewportCamera.ViewportCamera.transform.position + EditorViewportCamera.ViewportCamera.transform.forward * 8f
-                            : EditorSessionManager.LevelSpawnPosition;
-
-                        GameObject cable = ProceduralCableService.CreateProceduralCable(camPos, new Vector3(-4f, 1f, 0f), new Vector3(4f, -0.5f, 0f));
-                        EditorSessionManager.SelectObject(cable);
-                        RefreshHierarchy();
-                    }),
                     new DropdownItem("+ Procedural Space-Truss Girder", () =>
                     {
                         Vector3 camPos = EditorViewportCamera.ViewportCamera != null
@@ -935,16 +925,6 @@ namespace DeadCoreEditor
 
                         GameObject truss = StructuralTrussService.CreateProceduralTruss(camPos, new Vector3(-5f, 0f, 0f), new Vector3(5f, 0f, 0f));
                         EditorSessionManager.SelectObject(truss);
-                        RefreshHierarchy();
-                    }),
-                    new DropdownItem("+ Tech Monolith Silhouette Cluster", () =>
-                    {
-                        Vector3 camPos = EditorViewportCamera.ViewportCamera != null
-                            ? EditorViewportCamera.ViewportCamera.transform.position + EditorViewportCamera.ViewportCamera.transform.forward * 45f
-                            : EditorSessionManager.LevelSpawnPosition + Vector3.forward * 60f;
-
-                        GameObject cluster = TechMonolithService.CreateTechMonolithCluster(camPos, baseScale: 35f);
-                        EditorSessionManager.SelectObject(cluster);
                         RefreshHierarchy();
                     }),
                 });
@@ -3020,53 +3000,6 @@ namespace DeadCoreEditor
                         StructuralTrussService.ApplyTrussConfig(trussTarget, tc);
                     });
                 }
-
-                _activeInspectorCards.Add(card);
-            }
-
-            // 13. DISTANT TECH MONOLITH CLUSTER CARD
-            if (obj != null && (data.Has<MonolithConfig>() || TechMonolithService.PlacedMonoliths.ContainsKey(obj)))
-            {
-                var card = CreateModularSection(_inspectorContent, "Monolith", "Distant Tech Monolith Silhouette");
-                var mc = data.GetOrCreate<MonolithConfig>();
-                if (TechMonolithService.PlacedMonoliths.TryGetValue(obj, out var existingMc))
-                    mc = existingMc;
-
-                AddSliderRow(card.transform, "Cluster Scale", 10f, 200f, mc.BaseScale, "{0:F0}m", (v) =>
-                {
-                    mc.BaseScale = v;
-                    TechMonolithService.ApplyMonolithConfig(obj, mc);
-                });
-
-                AddSliderRow(card.transform, "Height Mult", 0.8f, 5.0f, mc.HeightMultiplier, "{0:F1}x", (v) =>
-                {
-                    mc.HeightMultiplier = v;
-                    TechMonolithService.ApplyMonolithConfig(obj, mc);
-                });
-
-                AddSliderRow(card.transform, "Slab Count", 2f, 7f, mc.SlabCount, "{0:F0}", (v) =>
-                {
-                    mc.SlabCount = Mathf.RoundToInt(v);
-                    TechMonolithService.ApplyMonolithConfig(obj, mc);
-                });
-
-                AddToggleRow(card.transform, "Antenna & Strobe Beacon", mc.HasAntennaSpire, (st) =>
-                {
-                    mc.HasAntennaSpire = st;
-                    TechMonolithService.ApplyMonolithConfig(obj, mc);
-                });
-
-                CreateButtonPrimitive(card.transform, "Btn_RandomizeSeed", "🎲 Re-roll Monolith Shape", 240f, () =>
-                {
-                    mc.Seed = UnityEngine.Random.Range(10, 99999);
-                    TechMonolithService.ApplyMonolithConfig(obj, mc);
-                }, new Color(0.25f, 0.35f, 0.45f));
-
-                AddColorControl(card.transform, "Silhouette Shade", mc.SilhouetteTint, (newCol) =>
-                {
-                    mc.SilhouetteTint = newCol;
-                    TechMonolithService.ApplyMonolithConfig(obj, mc);
-                });
 
                 _activeInspectorCards.Add(card);
             }

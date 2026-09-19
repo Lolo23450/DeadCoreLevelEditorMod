@@ -213,11 +213,6 @@ namespace DeadCoreEditor
                 data.Set(trussCfg.Clone());
             }
 
-            if (TechMonolithService.PlacedMonoliths.TryGetValue(obj, out var monoCfg))
-            {
-                data.Set(monoCfg.Clone());
-            }
-
             if (PlacedObjectTypes.TryGetValue(obj, out var pType))
             {
                 if (pType == PlacedObjectType.SpawnGate || pType == PlacedObjectType.GoalGate || pType == PlacedObjectType.Checkpoint)
@@ -280,11 +275,6 @@ namespace DeadCoreEditor
             if (data.TryGetComponent<TrussConfig>(out var trc))
             {
                 StructuralTrussService.ApplyTrussConfig(obj, trc.Clone());
-            }
-
-            if (data.TryGetComponent<MonolithConfig>(out var mc))
-            {
-                TechMonolithService.ApplyMonolithConfig(obj, mc.Clone());
             }
 
             if (data.TryGetComponent<ObjectMotionPath>(out var mp) && mp.IsActive && (mp.TotalDistance > 0.05f || Mathf.Abs(mp.RotationSpeed) > 0.01f))
@@ -1282,9 +1272,6 @@ namespace DeadCoreEditor
                 StructuralTrussService.UpdateTrussVisualHandles(SelectedObject);
             }
 
-            // Strobe tick for background monolith warning beacons
-            TechMonolithService.UpdateBeaconTick(Time.deltaTime);
-
             if (Input.GetKeyDown(KeyCode.F1)) ToggleEditMode();
             if (Input.GetKeyDown(KeyCode.F4)) SceneHarvestingService.DebugDumpSceneLighting();
             if (Input.GetKeyDown(KeyCode.F5)) LevelPersistenceService.SaveLevel(MapBrowserService.SelectedMapName);
@@ -1759,7 +1746,6 @@ namespace DeadCoreEditor
             ProceduralCableService.PlacedCables.Remove(target);
             StructuralTrussService.PlacedTrusses.Remove(target);
             StructuralTrussService.DestroyTrussHandles(target);
-            TechMonolithService.PlacedMonoliths.Remove(target);
 
             if (PathEditTarget == target) PathEditTarget = null;
             if (ParentingChildTarget == target) ParentingChildTarget = null;
@@ -1845,7 +1831,6 @@ namespace DeadCoreEditor
             ProceduralCableService.DestroyAllCableHandles();
             StructuralTrussService.DestroyAllTrussHandles();
             StructuralTrussService.PlacedTrusses.Clear();
-            TechMonolithService.PlacedMonoliths.Clear();
 
             ActiveCustomCheckpoint = null;
 
