@@ -339,6 +339,7 @@ namespace DeadCoreEditor
 
             ApplyTrussConfig(trussObj, cfg);
             EditorSessionManager.RegisterPlacedObject(trussObj);
+            UpdateTrussVisualHandles(trussObj);
             return trussObj;
         }
 
@@ -401,7 +402,11 @@ namespace DeadCoreEditor
 
         public static void UpdateTrussVisualHandles(GameObject trussObj)
         {
-            if (trussObj == null || !PlacedTrusses.TryGetValue(trussObj, out TrussConfig cfg)) return;
+            if (trussObj == null || !trussObj.activeInHierarchy || !PlacedTrusses.TryGetValue(trussObj, out TrussConfig cfg))
+            {
+                HideTrussVisualHandles(trussObj);
+                return;
+            }
 
             Vector3 worldA = trussObj.transform.TransformPoint(cfg.LocalPointA);
             Vector3 worldB = trussObj.transform.TransformPoint(cfg.LocalPointB);
@@ -410,7 +415,10 @@ namespace DeadCoreEditor
             {
                 handleA = GameObject.CreatePrimitive(PrimitiveType.Cube);
                 handleA.name = "Truss_Handle_A_" + trussObj.name;
-                handleA.transform.localScale = Vector3.one * 0.55f;
+                handleA.transform.localScale = Vector3.one * 0.65f;
+                handleA.layer = 0;
+                BoxCollider bc = handleA.GetComponent<BoxCollider>();
+                if (bc != null) { bc.isTrigger = false; bc.size = Vector3.one * 1.1f; }
                 handleA.GetComponent<Renderer>().sharedMaterial = GizmoMaterialCache.CreateSolidMaterial(new Color(0.2f, 1f, 0.4f));
                 _handleMarkersA[trussObj] = handleA;
             }
@@ -419,7 +427,10 @@ namespace DeadCoreEditor
             {
                 handleB = GameObject.CreatePrimitive(PrimitiveType.Cube);
                 handleB.name = "Truss_Handle_B_" + trussObj.name;
-                handleB.transform.localScale = Vector3.one * 0.55f;
+                handleB.transform.localScale = Vector3.one * 0.65f;
+                handleB.layer = 0;
+                BoxCollider bc = handleB.GetComponent<BoxCollider>();
+                if (bc != null) { bc.isTrigger = false; bc.size = Vector3.one * 1.1f; }
                 handleB.GetComponent<Renderer>().sharedMaterial = GizmoMaterialCache.CreateSolidMaterial(new Color(1f, 0.55f, 0.1f));
                 _handleMarkersB[trussObj] = handleB;
             }
@@ -428,6 +439,33 @@ namespace DeadCoreEditor
             handleB.SetActive(true);
             handleA.transform.position = worldA;
             handleB.transform.position = worldB;
+        }
+
+        public static void UpdateAllTrussHandles()
+        {
+            foreach (var kvp in PlacedTrusses)
+            {
+                GameObject truss = kvp.Key;
+                if (truss == null || !truss.activeInHierarchy)
+                {
+                    HideTrussVisualHandles(truss);
+                    continue;
+                }
+                UpdateTrussVisualHandles(truss);
+            }
+        }
+
+        public static void HideTrussVisualHandles(GameObject trussObj)
+        {
+            if (trussObj == null) return;
+            if (_handleMarkersA.TryGetValue(trussObj, out var a) && a != null) a.SetActive(false);
+            if (_handleMarkersB.TryGetValue(trussObj, out var b) && b != null) b.SetActive(false);
+        }
+
+        public static void HideAllTrussHandles()
+        {
+            foreach (var kvp in _handleMarkersA) if (kvp.Value != null) kvp.Value.SetActive(false);
+            foreach (var kvp in _handleMarkersB) if (kvp.Value != null) kvp.Value.SetActive(false);
         }
 
         public static void DestroyTrussHandles(GameObject trussObj)

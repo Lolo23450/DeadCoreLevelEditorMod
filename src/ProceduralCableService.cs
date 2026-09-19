@@ -129,7 +129,6 @@ namespace DeadCoreEditor
                 BuildMountSocket(end, (start - end).normalized, collarRadius, allVertices, allNormals, allUVs, bodyTris);
             }
 
-            // Convert to managed arrays to avoid Il2CppSystem.Collections.Generic.List conversion mismatch
             mesh.vertices = allVertices.ToArray();
             mesh.normals = allNormals.ToArray();
             mesh.uv = allUVs.ToArray();
@@ -347,12 +346,10 @@ namespace DeadCoreEditor
                 float a = (i / (float)RadialSides) * Mathf.PI * 2f;
                 Vector3 offset = (rVec * Mathf.Cos(a) + uVec * Mathf.Sin(a)) * collarRadius;
 
-                // Front ring
                 verts.Add(origin + offset);
                 norms.Add(offset.normalized);
                 uvs.Add(new Vector2(i / (float)RadialSides, 1f));
 
-                // Back ring
                 verts.Add(backCenter + offset);
                 norms.Add(offset.normalized);
                 uvs.Add(new Vector2(i / (float)RadialSides, 0f));
@@ -446,6 +443,7 @@ namespace DeadCoreEditor
 
             ApplyCableConfig(cableObj, cfg);
             EditorSessionManager.RegisterPlacedObject(cableObj);
+            UpdateCableVisualHandles(cableObj);
             return cableObj;
         }
 
@@ -486,15 +484,15 @@ namespace DeadCoreEditor
                 mr.materials = new Material[] { _cachedJacketMaterial };
             }
 
-            // Collider for editor raycasting & selection
+            // Expanded trigger collider to ensure effortless 3D selection even from afar
             BoxCollider bc = cableObj.GetComponent<BoxCollider>() ?? cableObj.AddComponent<BoxCollider>();
             bc.isTrigger = true;
             bc.center = (cfg.LocalPointA + cfg.LocalPointB) * 0.5f + Vector3.down * (cfg.SagAmount * 0.5f);
             Vector3 span = cfg.LocalPointB - cfg.LocalPointA;
             bc.size = new Vector3(
-                Mathf.Max(0.5f, Mathf.Abs(span.x)),
-                Mathf.Max(0.8f, Mathf.Abs(cfg.SagAmount) + cfg.Radius * 4f),
-                Mathf.Max(0.5f, Mathf.Abs(span.z))
+                Mathf.Max(0.8f, Mathf.Abs(span.x)),
+                Mathf.Max(1.0f, Mathf.Abs(cfg.SagAmount) + cfg.Radius * 4f),
+                Mathf.Max(0.8f, Mathf.Abs(span.z))
             );
         }
 
@@ -523,7 +521,11 @@ namespace DeadCoreEditor
 
         public static void UpdateCableVisualHandles(GameObject cableObj)
         {
-            if (cableObj == null || !PlacedCables.TryGetValue(cableObj, out CableConfig cfg)) return;
+            if (cableObj == null || !cableObj.activeInHierarchy || !PlacedCables.TryGetValue(cableObj, out CableConfig cfg))
+            {
+                HideCableVisualHandles(cableObj);
+                return;
+            }
 
             Vector3 worldA = cableObj.transform.TransformPoint(cfg.LocalPointA);
             Vector3 worldB = cableObj.transform.TransformPoint(cfg.LocalPointB);
@@ -532,7 +534,10 @@ namespace DeadCoreEditor
             {
                 handleA = GameObject.CreatePrimitive(PrimitiveType.Sphere);
                 handleA.name = "Cable_Handle_A_" + cableObj.name;
-                handleA.transform.localScale = Vector3.one * 0.45f;
+                handleA.transform.localScale = Vector3.one * 0.55f;
+                handleA.layer = 0;
+                SphereCollider sc = handleA.GetComponent<SphereCollider>();
+                if (sc != null) { sc.isTrigger = false; sc.radius = 0.55f; }
                 handleA.GetComponent<Renderer>().sharedMaterial = GizmoMaterialCache.CreateSolidMaterial(new Color(0.2f, 1f, 0.4f));
                 _handleMarkersA[cableObj] = handleA;
             }
@@ -541,7 +546,10 @@ namespace DeadCoreEditor
             {
                 handleB = GameObject.CreatePrimitive(PrimitiveType.Sphere);
                 handleB.name = "Cable_Handle_B_" + cableObj.name;
-                handleB.transform.localScale = Vector3.one * 0.45f;
+                handleB.transform.localScale = Vector3.one * 0.55f;
+                handleB.layer = 0;
+                SphereCollider sc = handleB.GetComponent<SphereCollider>();
+                if (sc != null) { sc.isTrigger = false; sc.radius = 0.55f; }
                 handleB.GetComponent<Renderer>().sharedMaterial = GizmoMaterialCache.CreateSolidMaterial(new Color(1f, 0.5f, 0.1f));
                 _handleMarkersB[cableObj] = handleB;
             }
@@ -552,11 +560,31 @@ namespace DeadCoreEditor
             handleB.transform.position = worldB;
         }
 
+        public static void UpdateAllCableHandles()
+        {
+            foreach (var kvp in PlacedCables)
+            {
+                GameObject cable = kvp.Key;
+                if (cable == null || !cable.activeInHierarchy)
+                {
+                    HideCableVisualHandles(cable);
+                    continue;
+                }
+                UpdateCableVisualHandles(cable);
+            }
+        }
+
         public static void HideCableVisualHandles(GameObject cableObj)
         {
             if (cableObj == null) return;
             if (_handleMarkersA.TryGetValue(cableObj, out var a) && a != null) a.SetActive(false);
             if (_handleMarkersB.TryGetValue(cableObj, out var b) && b != null) b.SetActive(false);
+        }
+
+        public static void HideAllCableHandles()
+        {
+            foreach (var kvp in _handleMarkersA) if (kvp.Value != null) kvp.Value.SetActive(false);
+            foreach (var kvp in _handleMarkersB) if (kvp.Value != null) kvp.Value.SetActive(false);
         }
 
         public static void DestroyCableHandles(GameObject cableObj)
@@ -578,10 +606,7 @@ namespace DeadCoreEditor
 
         public static void AddAllCableHandles()
         {
-            foreach (var kvp in PlacedCables)
-            {
-                UpdateCableVisualHandles(kvp.Key);
-            }
+            UpdateAllCableHandles();
         }
 
         public static void OnHandleDragged(GameObject cableObj, bool isPointB, Vector3 newWorldPos)

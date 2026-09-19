@@ -705,7 +705,16 @@ namespace DeadCoreEditor
                 GameObject target = toDelete[i];
                 if (target == null) continue;
 
-                if (IsWaypointMarker(target, out GameObject owner, out _))
+                // Resolve handles to parent entities
+                if (ProceduralCableService.IsCableHandle(target, out GameObject cOwner, out _))
+                {
+                    target = cOwner;
+                }
+                else if (StructuralTrussService.IsTrussHandle(target, out GameObject tOwner, out _))
+                {
+                    target = tOwner;
+                }
+                else if (IsWaypointMarker(target, out GameObject owner, out _))
                 {
                     if (owner != null)
                     {
@@ -743,7 +752,7 @@ namespace DeadCoreEditor
             }
             else
             {
-                SelectObject(null);
+                // Do NOT clear SelectedObjects here so swapping with equipped props works!
                 if (CurrentAsset != null)
                 {
                     IsBlockSelected = true;
@@ -789,6 +798,25 @@ namespace DeadCoreEditor
             StudioUIManager.NotifyObjectSelected(SelectedObject);
         }
 
+        public static void SelectAllPlacedObjects()
+        {
+            SelectedObjects.Clear();
+            for (int i = 0; i < PlacedObjects.Count; i++)
+            {
+                GameObject obj = PlacedObjects[i];
+                if (obj != null && obj.activeSelf && !IsWaypointMarker(obj, out _, out _))
+                {
+                    SelectedObjects.Add(obj);
+                }
+            }
+
+            SelectedObject = SelectedObjects.Count > 0 ? SelectedObjects[SelectedObjects.Count - 1] : null;
+
+            UpdateSelectionHighlight();
+            StudioUIManager.NotifyObjectSelected(SelectedObject);
+            StudioUIManager.RefreshHierarchy();
+            ShowNotification($"Selected all {SelectedObjects.Count} object(s) [Ctrl+A]");
+        }
         public static void EquipAsset(CatalogAsset asset)
         {
             if (asset == null) return;
@@ -953,6 +981,10 @@ namespace DeadCoreEditor
                 Cursor.visible = true;
 
                 SetInteractionMode(EditorInteractionMode.SelectMode);
+
+                // Show all handles upon entering Edit Mode
+                ProceduralCableService.UpdateAllCableHandles();
+                StructuralTrussService.UpdateAllTrussHandles();
             }
             else
             {
@@ -964,9 +996,12 @@ namespace DeadCoreEditor
                 EditorViewportCamera.DestroyCamera();
                 PlacementHologramController.DestroyPreview();
                 StudioGizmoController.DestroyGizmo();
-
                 CleanHighlightPool();
                 HideAllWaypointMarkers();
+
+                // Hide handles when playtesting
+                ProceduralCableService.HideAllCableHandles();
+                StructuralTrussService.HideAllTrussHandles();
 
                 StudioUIManager.SetUIVisible(false);
 
@@ -1240,42 +1275,31 @@ namespace DeadCoreEditor
                 }
             }
 
-            // Check if user clicked a cable handle in the viewport
-            if (SelectedObject != null && ProceduralCableService.IsCableHandle(SelectedObject, out GameObject cableOwner, out bool isPointB))
+            // Update procedural handles only when in Edit Mode
+            if (IsEditModeActive)
             {
-                ProceduralCableService.OnHandleDragged(cableOwner, isPointB, SelectedObject.transform.position);
-            }
-            else if (SelectedObject != null && ProceduralCableService.PlacedCables.ContainsKey(SelectedObject))
-            {
-                ProceduralCableService.UpdateCableVisualHandles(SelectedObject);
-            }
+                // If dragging a cable endpoint handle
+                if (SelectedObject != null && ProceduralCableService.IsCableHandle(SelectedObject, out GameObject draggedCable, out bool isCableEndB))
+                {
+                    ProceduralCableService.OnHandleDragged(draggedCable, isCableEndB, SelectedObject.transform.position);
+                }
 
-            // Destroy Handles on playtest, add them back on edit mode
-            if (!IsEditModeActive)
-            {
-                ProceduralCableService.DestroyAllCableHandles();
-            }
-            else
-            {
-                ProceduralCableService.AddAllCableHandles();
+                // If dragging a truss joint handle
+                if (SelectedObject != null && StructuralTrussService.IsTrussHandle(SelectedObject, out GameObject draggedTruss, out bool isTrussEndB))
+                {
+                    StructuralTrussService.OnHandleDragged(draggedTruss, isTrussEndB, SelectedObject.transform.position);
+                }
+
+                // Keep all handles refreshed and visible at the cable/truss ends in Edit Mode
+                ProceduralCableService.UpdateAllCableHandles();
+                StructuralTrussService.UpdateAllTrussHandles();
             }
 
             ProceduralCableService.UpdateEnergyFlowTick(Time.deltaTime);
 
-            // Check if user clicked a truss handle in the viewport
-            if (SelectedObject != null && StructuralTrussService.IsTrussHandle(SelectedObject, out GameObject trussOwner, out bool isTrussB))
-            {
-                StructuralTrussService.OnHandleDragged(trussOwner, isTrussB, SelectedObject.transform.position);
-            }
-            else if (SelectedObject != null && StructuralTrussService.PlacedTrusses.ContainsKey(SelectedObject))
-            {
-                StructuralTrussService.UpdateTrussVisualHandles(SelectedObject);
-            }
-
             if (Input.GetKeyDown(KeyCode.F1)) ToggleEditMode();
             if (Input.GetKeyDown(KeyCode.F4)) SceneHarvestingService.DebugDumpSceneLighting();
             if (Input.GetKeyDown(KeyCode.F5)) LevelPersistenceService.SaveLevel(MapBrowserService.SelectedMapName);
-            //if (Input.GetKeyDown(KeyCode.F6)) LevelPersistenceService.LoadLevel(MapBrowserService.SelectedMapName);
         }
 
         // =========================================================================
@@ -1333,6 +1357,17 @@ namespace DeadCoreEditor
                     if (customRotation.HasValue) cable.transform.rotation = customRotation.Value;
                     cable.transform.localScale = scale;
                     return cable;
+                }
+                if (clean.Contains("truss") || clean.Contains("girder"))
+                {
+                    GameObject truss = StructuralTrussService.CreateProceduralTruss(
+                        position,
+                        new Vector3(-4f, 0f, 0f),
+                        new Vector3(4f, 0f, 0f)
+                    );
+                    if (customRotation.HasValue) truss.transform.rotation = customRotation.Value;
+                    truss.transform.localScale = scale;
+                    return truss;
                 }
             }
 
@@ -1744,6 +1779,7 @@ namespace DeadCoreEditor
             PlacedNeonConfigs.Remove(target);
 
             ProceduralCableService.PlacedCables.Remove(target);
+            ProceduralCableService.DestroyCableHandles(target);
             StructuralTrussService.PlacedTrusses.Remove(target);
             StructuralTrussService.DestroyTrussHandles(target);
 
@@ -1777,6 +1813,18 @@ namespace DeadCoreEditor
 
         public static void DeleteSpecifiedObject(GameObject target)
         {
+            if (target == null) return;
+
+            // Resolve handles to their actual parent entity
+            if (ProceduralCableService.IsCableHandle(target, out GameObject resolvedCable, out _))
+            {
+                target = resolvedCable;
+            }
+            else if (StructuralTrussService.IsTrussHandle(target, out GameObject resolvedTruss, out _))
+            {
+                target = resolvedTruss;
+            }
+
             if (target != null)
             {
                 EditorEntityData dataSnapshot = ExtractEntityData(target);
@@ -1829,6 +1877,7 @@ namespace DeadCoreEditor
             PlacedNeonConfigs.Clear();
 
             ProceduralCableService.DestroyAllCableHandles();
+            ProceduralCableService.PlacedCables.Clear();
             StructuralTrussService.DestroyAllTrussHandles();
             StructuralTrussService.PlacedTrusses.Clear();
 

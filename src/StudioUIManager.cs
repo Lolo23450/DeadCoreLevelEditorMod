@@ -59,6 +59,7 @@ namespace DeadCoreEditor
             Keybindings["FocusCamera"] = "F";
             Keybindings["Parent"] = "Ctrl+P";
             Keybindings["Unparent"] = "Alt+P";
+            Keybindings["SelectAll"] = "Ctrl+A";
         }
     }
 
@@ -893,7 +894,9 @@ namespace DeadCoreEditor
                     new DropdownItem("Save Level (F5)", () => LevelPersistenceService.SaveLevel(MapBrowserService.SelectedMapName)),
                     new DropdownItem("Load Level (F6)", () => LevelPersistenceService.LoadLevel(MapBrowserService.SelectedMapName)),
                     new DropdownItem("Capture Snapshot (F4)", () => ThumbnailCaptureService.CaptureLevelThumbnail(MapBrowserService.SelectedMapPath, EditorSessionManager.PlacedObjects, EditorSessionManager.LevelSpawnPosition)),
-                    new DropdownItem("Reset Level", () => EditorSessionManager.ClearAllPlacedObjects(), new Color(0.9f, 0.3f, 0.3f))
+                    new DropdownItem("Reset Level", () => EditorSessionManager.ClearAllPlacedObjects(), new Color(0.9f, 0.3f, 0.3f)),
+                    new DropdownItem("Select All (Ctrl+A)", () => EditorSessionManager.SelectAllPlacedObjects()),
+                    new DropdownItem("Deselect All (Esc)", () => EditorSessionManager.SelectObject(null)),
                 });
             });
 
@@ -2339,12 +2342,43 @@ namespace DeadCoreEditor
             }, new Color(0.2f, 0.65f, 0.95f, 1f));
         }
 
-        private static void SwapSelectedObjectsWithEquipped()
+        public static void SwapSelectedObjectsWithEquipped(CatalogAsset targetAsset = null)
         {
-            if (EditorSessionManager.CurrentAsset == null || EditorSessionManager.SelectedObjects == null || EditorSessionManager.SelectedObjects.Count == 0) return;
+            CatalogAsset newAsset = targetAsset ?? EditorSessionManager.CurrentAsset;
+            if (newAsset == null)
+            {
+                EditorSessionManager.ShowNotification("Equip or choose a prop in the Asset Browser first.");
+                return;
+            }
 
-            CatalogAsset newAsset = EditorSessionManager.CurrentAsset;
-            List<GameObject> toSwap = new List<GameObject>(EditorSessionManager.SelectedObjects);
+            List<GameObject> toSwap = new List<GameObject>();
+            if (EditorSessionManager.SelectedObjects != null && EditorSessionManager.SelectedObjects.Count > 0)
+            {
+                for (int i = 0; i < EditorSessionManager.SelectedObjects.Count; i++)
+                {
+                    GameObject o = EditorSessionManager.SelectedObjects[i];
+                    if (o != null && !toSwap.Contains(o))
+                    {
+                        if (ProceduralCableService.IsCableHandle(o, out GameObject cOwner, out _)) o = cOwner;
+                        else if (StructuralTrussService.IsTrussHandle(o, out GameObject tOwner, out _)) o = tOwner;
+                        if (o != null && !toSwap.Contains(o)) toSwap.Add(o);
+                    }
+                }
+            }
+            else if (EditorSessionManager.SelectedObject != null)
+            {
+                GameObject o = EditorSessionManager.SelectedObject;
+                if (ProceduralCableService.IsCableHandle(o, out GameObject cOwner, out _)) o = cOwner;
+                else if (StructuralTrussService.IsTrussHandle(o, out GameObject tOwner, out _)) o = tOwner;
+                if (o != null) toSwap.Add(o);
+            }
+
+            if (toSwap.Count == 0)
+            {
+                EditorSessionManager.ShowNotification("Select object(s) in scene or hierarchy to swap.");
+                return;
+            }
+
             EditorSessionManager.SelectedObjects.Clear();
 
             for (int i = 0; i < toSwap.Count; i++)
@@ -2360,18 +2394,69 @@ namespace DeadCoreEditor
                 GameObject swapped = EditorSessionManager.SpawnCatalogObject(newAsset, pos, scale, rot);
                 if (swapped != null)
                 {
-                    swapped.transform.SetParent(parent, true);
+                    // Reparent any children to the swapped object so they aren't lost
+                    List<Transform> childrenToMove = new List<Transform>();
+                    for (int c = 0; c < old.transform.childCount; c++)
+                    {
+                        Transform child = old.transform.GetChild(c);
+                        if (child != null && child.name != "Editor_Snapping_Proxy")
+                            childrenToMove.Add(child);
+                    }
+                    for (int c = 0; c < childrenToMove.Count; c++)
+                    {
+                        childrenToMove[c].SetParent(swapped.transform, true);
+                    }
+
+                    if (parent != null)
+                    {
+                        swapped.transform.SetParent(parent, true);
+                        EditorSessionManager.RecalculateParentChildCount(parent.gameObject);
+                    }
+                    EditorSessionManager.RecalculateParentChildCount(swapped);
+
+                    // Preserve motion path if old object had one
+                    if (EditorSessionManager.MotionPaths.TryGetValue(old, out var oldPath))
+                    {
+                        var newPath = oldPath.Clone();
+                        newPath.PointA = swapped.transform.position;
+                        EditorSessionManager.MotionPaths[swapped] = newPath;
+                        var rb = swapped.GetComponent<Rigidbody>() ?? swapped.AddComponent<Rigidbody>();
+                        rb.isKinematic = true;
+                        rb.useGravity = false;
+                        EditorSessionManager.UpdateWaypointVisuals(swapped, newPath);
+                    }
+
+                    // Preserve neon accent if old object had one
+                    if (EditorSessionManager.PlacedNeonConfigs.TryGetValue(old, out var oldNeon))
+                    {
+                        EditorSessionManager.ApplyNeonConfig(swapped, oldNeon.Clone());
+                    }
+
                     EditorSessionManager.RegisterPlacedObject(swapped);
                     EditorSessionManager.SelectedObjects.Add(swapped);
+
+                    EditorSessionManager.UndoHistory.Push(new HistoryRecord
+                    {
+                        ActionType = HistoryActionType.Placement,
+                        TargetObject = swapped,
+                        Asset = newAsset,
+                        AssetName = newAsset.DisplayName,
+                        Position = pos,
+                        Rotation = rot,
+                        ScaleVector = scale,
+                        EntityDataSnapshot = EditorSessionManager.ExtractEntityData(swapped)
+                    });
                 }
 
                 EditorSessionManager.DeleteSpecifiedObject(old);
             }
 
             EditorSessionManager.SelectedObject = EditorSessionManager.SelectedObjects.Count > 0 ? EditorSessionManager.SelectedObjects[0] : null;
+            EditorSessionManager.CapturePlaytestSnapshots();
             RefreshHierarchy();
             NotifyObjectSelected(EditorSessionManager.SelectedObject);
             EditorSessionManager.UpdateSelectionHighlight();
+            EditorSessionManager.ShowNotification($"Swapped {toSwap.Count} object(s) with '{newAsset.DisplayName}'");
         }
 
         // =========================================================================
@@ -5508,8 +5593,10 @@ namespace DeadCoreEditor
             // Configurable Keyboard Shortcuts Routing
             if (GUIUtility.keyboardControl == 0)
             {
+                if (EditorConfigService.IsShortcutTriggered("SelectAll") || (Input.GetKey(KeyCode.LeftControl) && Input.GetKeyDown(KeyCode.A)))
+                    EditorSessionManager.SelectAllPlacedObjects();
                 if (EditorConfigService.IsCustomShortcutTriggered("TogglePlaytest", "F1"))
-                    EditorSessionManager.ToggleEditMode();
+                EditorSessionManager.ToggleEditMode();
 
                 if (EditorSessionManager.IsEditModeActive)
                 {
