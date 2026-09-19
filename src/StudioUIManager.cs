@@ -66,7 +66,6 @@ namespace DeadCoreEditor
     {
         public static EditorConfigData Config = new EditorConfigData();
         public static string ConfigPath => Path.Combine(Directory.GetCurrentDirectory(), "UserData", "EditorConfig.json");
-
         public static void LoadConfig()
         {
             try
@@ -635,7 +634,14 @@ namespace DeadCoreEditor
         private static readonly Dictionary<string, TMP_Text> _shortcutDisplayLabels = new Dictionary<string, TMP_Text>();
 
         private static bool _suppressInspectorCallbacks = false;
-
+        private static List<GameObject> GetSelectionTargets(GameObject primary)
+        {
+            if (EditorSessionManager.SelectedObjects != null && EditorSessionManager.SelectedObjects.Count > 1)
+            {
+                return EditorSessionManager.SelectedObjects;
+            }
+            return (primary != null) ? new List<GameObject> { primary } : new List<GameObject>();
+        }
         public static void UpdateUI()
         {
             UpdateRebindingTick();
@@ -900,7 +906,17 @@ namespace DeadCoreEditor
                     new DropdownItem("Uniform Scaler Tool...", () => _uniformScalerWin?.Show()),
                     new DropdownItem("Distribute Spacing Tool...", () => _distributeSpacingWin?.Show()),
                     new DropdownItem("Batch Renamer & Indexer...", () => _batchRenamerWin?.Show()),
-                    new DropdownItem("Replace with Equipped Prop", () => SwapSelectedObjectsWithEquipped())
+                    new DropdownItem("Replace with Equipped Prop", () => SwapSelectedObjectsWithEquipped()),
+                    new DropdownItem("+ Procedural Wire / Cable", () =>
+                    {
+                        Vector3 camPos = EditorViewportCamera.ViewportCamera != null 
+                            ? EditorViewportCamera.ViewportCamera.transform.position + EditorViewportCamera.ViewportCamera.transform.forward * 8f 
+                            : EditorSessionManager.LevelSpawnPosition;
+        
+                        GameObject cable = ProceduralCableService.CreateProceduralCable(camPos, new Vector3(-4f, 1f, 0f), new Vector3(4f, -0.5f, 0f));
+                        EditorSessionManager.SelectObject(cable);
+                        RefreshHierarchy();
+                    }),
                 });
             });
 
@@ -2443,7 +2459,7 @@ namespace DeadCoreEditor
             EditorEntityData data = EditorSessionManager.ExtractEntityData(obj);
             EditorSessionManager.PlacedObjectTypes.TryGetValue(obj, out PlacedObjectType type);
 
-            // 1. Jumper Card
+            // 1. JUMPER CARD
             if (data.Has<JumperConfig>() || type == PlacedObjectType.Jumper)
             {
                 var card = CreateModularSection(_inspectorContent, "Jumper", "Jumper Launch Pad");
@@ -2451,17 +2467,21 @@ namespace DeadCoreEditor
                 AddSliderRow(card.transform, "Launch Force", 5f, 85f, jc.Force, "{0:F1}", (v) =>
                 {
                     jc.Force = v;
-                    EditorSessionManager.ApplyJumperForce(obj, v);
+                    var targets = GetSelectionTargets(obj);
+                    for (int t = 0; t < targets.Count; t++)
+                        EditorSessionManager.ApplyJumperForce(targets[t], v);
                 });
                 AddToggleRow(card.transform, "Active Pad", jc.IsActive, (state) =>
                 {
                     jc.IsActive = state;
-                    EditorSessionManager.ApplyJumperActive(obj, state);
+                    var targets = GetSelectionTargets(obj);
+                    for (int t = 0; t < targets.Count; t++)
+                        EditorSessionManager.ApplyJumperActive(targets[t], state);
                 });
                 _activeInspectorCards.Add(card);
             }
 
-            // 2. Turbine Card
+            // 2. TURBINE CARD
             if (data.Has<TurbineConfig>() || type == PlacedObjectType.Turbine)
             {
                 var card = CreateModularSection(_inspectorContent, "Turbine", "Helix Turbine Fan");
@@ -2469,12 +2489,14 @@ namespace DeadCoreEditor
                 AddSliderRow(card.transform, "Wind Speed", 5f, 100f, tc.Speed, "{0:F1}", (v) =>
                 {
                     tc.Speed = v;
-                    EditorSessionManager.ApplyTurbineSpeed(obj, v);
+                    var targets = GetSelectionTargets(obj);
+                    for (int t = 0; t < targets.Count; t++)
+                        EditorSessionManager.ApplyTurbineSpeed(targets[t], v);
                 });
                 _activeInspectorCards.Add(card);
             }
 
-            // 3. Turret Card
+            // 3. TURRET CARD
             if (data.Has<TurretConfig>() || type == PlacedObjectType.Turret)
             {
                 var card = CreateModularSection(_inspectorContent, "Turret", "Defense Turret");
@@ -2482,17 +2504,21 @@ namespace DeadCoreEditor
                 AddSliderRow(card.transform, "Fire Delay", 0.1f, 5.0f, tc.FireDelay, "{0:F2}s", (v) =>
                 {
                     tc.FireDelay = v;
-                    EditorSessionManager.ApplyTurretSettings(obj, v, tc.FirePower);
+                    var targets = GetSelectionTargets(obj);
+                    for (int t = 0; t < targets.Count; t++)
+                        EditorSessionManager.ApplyTurretSettings(targets[t], v, tc.FirePower);
                 });
                 AddSliderRow(card.transform, "Fire Power", 500f, 3000f, tc.FirePower, "{0:F0}", (v) =>
                 {
                     tc.FirePower = v;
-                    EditorSessionManager.ApplyTurretSettings(obj, tc.FireDelay, v);
+                    var targets = GetSelectionTargets(obj);
+                    for (int t = 0; t < targets.Count; t++)
+                        EditorSessionManager.ApplyTurretSettings(targets[t], tc.FireDelay, v);
                 });
                 _activeInspectorCards.Add(card);
             }
 
-            // 4. Laser Card
+            // 4. LASER CARD
             if (data.Has<LaserConfig>() || type == PlacedObjectType.RotatingLaser || type == PlacedObjectType.Laser)
             {
                 var card = CreateModularSection(_inspectorContent, "Laser", "Laser Barrier Hazard");
@@ -2500,12 +2526,14 @@ namespace DeadCoreEditor
                 AddSliderRow(card.transform, "Rotation Spd", 0f, 180f, lc.RotationSpeed, "{0:F0} d/s", (v) =>
                 {
                     lc.RotationSpeed = v;
-                    EditorSessionManager.LaserRotationSpeeds[obj] = v;
+                    var targets = GetSelectionTargets(obj);
+                    for (int t = 0; t < targets.Count; t++)
+                        EditorSessionManager.LaserRotationSpeeds[targets[t]] = v;
                 });
                 _activeInspectorCards.Add(card);
             }
 
-            // 5. Lighting Card
+            // 5. LIGHTING CARD
             if (data.Has<LightConfig>() || EditorSessionManager.PlacedLights.ContainsKey(obj))
             {
                 var card = CreateModularSection(_inspectorContent, "Lighting", "Light & Volumetrics");
@@ -2514,7 +2542,9 @@ namespace DeadCoreEditor
                 AddSliderRow(card.transform, "Intensity", 0.1f, 30f, lc.Intensity, "{0:F1}", (v) =>
                 {
                     lc.Intensity = v;
-                    EditorSessionManager.ApplyLightConfig(obj, lc);
+                    var targets = GetSelectionTargets(obj);
+                    for (int t = 0; t < targets.Count; t++)
+                        EditorSessionManager.ApplyLightConfig(targets[t], lc);
                 });
 
                 if (!lc.IsDirectional)
@@ -2522,26 +2552,32 @@ namespace DeadCoreEditor
                     AddSliderRow(card.transform, "Spot Angle", 10f, 150f, lc.SpotAngle, "{0:F0}°", (v) =>
                     {
                         lc.SpotAngle = v;
-                        EditorSessionManager.ApplyLightConfig(obj, lc);
+                        var targets = GetSelectionTargets(obj);
+                        for (int t = 0; t < targets.Count; t++)
+                            EditorSessionManager.ApplyLightConfig(targets[t], lc);
                     });
                 }
 
                 AddSliderRow(card.transform, "Volumetric", 0f, 10f, lc.VolumetricIntensity, "{0:F1}", (v) =>
                 {
                     lc.VolumetricIntensity = v;
-                    EditorSessionManager.ApplyLightConfig(obj, lc);
+                    var targets = GetSelectionTargets(obj);
+                    for (int t = 0; t < targets.Count; t++)
+                        EditorSessionManager.ApplyLightConfig(targets[t], lc);
                 });
 
                 AddColorControl(card.transform, "Light Color", lc.Color, (newCol) =>
                 {
                     lc.Color = newCol;
-                    EditorSessionManager.ApplyLightConfig(obj, lc);
+                    var targets = GetSelectionTargets(obj);
+                    for (int t = 0; t < targets.Count; t++)
+                        EditorSessionManager.ApplyLightConfig(targets[t], lc);
                 });
 
                 _activeInspectorCards.Add(card);
             }
 
-            // 6. Switch Target Card
+            // 6. SWITCH TARGET CARD
             if (data.Has<SwitchConfig>() || SwitchService.PlacedSwitches.ContainsKey(obj))
             {
                 var card = CreateModularSection(_inspectorContent, "Switch", "Switch Target");
@@ -2550,31 +2586,39 @@ namespace DeadCoreEditor
                 AddSliderRow(card.transform, "Active Time", 0.5f, 30.0f, sc.TimeBeforeSwitch, "{0:F1}s", (v) =>
                 {
                     sc.TimeBeforeSwitch = v;
-                    SwitchService.ApplySwitchConfig(obj, sc);
+                    var targets = GetSelectionTargets(obj);
+                    for (int t = 0; t < targets.Count; t++)
+                        SwitchService.ApplySwitchConfig(targets[t], sc);
                 });
 
                 AddToggleRow(card.transform, "Timed Reset", sc.IsAutoSwitch, (st) =>
                 {
                     sc.IsAutoSwitch = st;
-                    SwitchService.ApplySwitchConfig(obj, sc);
+                    var targets = GetSelectionTargets(obj);
+                    for (int t = 0; t < targets.Count; t++)
+                        SwitchService.ApplySwitchConfig(targets[t], sc);
                 });
 
                 AddToggleRow(card.transform, "Invert Output", sc.InvertChildren, (st) =>
                 {
                     sc.InvertChildren = st;
-                    SwitchService.ApplySwitchConfig(obj, sc);
+                    var targets = GetSelectionTargets(obj);
+                    for (int t = 0; t < targets.Count; t++)
+                        SwitchService.ApplySwitchConfig(targets[t], sc);
                 });
 
                 AddToggleRow(card.transform, "Initial State On", sc.InitialStateOn, (st) =>
                 {
                     sc.InitialStateOn = st;
-                    SwitchService.ApplySwitchConfig(obj, sc);
+                    var targets = GetSelectionTargets(obj);
+                    for (int t = 0; t < targets.Count; t++)
+                        SwitchService.ApplySwitchConfig(targets[t], sc);
                 });
 
                 _activeInspectorCards.Add(card);
             }
 
-            // 7. Skybox Controller Card
+            // 7. SKYBOX CONTROLLER CARD
             bool isSkybox = data.Has<SkyboxConfig>() || type == PlacedObjectType.SkyboxController || (obj.name != null && obj.name.ToLower().Contains("skybox"));
             if (isSkybox)
             {
@@ -2613,7 +2657,7 @@ namespace DeadCoreEditor
                 _activeInspectorCards.Add(card);
             }
 
-            // 8. Gate & Checkpoint Card
+            // 8. GATE & CHECKPOINT CARD
             bool isGate = data.Has<GateConfig>() || type == PlacedObjectType.Checkpoint || type == PlacedObjectType.SpawnGate || type == PlacedObjectType.GoalGate;
             if (isGate)
             {
@@ -2629,7 +2673,7 @@ namespace DeadCoreEditor
                 _activeInspectorCards.Add(card);
             }
 
-            // 9. Motion Path Card
+            // 9. MOTION PATH CARD
             GameObject pathOwner = obj;
             if (EditorSessionManager.IsWaypointMarker(obj, out GameObject resolvedOwner, out _)) pathOwner = resolvedOwner;
 
@@ -2640,43 +2684,76 @@ namespace DeadCoreEditor
                 {
                     CreateTextPrimitive(card.transform, $"Active Path: {mp.TotalDistance:F1}m total travel", Vector2.zero, Vector2.one, Vector2.zero, Vector2.zero, 10f, FontStyles.Normal, Color.cyan, TextAlignmentOptions.MidlineLeft);
 
-                    AddSliderRow(card.transform, "Speed (m/s)", 0.0f, 25f, mp.Speed, "{0:F1} m/s", (v) => { mp.Speed = v; });
-                    AddSliderRow(card.transform, "Spin (deg/s)", -150f, 150f, mp.RotationSpeed, "{0:F0} d/s", (v) => { mp.RotationSpeed = Mathf.Round(v); });
+                    AddSliderRow(card.transform, "Speed (m/s)", 0.0f, 25f, mp.Speed, "{0:F1} m/s", (v) =>
+                    {
+                        mp.Speed = v;
+                        var targets = GetSelectionTargets(obj);
+                        for (int t = 0; t < targets.Count; t++)
+                        {
+                            GameObject po = targets[t];
+                            if (EditorSessionManager.IsWaypointMarker(po, out GameObject ro, out _)) po = ro;
+                            if (EditorSessionManager.MotionPaths.TryGetValue(po, out var pmp)) pmp.Speed = v;
+                        }
+                    });
+
+                    AddSliderRow(card.transform, "Spin (deg/s)", -150f, 150f, mp.RotationSpeed, "{0:F0} d/s", (v) =>
+                    {
+                        mp.RotationSpeed = Mathf.Round(v);
+                        var targets = GetSelectionTargets(obj);
+                        for (int t = 0; t < targets.Count; t++)
+                        {
+                            GameObject po = targets[t];
+                            if (EditorSessionManager.IsWaypointMarker(po, out GameObject ro, out _)) po = ro;
+                            if (EditorSessionManager.MotionPaths.TryGetValue(po, out var pmp)) pmp.RotationSpeed = Mathf.Round(v);
+                        }
+                    });
 
                     CreateButtonPrimitive(card.transform, "Btn_DelPath", "Remove Motion Path", 240f, () =>
                     {
-                        EditorSessionManager.MotionPaths.Remove(pathOwner);
-                        EditorSessionManager.DestroyWaypointVisuals(pathOwner);
-                        RebuildModularInspectorCards(pathOwner);
+                        var targets = GetSelectionTargets(obj);
+                        for (int t = 0; t < targets.Count; t++)
+                        {
+                            GameObject po = targets[t];
+                            if (EditorSessionManager.IsWaypointMarker(po, out GameObject ro, out _)) po = ro;
+                            EditorSessionManager.MotionPaths.Remove(po);
+                            EditorSessionManager.DestroyWaypointVisuals(po);
+                        }
+                        RebuildModularInspectorCards(obj);
                     }, new Color(0.7f, 0.2f, 0.2f, 0.9f));
                 }
                 else
                 {
                     CreateButtonPrimitive(card.transform, "Btn_CreatePath", "[+ Create Motion Path]", 240f, () =>
                     {
-                        Vector3 startPos = pathOwner.transform.position;
-                        Vector3 endPos = startPos + new Vector3(10f, 0f, 0f);
-
-                        ObjectMotionPath newPath = new ObjectMotionPath
+                        var targets = GetSelectionTargets(obj);
+                        for (int t = 0; t < targets.Count; t++)
                         {
-                            PointA = startPos,
-                            PointB = endPos,
-                            Speed = 4.0f,
-                            IsActive = true
-                        };
+                            GameObject po = targets[t];
+                            if (EditorSessionManager.IsWaypointMarker(po, out GameObject ro, out _)) po = ro;
+                            Vector3 startPos = po.transform.position;
+                            Vector3 endPos = startPos + new Vector3(10f, 0f, 0f);
 
-                        EditorSessionManager.MotionPaths[pathOwner] = newPath;
-                        var rb = pathOwner.GetComponent<Rigidbody>() ?? pathOwner.AddComponent<Rigidbody>();
-                        rb.isKinematic = true;
+                            ObjectMotionPath newPath = new ObjectMotionPath
+                            {
+                                PointA = startPos,
+                                PointB = endPos,
+                                Speed = 4.0f,
+                                IsActive = true
+                            };
 
-                        EditorSessionManager.UpdateWaypointVisuals(pathOwner, newPath);
-                        RebuildModularInspectorCards(pathOwner);
+                            EditorSessionManager.MotionPaths[po] = newPath;
+                            var rb = po.GetComponent<Rigidbody>() ?? po.AddComponent<Rigidbody>();
+                            rb.isKinematic = true;
+
+                            EditorSessionManager.UpdateWaypointVisuals(po, newPath);
+                        }
+                        RebuildModularInspectorCards(obj);
                     }, new Color(0.2f, 0.65f, 0.95f, 1f));
                 }
                 _activeInspectorCards.Add(card);
             }
 
-            // 10. Neon & Emissive Accent Card (For architecture, platforms, and decor)
+            // 10. NEON & EMISSIVE ACCENT CARD (Multi-Selection Enabled!)
             Renderer[] rends = obj.GetComponentsInChildren<Renderer>(true);
             bool hasMeshes = rends != null && rends.Length > 0 &&
                              type != PlacedObjectType.Spotlight &&
@@ -2708,7 +2785,12 @@ namespace DeadCoreEditor
                     CreateButtonPrimitive(presetRow.transform, "Btn_Preset_" + pr.name, pr.name, 48f, () =>
                     {
                         nc.Color = pr.col;
-                        EditorSessionManager.ApplyNeonConfig(obj, nc);
+                        var targets = GetSelectionTargets(obj);
+                        for (int t = 0; t < targets.Count; t++)
+                        {
+                            var targetNc = nc.Clone();
+                            EditorSessionManager.ApplyNeonConfig(targets[t], targetNc);
+                        }
                         RebuildModularInspectorCards(obj);
                     }, pr.col * 0.35f);
                 }
@@ -2716,14 +2798,94 @@ namespace DeadCoreEditor
                 AddSliderRow(card.transform, "Glow Power", 0.5f, 8.0f, nc.Intensity, "{0:F1}x", (v) =>
                 {
                     nc.Intensity = v;
-                    EditorSessionManager.ApplyNeonConfig(obj, nc);
+                    var targets = GetSelectionTargets(obj);
+                    for (int t = 0; t < targets.Count; t++)
+                    {
+                        if (EditorSessionManager.PlacedNeonConfigs.TryGetValue(targets[t], out var tnc))
+                        {
+                            tnc.Intensity = v;
+                            EditorSessionManager.ApplyNeonConfig(targets[t], tnc);
+                        }
+                        else
+                        {
+                            var newCfg = nc.Clone();
+                            newCfg.Intensity = v;
+                            EditorSessionManager.ApplyNeonConfig(targets[t], newCfg);
+                        }
+                    }
                 });
 
                 AddColorControl(card.transform, "Accent Tint", nc.Color, (newCol) =>
                 {
                     nc.Color = newCol;
-                    EditorSessionManager.ApplyNeonConfig(obj, nc);
+                    var targets = GetSelectionTargets(obj);
+                    for (int t = 0; t < targets.Count; t++)
+                    {
+                        if (EditorSessionManager.PlacedNeonConfigs.TryGetValue(targets[t], out var tnc))
+                        {
+                            tnc.Color = newCol;
+                            EditorSessionManager.ApplyNeonConfig(targets[t], tnc);
+                        }
+                        else
+                        {
+                            var newCfg = nc.Clone();
+                            newCfg.Color = newCol;
+                            EditorSessionManager.ApplyNeonConfig(targets[t], newCfg);
+                        }
+                    }
                 });
+
+                _activeInspectorCards.Add(card);
+            }
+
+            // 11. PROCEDURAL CABLE & WIRE CARD
+            GameObject cableTarget = obj;
+            if (ProceduralCableService.IsCableHandle(obj, out GameObject cOwner, out _))
+                cableTarget = cOwner;
+
+            if (cableTarget != null && (data.Has<CableConfig>() || ProceduralCableService.PlacedCables.ContainsKey(cableTarget)))
+            {
+                var card = CreateModularSection(_inspectorContent, "Cable", "Procedural Wire & Cable");
+                var cc = data.GetOrCreate<CableConfig>();
+                if (ProceduralCableService.PlacedCables.TryGetValue(cableTarget, out var existingCc))
+                    cc = existingCc;
+
+                AddSliderRow(card.transform, "Thickness (m)", 0.02f, 0.8f, cc.Radius, "{0:F3}m", (v) =>
+                {
+                    cc.Radius = v;
+                    ProceduralCableService.ApplyCableConfig(cableTarget, cc);
+                });
+
+                AddSliderRow(card.transform, "Gravity Sag (m)", -5.0f, 15.0f, cc.SagAmount, "{0:F2}m", (v) =>
+                {
+                    cc.SagAmount = v;
+                    ProceduralCableService.ApplyCableConfig(cableTarget, cc);
+                });
+
+                // Style Toggle
+                GameObject styleRow = CreateRowContainerPrimitive(card.transform, "Row_CableStyle", 24f);
+                SetupRowHorizontalLayoutPrimitive(styleRow, 4f);
+                CreateButtonPrimitive(styleRow.transform, "Btn_ToggleStyle", $"Style: [{cc.Style}]", 240f, () =>
+                {
+                    cc.Style = (CableStyle)(((int)cc.Style + 1) % 3);
+                    ProceduralCableService.ApplyCableConfig(cableTarget, cc);
+                    RebuildModularInspectorCards(cableTarget);
+                }, new Color(0.18f, 0.25f, 0.35f));
+
+                if (cc.Style != CableStyle.IndustrialSolid)
+                {
+                    AddSliderRow(card.transform, "Neon Glow Power", 0.5f, 10.0f, cc.GlowIntensity, "{0:F1}x", (v) =>
+                    {
+                        cc.GlowIntensity = v;
+                        ProceduralCableService.ApplyCableConfig(cableTarget, cc);
+                    });
+
+                    AddColorControl(card.transform, "Strip Color", cc.NeonColor, (newCol) =>
+                    {
+                        cc.NeonColor = newCol;
+                        ProceduralCableService.ApplyCableConfig(cableTarget, cc);
+                    });
+                }
 
                 _activeInspectorCards.Add(card);
             }
@@ -2760,24 +2922,56 @@ namespace DeadCoreEditor
         {
             if (_suppressInspectorCallbacks || EditorSessionManager.SelectedObject == null) return;
 
-            GameObject obj = EditorSessionManager.SelectedObject;
-            float x = PersistenceUtility.ParseFloat(_posXInput?.text, obj.transform.position.x);
-            float y = PersistenceUtility.ParseFloat(_posYInput?.text, obj.transform.position.y);
-            float z = PersistenceUtility.ParseFloat(_posZInput?.text, obj.transform.position.z);
+            GameObject primary = EditorSessionManager.SelectedObject;
+            float x = PersistenceUtility.ParseFloat(_posXInput?.text, primary.transform.position.x);
+            float y = PersistenceUtility.ParseFloat(_posYInput?.text, primary.transform.position.y);
+            float z = PersistenceUtility.ParseFloat(_posZInput?.text, primary.transform.position.z);
 
-            float rx = PersistenceUtility.ParseFloat(_rotXInput?.text, obj.transform.eulerAngles.x);
-            float ry = PersistenceUtility.ParseFloat(_rotYInput?.text, obj.transform.eulerAngles.y);
-            float rz = PersistenceUtility.ParseFloat(_rotZInput?.text, obj.transform.eulerAngles.z);
+            float rx = PersistenceUtility.ParseFloat(_rotXInput?.text, primary.transform.eulerAngles.x);
+            float ry = PersistenceUtility.ParseFloat(_rotYInput?.text, primary.transform.eulerAngles.y);
+            float rz = PersistenceUtility.ParseFloat(_rotZInput?.text, primary.transform.eulerAngles.z);
 
-            float sx = PersistenceUtility.ParseFloat(_scaleXInput?.text, obj.transform.localScale.x);
-            float sy = PersistenceUtility.ParseFloat(_scaleYInput?.text, obj.transform.localScale.y);
-            float sz = PersistenceUtility.ParseFloat(_scaleZInput?.text, obj.transform.localScale.z);
+            float sx = PersistenceUtility.ParseFloat(_scaleXInput?.text, primary.transform.localScale.x);
+            float sy = PersistenceUtility.ParseFloat(_scaleYInput?.text, primary.transform.localScale.y);
+            float sz = PersistenceUtility.ParseFloat(_scaleZInput?.text, primary.transform.localScale.z);
 
-            obj.transform.position = new Vector3(x, y, z);
-            obj.transform.rotation = Quaternion.Euler(rx, ry, rz);
-            obj.transform.localScale = new Vector3(Mathf.Max(0.01f, sx), Mathf.Max(0.01f, sy), Mathf.Max(0.01f, sz));
+            Vector3 newPos = new Vector3(x, y, z);
+            Quaternion newRot = Quaternion.Euler(rx, ry, rz);
+            Vector3 newScale = new Vector3(Mathf.Max(0.01f, sx), Mathf.Max(0.01f, sy), Mathf.Max(0.01f, sz));
 
-            StudioGizmoController.InvalidateCachedCenter(obj);
+            Vector3 posDelta = newPos - primary.transform.position;
+            Quaternion rotDelta = newRot * Quaternion.Inverse(primary.transform.rotation);
+            Vector3 scaleDelta = new Vector3(
+                Mathf.Abs(primary.transform.localScale.x) > 0.001f ? newScale.x / primary.transform.localScale.x : 1f,
+                Mathf.Abs(primary.transform.localScale.y) > 0.001f ? newScale.y / primary.transform.localScale.y : 1f,
+                Mathf.Abs(primary.transform.localScale.z) > 0.001f ? newScale.z / primary.transform.localScale.z : 1f
+            );
+
+            var targets = GetSelectionTargets(primary);
+            bool isMulti = targets.Count > 1;
+
+            for (int t = 0; t < targets.Count; t++)
+            {
+                GameObject target = targets[t];
+                if (target == null) continue;
+
+                if (target == primary || !isMulti)
+                {
+                    target.transform.position = newPos;
+                    target.transform.rotation = newRot;
+                    target.transform.localScale = newScale;
+                }
+                else
+                {
+                    // Delta transform maintains relative group alignment in multi-selection
+                    target.transform.position += posDelta;
+                    target.transform.rotation = rotDelta * target.transform.rotation;
+                    target.transform.localScale = Vector3.Scale(target.transform.localScale, scaleDelta);
+                }
+
+                StudioGizmoController.InvalidateCachedCenter(target);
+            }
+
             EditorSessionManager.UpdateSelectionHighlight();
         }
 

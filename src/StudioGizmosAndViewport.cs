@@ -421,6 +421,8 @@ namespace DeadCoreEditor
         public static Vector3 TargetPosition => _targetPosition;
         private static Vector3 _currentStableNormal = Vector3.up;
 
+        // Tracks the height of the last solid surface you actually pointed at
+        private static float _lastSurfaceHitY = -95f;
         public static void SpawnHologram(CatalogAsset asset)
         {
             DestroyPreview();
@@ -608,18 +610,29 @@ namespace DeadCoreEditor
                 rawTargetPos = closestHit.point;
                 hitNormal = closestHit.normal;
                 hitCollider = closestHit.collider;
+
+                // Cache the solid ground height whenever an actual surface is targeted
+                _lastSurfaceHitY = closestHit.point.y;
             }
             else
             {
-                Plane fallbackPlane = new Plane(Vector3.up, _targetPosition);
-                if (fallbackPlane.Raycast(ray, out float enter))
+                // =========================================================================
+                // STABLE VOID PLACEMENT (No back-and-forth strobing)
+                // =========================================================================
+                Plane groundPlane = new Plane(Vector3.up, new Vector3(0f, _lastSurfaceHitY, 0f));
+
+                // If looking slightly downward toward the last floor level within reasonable range:
+                if (groundPlane.Raycast(ray, out float enter) && enter > 1f && enter < 50f)
                 {
-                    rawTargetPos = ray.GetPoint(Mathf.Min(enter, 35f));
+                    rawTargetPos = ray.GetPoint(enter);
                 }
                 else
                 {
-                    rawTargetPos = ray.origin + ray.direction * 14f;
+                    // Looking up or into infinite void: smoothly float at a steady 16m distance
+                    rawTargetPos = ray.origin + ray.direction * 16.0f;
                 }
+
+                hitNormal = Vector3.up;
             }
 
             GameObject hitPlacedObj = null;

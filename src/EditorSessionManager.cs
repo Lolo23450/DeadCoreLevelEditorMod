@@ -1,12 +1,12 @@
-﻿using System;
-using System.Collections.Generic;
+﻿using Il2Cpp;
 using MelonLoader;
+using System;
+using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.Rendering;
-using SceneManager = UnityEngine.SceneManagement.SceneManager;
-using Il2Cpp;
-
+using static UnityEngine.GraphicsBuffer;
 using File = System.IO.File;
+using SceneManager = UnityEngine.SceneManagement.SceneManager;
 
 namespace DeadCoreEditor
 {
@@ -203,6 +203,11 @@ namespace DeadCoreEditor
                 data.Set(neonCfg.Clone());
             }
 
+            if (ProceduralCableService.PlacedCables.TryGetValue(obj, out var cableCfg))
+            {
+                data.Set(cableCfg.Clone());
+            }
+
             if (PlacedObjectTypes.TryGetValue(obj, out var pType))
             {
                 if (pType == PlacedObjectType.SpawnGate || pType == PlacedObjectType.GoalGate || pType == PlacedObjectType.Checkpoint)
@@ -255,6 +260,11 @@ namespace DeadCoreEditor
             if (data.TryGetComponent<NeonConfig>(out var nc))
             {
                 ApplyNeonConfig(obj, nc.Clone());
+            }
+
+            if (data.TryGetComponent<CableConfig>(out var cblCfg))
+            {
+                ProceduralCableService.ApplyCableConfig(obj, cblCfg.Clone());
             }
 
             if (data.TryGetComponent<ObjectMotionPath>(out var mp) && mp.IsActive && (mp.TotalDistance > 0.05f || Mathf.Abs(mp.RotationSpeed) > 0.01f))
@@ -1217,6 +1227,16 @@ namespace DeadCoreEditor
                 }
             }
 
+            // Check if user clicked a cable handle in the viewport
+            if (SelectedObject != null && ProceduralCableService.IsCableHandle(SelectedObject, out GameObject cableOwner, out bool isPointB))
+            {
+                ProceduralCableService.OnHandleDragged(cableOwner, isPointB, SelectedObject.transform.position);
+            }
+            else if (SelectedObject != null && ProceduralCableService.PlacedCables.ContainsKey(SelectedObject))
+            {
+                ProceduralCableService.UpdateCableVisualHandles(SelectedObject);
+            }
+
             if (Input.GetKeyDown(KeyCode.F1)) ToggleEditMode();
             if (Input.GetKeyDown(KeyCode.F4)) SceneHarvestingService.DebugDumpSceneLighting();
             if (Input.GetKeyDown(KeyCode.F5)) LevelPersistenceService.SaveLevel(MapBrowserService.SelectedMapName);
@@ -1267,6 +1287,18 @@ namespace DeadCoreEditor
                 else if (clean.Contains("skybox") || clean.Contains("sky")) found = AllAssets.Find(a => a.IsSkybox);
                 else if (clean.Contains("helix")) found = AllAssets.Find(a => a.IsHelix);
                 else if (clean.Contains("switch")) found = AllAssets.Find(a => a.IsSwitch);
+                // Intercept procedural cables and wires directly
+                if (clean.Contains("cable") || clean.Contains("wire"))
+                {
+                    GameObject cable = ProceduralCableService.CreateProceduralCable(
+                        position,
+                        new Vector3(-3f, 0f, 0f),
+                        new Vector3(3f, 0f, 0f)
+                    );
+                    if (customRotation.HasValue) cable.transform.rotation = customRotation.Value;
+                    cable.transform.localScale = scale;
+                    return cable;
+                }
             }
 
             if (found == null)
@@ -1675,6 +1707,7 @@ namespace DeadCoreEditor
             MotionPaths.Remove(target);
             DestroyWaypointVisuals(target);
             PlacedNeonConfigs.Remove(target);
+            ProceduralCableService.PlacedCables.Remove(target);
 
             if (PathEditTarget == target) PathEditTarget = null;
             if (ParentingChildTarget == target) ParentingChildTarget = null;
@@ -1753,6 +1786,7 @@ namespace DeadCoreEditor
             PlacedCheckpoints.Clear();
             PlacedGoalGate = null;
             PlacedNeonConfigs.Clear();
+            ProceduralCableService.DestroyAllCableHandles();
             ActiveCustomCheckpoint = null;
 
             JumperForces.Clear();
@@ -2095,24 +2129,6 @@ namespace DeadCoreEditor
                 Renderer rend = rends[r];
                 if (rend == null || rend.gameObject.name == "Editor_Snapping_Proxy") continue;
 
-                // 1. DYNAMIC PROPERTY BLOCK (For GPU Instanced shaders)
-                MaterialPropertyBlock mpb = new MaterialPropertyBlock();
-                rend.GetPropertyBlock(mpb);
-
-                mpb.SetColor("_EmissionColor", finalEmissive);
-                mpb.SetColor("_EmissiveColor", finalEmissive);
-                mpb.SetColor("_EmissiveColorLDR", cfg.Color);
-                mpb.SetColor("_Color", cfg.Color);
-                mpb.SetColor("_BaseColor", cfg.Color);
-                mpb.SetColor("_TintColor", cfg.Color);
-                mpb.SetColor("_GlowColor", finalEmissive);
-                mpb.SetColor("_LineColor", finalEmissive);
-                mpb.SetFloat("_EmissiveIntensity", cfg.Intensity);
-                mpb.SetFloat("_UseEmissiveIntensity", 1.0f);
-
-                rend.SetPropertyBlock(mpb);
-
-                // 2. MATERIAL INSTANCE INSPECTION & APPLICATION
                 Material[] mats = rend.materials;
                 if (mats == null || mats.Length == 0) continue;
 
@@ -2121,93 +2137,107 @@ namespace DeadCoreEditor
                     Material mat = mats[m];
                     if (mat == null || mat.shader == null) continue;
 
-                    Shader shader = mat.shader;
-                    string sName = shader.name;
+                    // 1. FILTER: Target ONLY the neon/circuit material
+                    if (!IsTargetNeonMaterial(mat, mats.Length))
+                        continue;
 
-                    // One-time diagnostic dump per unique shader to MelonLogger
-                    if (_loggedShaderNames.Add(sName))
-                    {
-                        MelonLogger.Msg($"--------------------------------------------------");
-                        MelonLogger.Msg($"[Neon Diagnostic] Prop '{obj.name}' uses Shader '{sName}'");
-                        try
-                        {
-                            int count = shader.GetPropertyCount();
-                            for (int p = 0; p < count; p++)
-                            {
-                                string pName = shader.GetPropertyName(p);
-                                var pType = shader.GetPropertyType(p);
-                                MelonLogger.Msg($"   • Property #{p}: {pName} ({pType})");
-                            }
-                        }
-                        catch { }
-                        MelonLogger.Msg($"--------------------------------------------------");
-                    }
+                    // 2. DYNAMIC PROPERTY BLOCK FOR GPU INSTANCING (Only applied to neon material slot)
+                    MaterialPropertyBlock mpb = new MaterialPropertyBlock();
+                    rend.GetPropertyBlock(mpb, m);
+                    mpb.SetColor("_EmissionColor", finalEmissive);
+                    mpb.SetColor("_EmissiveColor", finalEmissive);
+                    mpb.SetColor("_EmissiveColorLDR", cfg.Color);
+                    mpb.SetColor("_GlowColor", finalEmissive);
+                    mpb.SetColor("_LineColor", finalEmissive);
+                    mpb.SetFloat("_EmissiveIntensity", cfg.Intensity);
+                    mpb.SetFloat("_UseEmissiveIntensity", 1.0f);
+                    rend.SetPropertyBlock(mpb, m);
 
-                    // A. Dynamic Shader Property Scanner (Checks all native properties on this specific shader)
-                    try
-                    {
-                        int pCount = shader.GetPropertyCount();
-                        for (int p = 0; p < pCount; p++)
-                        {
-                            string pName = shader.GetPropertyName(p);
-                            var pType = shader.GetPropertyType(p);
-                            string pLow = pName.ToLowerInvariant();
-
-                            // Auto-detect color and emission properties
-                            if (pType == ShaderPropertyType.Color)
-                            {
-                                if (pLow.Contains("emiss") || pLow.Contains("glow") || pLow.Contains("line") ||
-                                    pLow.Contains("circuit") || pLow.Contains("energy") || pLow.Contains("pulse") ||
-                                    pLow.Contains("neon") || pLow.Contains("accent") || pLow.Contains("light"))
-                                {
-                                    mat.SetColor(pName, finalEmissive);
-                                }
-                                else if (pLow.Contains("tint") || pLow.Contains("color") || pLow.Contains("albedo"))
-                                {
-                                    mat.SetColor(pName, cfg.Color);
-                                }
-                            }
-                            else if (pType == ShaderPropertyType.Float || pType == ShaderPropertyType.Range)
-                            {
-                                if (pLow.Contains("emissiveintensity") || pLow.Contains("emissionintensity") ||
-                                    pLow.Contains("glowintensity") || pLow.Contains("emissivemultiplier"))
-                                {
-                                    mat.SetFloat(pName, cfg.Intensity);
-                                }
-                                else if (pLow.Contains("useemissiveintensity"))
-                                {
-                                    mat.SetFloat(pName, 1.0f);
-                                }
-                            }
-                        }
-                    }
-                    catch { }
-
-                    // B. Direct Property Fallback Suite (Direct IDs)
+                    // 3. TARGET ONLY EMISSIVE & GLOW CHANNELS (Never touch _Color or _BaseColor on lit meshes)
                     if (mat.HasProperty("_EmissionColor")) mat.SetColor("_EmissionColor", finalEmissive);
                     if (mat.HasProperty("_EmissiveColor")) mat.SetColor("_EmissiveColor", finalEmissive);
                     if (mat.HasProperty("_EmissiveColorLDR")) mat.SetColor("_EmissiveColorLDR", cfg.Color);
                     if (mat.HasProperty("_GlowColor")) mat.SetColor("_GlowColor", finalEmissive);
                     if (mat.HasProperty("_LineColor")) mat.SetColor("_LineColor", finalEmissive);
-                    if (mat.HasProperty("_TintColor")) mat.SetColor("_TintColor", cfg.Color);
-                    if (mat.HasProperty("_Color")) mat.SetColor("_Color", cfg.Color);
-                    if (mat.HasProperty("_BaseColor")) mat.SetColor("_BaseColor", cfg.Color);
 
-                    // HDRP specific emission controls
+                    // If it's an additive or unlit neon strip, tint property is valid
+                    string sName = mat.shader.name.ToLowerInvariant();
+                    if (sName.Contains("unlit") || sName.Contains("additive") || sName.Contains("laser"))
+                    {
+                        if (mat.HasProperty("_TintColor")) mat.SetColor("_TintColor", cfg.Color);
+                        if (mat.HasProperty("_Color")) mat.SetColor("_Color", cfg.Color);
+                    }
+
+                    // HDRP emission flags
                     if (mat.HasProperty("_UseEmissiveIntensity")) mat.SetFloat("_UseEmissiveIntensity", 1.0f);
                     if (mat.HasProperty("_EmissiveIntensity")) mat.SetFloat("_EmissiveIntensity", cfg.Intensity);
                     if (mat.HasProperty("_EmissiveIntensityUnit")) mat.SetFloat("_EmissiveIntensityUnit", 0f);
 
-                    // Enable common emission keywords
                     mat.EnableKeyword("_EMISSION");
                     mat.EnableKeyword("_EMISSIVE_COLOR_MAP");
                     mat.EnableKeyword("_EMISSIVE_ENABLE");
                     mat.EnableKeyword("_EMISSIVE_ANIMATED");
                 }
 
-                // 3. CRITICAL: Commit the modified materials array back to the renderer!
+                // Commit modified materials array back to the renderer
                 rend.materials = mats;
             }
+        }
+
+        public static bool IsTargetNeonMaterial(Material mat, int totalMatsOnRenderer)
+        {
+            if (mat == null) return false;
+
+            string mName = mat.name.ToLowerInvariant();
+            string sName = (mat.shader != null) ? mat.shader.name.ToLowerInvariant() : "";
+
+            // A. Explicit name & shader matches for DeadCore neon trims
+            if (mName.Contains("neon") || mName.Contains("line") || mName.Contains("glow") ||
+                mName.Contains("circuit") || mName.Contains("emiss") || mName.Contains("laser") ||
+                mName.Contains("energy") || mName.Contains("pulse") || mName.Contains("core") ||
+                mName.Contains("anneau") || mName.Contains("fx") || mName.Contains("beam") ||
+                mName.Contains("strip") || mName.Contains("band"))
+                return true;
+
+            if (sName.Contains("neon") || sName.Contains("line") || sName.Contains("glow") ||
+                sName.Contains("circuit") || sName.Contains("emiss") || sName.Contains("laser") ||
+                sName.Contains("energy") || sName.Contains("additive") || sName.Contains("pulse"))
+                return true;
+
+            // B. Multi-material mesh: explicitly reject structural base materials
+            if (totalMatsOnRenderer > 1)
+            {
+                if (mName.Contains("metal") || mName.Contains("concrete") || mName.Contains("sol") ||
+                    mName.Contains("wall") || mName.Contains("decor") || mName.Contains("plateforme") ||
+                    mName.Contains("chassis") || mName.Contains("base") || mName.Contains("structure") ||
+                    mName.Contains("cadre") || mName.Contains("support") || mName.Contains("poteau"))
+                {
+                    return false; // Keep structural frame intact
+                }
+            }
+
+            // C. Check if material already had an active emission color (greater than near-zero)
+            if (mat.HasProperty("_EmissionColor"))
+            {
+                Color c = mat.GetColor("_EmissionColor");
+                if (c.r > 0.05f || c.g > 0.05f || c.b > 0.05f) return true;
+            }
+            if (mat.HasProperty("_EmissiveColor"))
+            {
+                Color c = mat.GetColor("_EmissiveColor");
+                if (c.r > 0.05f || c.g > 0.05f || c.b > 0.05f) return true;
+            }
+
+            // D. Check for active emission maps or keywords
+            if (mat.IsKeywordEnabled("_EMISSION") || mat.IsKeywordEnabled("_EMISSIVE_COLOR_MAP"))
+                return true;
+
+            if (mat.HasProperty("_EmissionMap") && mat.GetTexture("_EmissionMap") != null)
+                return true;
+            if (mat.HasProperty("_EmissiveColorMap") && mat.GetTexture("_EmissiveColorMap") != null)
+                return true;
+
+            return totalMatsOnRenderer == 1;
         }
 
         private static void ApplyHDRPVolumetricSettings(GameObject lightGo, float volumetricIntensity, float physicalIntensity, Color lightColor)
@@ -3144,30 +3174,45 @@ namespace DeadCoreEditor
 
             Array.Sort(hits, (a, b) => a.distance.CompareTo(b.distance));
 
+            // PRIORITY 1: WAYPOINT MARKERS & CABLE HANDLES
             for (int h = 0; h < hits.Length; h++)
             {
                 Collider col = hits[h].collider;
-                if (col == null) continue;
+                if (col == null || col.gameObject == null) continue;
                 GameObject hitGo = col.gameObject;
 
-                if (IsWaypointMarker(hitGo, out _, out _) || IsChildOfAnyWaypoint(hitGo, out hitGo))
+                if (IsWaypointMarker(hitGo, out _, out _))
+                    return hitGo;
+
+                // Use a separate variable so hitGo is never overwritten with null
+                if (IsChildOfAnyWaypoint(hitGo, out GameObject waypointRoot) && waypointRoot != null)
+                    return waypointRoot;
+
+                if (ProceduralCableService.IsCableHandle(hitGo, out _, out _))
                     return hitGo;
             }
 
+            // PRIORITY 2: PLACED OBJECTS
             for (int h = 0; h < hits.Length; h++)
             {
                 Collider col = hits[h].collider;
-                if (col == null) continue;
+                if (col == null || col.gameObject == null) continue;
                 GameObject hitGo = col.gameObject;
 
-                if (hitGo.name.Contains("Highlight") || hitGo.name.Contains("Beacon") || hitGo.name.Contains("Ghost")) continue;
-                if (hitGo.name.StartsWith("Studio_3D_Gizmo") || (hitGo.transform.root != null && hitGo.transform.root.name == "Studio_3D_Gizmo_Root")) continue;
+                if (hitGo == null) continue;
+
+                string n = hitGo.name;
+                if (string.IsNullOrEmpty(n)) continue;
+
+                if (n.Contains("Highlight") || n.Contains("Beacon") || n.Contains("Ghost")) continue;
+                if (n.StartsWith("Studio_3D_Gizmo") || (hitGo.transform.root != null && hitGo.transform.root.name == "Studio_3D_Gizmo_Root")) continue;
                 if (_cachedPlayer != null && (hitGo == _cachedPlayer || hitGo.transform.root.gameObject == _cachedPlayer)) continue;
 
                 Transform curr = hitGo.transform;
                 while (curr != null)
                 {
-                    if (PlacedObjects.Contains(curr.gameObject)) return curr.gameObject;
+                    if (curr.gameObject != null && PlacedObjects.Contains(curr.gameObject))
+                        return curr.gameObject;
                     curr = curr.parent;
                 }
             }

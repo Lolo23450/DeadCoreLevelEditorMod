@@ -756,6 +756,7 @@ namespace DeadCoreEditor
                 case "SWITCH": return new SwitchConfig();
                 case "GATE": return new GateConfig();
                 case "NEON": return new NeonConfig();
+                case "CABLE": return new CableConfig();
                 default: return null;
             }
         }
