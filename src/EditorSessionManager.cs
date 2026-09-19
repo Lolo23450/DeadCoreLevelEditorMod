@@ -1085,6 +1085,9 @@ namespace DeadCoreEditor
             _cachedCharacterController = null;
             SceneHarvestingService.NativeSceneSun = null;
 
+            _detectedMaterialNeonProps.Clear();
+            _detectedShaderNeonProps.Clear();
+
             EditorViewportCamera.DestroyCamera();
             PlacementHologramController.DestroyPreview();
             StudioGizmoController.DestroyGizmo();
@@ -1777,6 +1780,9 @@ namespace DeadCoreEditor
             SelectedObjects.Clear();
             SelectedObject = null;
 
+            _detectedMaterialNeonProps.Clear();
+            _detectedShaderNeonProps.Clear();
+
             PlacedJumpers.Clear();
             PlacedTurbines.Clear();
             CachedHelixScripts.Clear();
@@ -2111,6 +2117,22 @@ namespace DeadCoreEditor
         }
 
         private static readonly HashSet<string> _loggedShaderNames = new HashSet<string>();
+        private static readonly HashSet<string> _loggedShaderDumps = new HashSet<string>();
+
+        // Caches of property names identified as neon lines so they can be changed repeatedly
+        private static readonly Dictionary<int, HashSet<string>> _detectedMaterialNeonProps = new Dictionary<int, HashSet<string>>();
+        private static readonly Dictionary<string, HashSet<string>> _detectedShaderNeonProps = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
+
+        // Known shader properties used by DeadCore for glowing animated lines, circuits & trims
+        private static readonly string[] DeadCoreNeonProperties = new string[]
+        {
+            "_LinesColor", "_LineColor", "_ColorLines", "_ColorLine",
+            "_Color2", "_SecondColor", "_SecondaryColor",
+            "_EnergyColor", "_CircuitColor", "_GlowColor", "_NeonColor",
+            "_PulseColor", "_StripeColor", "_StripesColor", "_PatternColor",
+            "_EmissionColor", "_EmissiveColor", "_EmissiveColorLDR",
+            "_TintColor", "_Glow_Color", "_Line_Color", "_Lines_Color"
+        };
 
         public static void ApplyNeonConfig(GameObject obj, NeonConfig cfg)
         {
@@ -2132,58 +2154,145 @@ namespace DeadCoreEditor
                 Material[] mats = rend.materials;
                 if (mats == null || mats.Length == 0) continue;
 
+                MaterialPropertyBlock mpb = new MaterialPropertyBlock();
+                rend.GetPropertyBlock(mpb);
+
                 for (int m = 0; m < mats.Length; m++)
                 {
                     Material mat = mats[m];
                     if (mat == null || mat.shader == null) continue;
 
-                    // 1. FILTER: Target ONLY the neon/circuit material
-                    if (!IsTargetNeonMaterial(mat, mats.Length))
-                        continue;
+                    Shader shader = mat.shader;
+                    string sName = shader.name;
 
-                    // 2. DYNAMIC PROPERTY BLOCK FOR GPU INSTANCING (Only applied to neon material slot)
-                    MaterialPropertyBlock mpb = new MaterialPropertyBlock();
-                    rend.GetPropertyBlock(mpb, m);
-                    mpb.SetColor("_EmissionColor", finalEmissive);
-                    mpb.SetColor("_EmissiveColor", finalEmissive);
-                    mpb.SetColor("_EmissiveColorLDR", cfg.Color);
-                    mpb.SetColor("_GlowColor", finalEmissive);
-                    mpb.SetColor("_LineColor", finalEmissive);
-                    mpb.SetFloat("_EmissiveIntensity", cfg.Intensity);
-                    mpb.SetFloat("_UseEmissiveIntensity", 1.0f);
-                    rend.SetPropertyBlock(mpb, m);
-
-                    // 3. TARGET ONLY EMISSIVE & GLOW CHANNELS (Never touch _Color or _BaseColor on lit meshes)
-                    if (mat.HasProperty("_EmissionColor")) mat.SetColor("_EmissionColor", finalEmissive);
-                    if (mat.HasProperty("_EmissiveColor")) mat.SetColor("_EmissiveColor", finalEmissive);
-                    if (mat.HasProperty("_EmissiveColorLDR")) mat.SetColor("_EmissiveColorLDR", cfg.Color);
-                    if (mat.HasProperty("_GlowColor")) mat.SetColor("_GlowColor", finalEmissive);
-                    if (mat.HasProperty("_LineColor")) mat.SetColor("_LineColor", finalEmissive);
-
-                    // If it's an additive or unlit neon strip, tint property is valid
-                    string sName = mat.shader.name.ToLowerInvariant();
-                    if (sName.Contains("unlit") || sName.Contains("additive") || sName.Contains("laser"))
+                    int matId = mat.GetInstanceID();
+                    if (!_detectedMaterialNeonProps.TryGetValue(matId, out var matProps))
                     {
-                        if (mat.HasProperty("_TintColor")) mat.SetColor("_TintColor", cfg.Color);
-                        if (mat.HasProperty("_Color")) mat.SetColor("_Color", cfg.Color);
+                        matProps = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                        _detectedMaterialNeonProps[matId] = matProps;
                     }
 
-                    // HDRP emission flags
-                    if (mat.HasProperty("_UseEmissiveIntensity")) mat.SetFloat("_UseEmissiveIntensity", 1.0f);
-                    if (mat.HasProperty("_EmissiveIntensity")) mat.SetFloat("_EmissiveIntensity", cfg.Intensity);
-                    if (mat.HasProperty("_EmissiveIntensityUnit")) mat.SetFloat("_EmissiveIntensityUnit", 0f);
+                    if (!_detectedShaderNeonProps.TryGetValue(sName, out var shaderProps))
+                    {
+                        shaderProps = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                        _detectedShaderNeonProps[sName] = shaderProps;
+                    }
 
+                    // Diagnostic dump: logs once per shader to console so you can see the exact properties
+                    if (_loggedShaderDumps.Add(sName))
+                    {
+                        MelonLogger.Msg($"--------------------------------------------------");
+                        MelonLogger.Msg($"[Neon Diagnostic] Prop '{obj.name}' -> Mat '{mat.name}' (Shader: '{sName}')");
+                        try
+                        {
+                            int pCount = shader.GetPropertyCount();
+                            for (int i = 0; i < pCount; i++)
+                            {
+                                string pn = shader.GetPropertyName(i);
+                                var pt = shader.GetPropertyType(i);
+                                string valStr = "";
+                                if (pt == UnityEngine.Rendering.ShaderPropertyType.Color) valStr = mat.GetColor(pn).ToString();
+                                else if (pt == UnityEngine.Rendering.ShaderPropertyType.Float || pt == UnityEngine.Rendering.ShaderPropertyType.Range) valStr = mat.GetFloat(pn).ToString();
+                                MelonLogger.Msg($"   • #{i}: {pn} ({pt}) = {valStr}");
+                            }
+                        }
+                        catch { }
+                        MelonLogger.Msg($"--------------------------------------------------");
+                    }
+
+                    // 1. DYNAMIC PROPERTY SCANNER: Detect and tint any line/emissive/blue-tint property
+                    try
+                    {
+                        int pCount = shader.GetPropertyCount();
+                        for (int i = 0; i < pCount; i++)
+                        {
+                            string pName = shader.GetPropertyName(i);
+                            var pType = shader.GetPropertyType(i);
+                            string pLow = pName.ToLowerInvariant();
+
+                            if (pType == UnityEngine.Rendering.ShaderPropertyType.Color)
+                            {
+                                bool isNeonProp = matProps.Contains(pName) ||
+                                                  shaderProps.Contains(pName) ||
+                                                  pLow.Contains("line") || pLow.Contains("emiss") ||
+                                                  pLow.Contains("glow") || pLow.Contains("circuit") ||
+                                                  pLow.Contains("energy") || pLow.Contains("pulse") ||
+                                                  pLow.Contains("neon") || pLow.Contains("color2") ||
+                                                  pLow.Contains("second") || pLow.Contains("stripe");
+
+                                // Auto-detect: if this property currently holds a blue/cyan color, it's the native line!
+                                if (!isNeonProp && mat.HasProperty(pName))
+                                {
+                                    Color cur = mat.GetColor(pName);
+                                    if (cur.b > 0.40f && cur.g > 0.30f && cur.b > cur.r * 1.15f)
+                                    {
+                                        isNeonProp = true;
+                                    }
+                                }
+
+                                if (isNeonProp)
+                                {
+                                    matProps.Add(pName);
+                                    if (pName != "_Color" && pName != "_BaseColor" && pName != "_MainColor")
+                                    {
+                                        shaderProps.Add(pName);
+                                    }
+
+                                    mat.SetColor(pName, finalEmissive);
+                                    mpb.SetColor(pName, finalEmissive);
+                                }
+                            }
+                            else if (pType == UnityEngine.Rendering.ShaderPropertyType.Float || pType == UnityEngine.Rendering.ShaderPropertyType.Range)
+                            {
+                                if (matProps.Contains(pName) || shaderProps.Contains(pName) ||
+                                    pLow.Contains("emissiveintensity") || pLow.Contains("emissionintensity") ||
+                                    pLow.Contains("linesintensity") || pLow.Contains("lineintensity") ||
+                                    pLow.Contains("glowintensity") || pLow.Contains("emissivemultiplier"))
+                                {
+                                    matProps.Add(pName);
+                                    shaderProps.Add(pName);
+                                    mat.SetFloat(pName, cfg.Intensity);
+                                    mpb.SetFloat(pName, cfg.Intensity);
+                                }
+                            }
+                        }
+                    }
+                    catch { }
+
+                    // 2. DIRECT TARGETING OF KNOWN DEADCORE PROPERTIES
+                    for (int k = 0; k < DeadCoreNeonProperties.Length; k++)
+                    {
+                        string prop = DeadCoreNeonProperties[k];
+                        if (mat.HasProperty(prop))
+                        {
+                            mat.SetColor(prop, finalEmissive);
+                            mpb.SetColor(prop, finalEmissive);
+                        }
+                    }
+
+                    // 3. UNLIT / ADDITIVE SHADERS (Only tint _Color if it's purely an additive line ribbon)
+                    string sLow = sName.ToLowerInvariant();
+                    if (sLow.Contains("unlit") || sLow.Contains("additive") || sLow.Contains("laser") || sLow.Contains("beam"))
+                    {
+                        if (mat.HasProperty("_TintColor")) { mat.SetColor("_TintColor", cfg.Color); mpb.SetColor("_TintColor", cfg.Color); }
+                        if (mat.HasProperty("_Color")) { mat.SetColor("_Color", cfg.Color); mpb.SetColor("_Color", cfg.Color); }
+                    }
+
+                    // Enable emission keywords
                     mat.EnableKeyword("_EMISSION");
                     mat.EnableKeyword("_EMISSIVE_COLOR_MAP");
                     mat.EnableKeyword("_EMISSIVE_ENABLE");
                     mat.EnableKeyword("_EMISSIVE_ANIMATED");
+
+                    if (mat.HasProperty("_UseEmissiveIntensity")) mat.SetFloat("_UseEmissiveIntensity", 1.0f);
+                    if (mat.HasProperty("_EmissiveIntensity")) mat.SetFloat("_EmissiveIntensity", cfg.Intensity);
                 }
 
-                // Commit modified materials array back to the renderer
+                // 4. COMMIT BOTH MATERIAL AND PROPERTY BLOCK
                 rend.materials = mats;
+                rend.SetPropertyBlock(mpb);
             }
         }
-
         public static bool IsTargetNeonMaterial(Material mat, int totalMatsOnRenderer)
         {
             if (mat == null) return false;
@@ -2191,7 +2300,7 @@ namespace DeadCoreEditor
             string mName = mat.name.ToLowerInvariant();
             string sName = (mat.shader != null) ? mat.shader.name.ToLowerInvariant() : "";
 
-            // A. Explicit name & shader matches for DeadCore neon trims
+            // If any known neon/line/circuit keywords are in the material or shader name
             if (mName.Contains("neon") || mName.Contains("line") || mName.Contains("glow") ||
                 mName.Contains("circuit") || mName.Contains("emiss") || mName.Contains("laser") ||
                 mName.Contains("energy") || mName.Contains("pulse") || mName.Contains("core") ||
@@ -2204,39 +2313,14 @@ namespace DeadCoreEditor
                 sName.Contains("energy") || sName.Contains("additive") || sName.Contains("pulse"))
                 return true;
 
-            // B. Multi-material mesh: explicitly reject structural base materials
-            if (totalMatsOnRenderer > 1)
+            // Check if any DeadCore line property exists on this material
+            for (int k = 0; k < DeadCoreNeonProperties.Length; k++)
             {
-                if (mName.Contains("metal") || mName.Contains("concrete") || mName.Contains("sol") ||
-                    mName.Contains("wall") || mName.Contains("decor") || mName.Contains("plateforme") ||
-                    mName.Contains("chassis") || mName.Contains("base") || mName.Contains("structure") ||
-                    mName.Contains("cadre") || mName.Contains("support") || mName.Contains("poteau"))
-                {
-                    return false; // Keep structural frame intact
-                }
+                if (mat.HasProperty(DeadCoreNeonProperties[k]))
+                    return true;
             }
 
-            // C. Check if material already had an active emission color (greater than near-zero)
-            if (mat.HasProperty("_EmissionColor"))
-            {
-                Color c = mat.GetColor("_EmissionColor");
-                if (c.r > 0.05f || c.g > 0.05f || c.b > 0.05f) return true;
-            }
-            if (mat.HasProperty("_EmissiveColor"))
-            {
-                Color c = mat.GetColor("_EmissiveColor");
-                if (c.r > 0.05f || c.g > 0.05f || c.b > 0.05f) return true;
-            }
-
-            // D. Check for active emission maps or keywords
-            if (mat.IsKeywordEnabled("_EMISSION") || mat.IsKeywordEnabled("_EMISSIVE_COLOR_MAP"))
-                return true;
-
-            if (mat.HasProperty("_EmissionMap") && mat.GetTexture("_EmissionMap") != null)
-                return true;
-            if (mat.HasProperty("_EmissiveColorMap") && mat.GetTexture("_EmissiveColorMap") != null)
-                return true;
-
+            // Always process single-material meshes (the material is an uber-shader handling both metal and lines)
             return totalMatsOnRenderer == 1;
         }
 
