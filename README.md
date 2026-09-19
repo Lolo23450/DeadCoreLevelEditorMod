@@ -54,7 +54,7 @@ A real-time, in-engine 3D level editor and custom map studio for **DeadCore Redu
      ```
    * Complete the installation.
 2. **Install the Mod**:
-   * Download `DeadCoreLevelEditorMod.dll` from the release folder.
+   * Download `DeadCoreLevelEditorMod.dll` from the releases tab.
    * Place the file into the `Mods/` directory:
      ```text
      Steam/steamapps/common/DeadCoreRedux/Mods/DeadCoreLevelEditorMod.dll
