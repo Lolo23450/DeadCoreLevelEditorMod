@@ -1,5 +1,8 @@
 ﻿using System;
+using System.Collections;
 using System.Collections.Generic;
+using System.Reflection;
+using System.Text.RegularExpressions;
 using HarmonyLib;
 using MelonLoader;
 using UnityEngine;
@@ -16,69 +19,155 @@ namespace DeadCoreEditor
 
     public static class ModelHarvestFilter
     {
+        // "dec_" allowed so decoration/decor assets pass through freely
         private static readonly HashSet<string> IgnoredMeshPrefixes = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
         {
-            "ucx_", "ubx_", "usp_", "bb_", "col_", "proxy_", "dec_"
+            "ucx_", "ubx_", "usp_", "bb_", "col_", "proxy_", "nav_"
         };
 
         private static readonly string[] IgnoredKeywords = new string[]
         {
             "combine", "batch", "impostor", "imposter", "billboard", "_card",
-            "shadow", "collision", "collider", "gizmo", "proxy",
+            "shadow", "gizmo", "proxy",
             "wireframe", "highlight", "beacon", "skybox", "horizon", "fog",
-            "cloud", "backdrop", "ambiance", "dust", "font", "text",
-            "ui-", "tmp", "cursor", "sprite", "lightdata", "cylinder",
-            "poignee", "carenage", "rail" // Cull tiny internal mechanics
+            "cloud", "dust", "font", "text",
+            "ui-", "tmp", "cursor", "sprite", "lightdata",
+            "particle", "emitter"
         };
 
-        public static bool ShouldIgnoreMesh(Mesh mesh, string meshName, string goName)
+        // Matches LOD1, 2, 3, 5, 6, 7, 8, 9 (LOD4 is explicitly allowed/kept)
+        private static readonly Regex FilteredLodRegex = new Regex(@"(?:^|[\W_])lod[12356789](?:$|[\W_])", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+        public static bool ShouldIgnoreMesh(Mesh mesh, string meshName, string goName, GameObject sourceGo = null)
         {
             if (mesh == null || mesh.vertexCount < 6) return true;
 
             string mLow = meshName.ToLowerInvariant();
             string gLow = goName.ToLowerInvariant();
 
-            // 1. Purge lower LOD duplicates (keep only LOD0 and base meshes)
-            if (mLow.Contains("lod1") || mLow.Contains("lod2") || mLow.Contains("lod3") ||
-                gLow.Contains("lod1") || gLow.Contains("lod2") || gLow.Contains("lod3"))
-                return true;
+            // 1. LOD check: Keep LOD0 and LOD4. Exclude LOD1, LOD2, LOD3, LOD5+.
+            bool isLod4 = mLow.Contains("lod4") || gLow.Contains("lod4");
+            if (!isLod4)
+            {
+                if (mLow.Contains("lod1") || mLow.Contains("lod2") || mLow.Contains("lod3") || mLow.Contains("lod5") ||
+                    gLow.Contains("lod1") || gLow.Contains("lod2") || gLow.Contains("lod3") || gLow.Contains("lod5") ||
+                    FilteredLodRegex.IsMatch(mLow) || FilteredLodRegex.IsMatch(gLow))
+                {
+                    return true;
+                }
+            }
 
-            // 2. Filter out internal gameplay debris and bugs
+            // 2. Hierarchy and LODGroup check: reject if renderer belongs to an excluded LOD level (keeps LOD4)
+            if (sourceGo != null && HasLowerLodInHierarchy(sourceGo))
+            {
+                return true;
+            }
+
+            // 3. Filter out internal gameplay bugs/mosquitoes/gauges
             if (mLow.Contains("mosquito") || gLow.Contains("mosquito") ||
                 mLow.Contains("robot") || gLow.Contains("robot") ||
                 mLow.Contains("gauge") || gLow.Contains("gauge"))
+            {
                 return true;
+            }
 
-            // 3. Prefix checks
+            // 4. Prefix checks
             foreach (var prefix in IgnoredMeshPrefixes)
             {
                 if (mLow.StartsWith(prefix) || gLow.StartsWith(prefix)) return true;
             }
 
-            // 4. Substring keyword checks
+            // 5. Substring keyword checks
             for (int i = 0; i < IgnoredKeywords.Length; i++)
             {
                 string kw = IgnoredKeywords[i];
                 if (mLow.Contains(kw) || gLow.Contains(kw)) return true;
             }
 
-            // 5. Flat quad / billboard card geometry checks
+            // 6. Flat quad / billboard card geometry checks
             Vector3 size = mesh.bounds.size;
             float minDim = Mathf.Min(size.x, Mathf.Min(size.y, size.z));
             float maxDim = Mathf.Max(size.x, Mathf.Max(size.y, size.z));
 
-            if (minDim < 0.01f && maxDim >= 3.0f && mesh.vertexCount <= 6)
+            if (minDim < 0.015f && maxDim >= 3.0f && mesh.vertexCount <= 8)
                 return true;
 
             return false;
         }
 
-        public static bool IsValidHarvestSize(Bounds bounds, float minSize = 1.0f, float maxSize = 450.0f)
+        public static bool HasLowerLodInHierarchy(GameObject go)
+        {
+            if (go == null) return false;
+
+            // Engine-level LODGroup inspection (skips LOD4 so it is kept)
+            try
+            {
+                LODGroup lodGroup = go.GetComponentInParent<LODGroup>();
+                if (lodGroup != null)
+                {
+                    var lods = lodGroup.GetLODs();
+                    if (lods != null && lods.Length > 1)
+                    {
+                        Renderer r = go.GetComponent<Renderer>();
+                        if (r != null)
+                        {
+                            for (int l = 1; l < lods.Length; l++)
+                            {
+                                if (l == 4) continue; // Keep LOD4!
+
+                                var rends = lods[l].renderers;
+                                if (rends != null)
+                                {
+                                    for (int ri = 0; ri < rends.Length; ri++)
+                                    {
+                                        if (rends[ri] == r) return true;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            catch { }
+
+            // Hierarchy name inspection up to 4 parent levels
+            Transform curr = go.transform;
+            int depth = 0;
+            while (curr != null && depth < 4)
+            {
+                string nLow = curr.name.ToLowerInvariant();
+                bool isLod4 = nLow.Contains("lod4");
+                if (!isLod4)
+                {
+                    if (nLow.Contains("lod1") || nLow.Contains("lod2") || nLow.Contains("lod3") || nLow.Contains("lod5") || FilteredLodRegex.IsMatch(nLow))
+                    {
+                        return true;
+                    }
+                }
+                curr = curr.parent;
+                depth++;
+            }
+
+            return false;
+        }
+
+        // Min: 1.2m, Max: 24.0m
+        public static bool IsValidHarvestSize(Bounds bounds, Transform contextTransform = null, float minSize = 1.2f, float maxSize = 24.0f)
         {
             Vector3 s = bounds.size;
-            float maxDim = Mathf.Max(s.x, Mathf.Max(s.y, s.z));
-            // Filter out microscopic nuts, bolts and tiny debris below 1.0m directly at harvest time
-            return maxDim >= minSize && maxDim <= maxSize;
+            float unscaledMax = Mathf.Max(s.x, Mathf.Max(s.y, s.z));
+
+            if (contextTransform != null)
+            {
+                Vector3 scaled = Vector3.Scale(s, contextTransform.lossyScale);
+                float scaledMax = Mathf.Max(Mathf.Abs(scaled.x), Mathf.Max(Mathf.Abs(scaled.y), Mathf.Abs(scaled.z)));
+
+                bool validScaled = (scaledMax >= minSize && scaledMax <= maxSize);
+                bool validUnscaled = (unscaledMax >= minSize && unscaledMax <= maxSize);
+                return validScaled || validUnscaled;
+            }
+
+            return unscaledMax >= minSize && unscaledMax <= maxSize;
         }
     }
 
@@ -94,16 +183,20 @@ namespace DeadCoreEditor
             bool isPlatform = gLow.Contains("16x2x16") || mLow.Contains("16x2x16") ||
                               gLow.Contains("platform") || mLow.Contains("platform") ||
                               gLow.Contains("plateforme") || mLow.Contains("plateforme") ||
-                              gLow.Contains("floor") || mLow.Contains("sol") || gLow.Contains("step");
+                              gLow.Contains("floor") || mLow.Contains("sol") || gLow.Contains("step") ||
+                              (s.y <= 2.5f && (s.x >= 6f || s.z >= 6f));
 
             bool isWall = !isPlatform && (s.y > s.z * 1.8f || s.y > s.x * 1.8f) && (s.x > 2f || s.z > 2f);
             bool isColumn = !isPlatform && !isWall && s.y > (Mathf.Max(s.x, s.z) * 2.0f);
+            bool isDecor = !isPlatform && !isWall && !isColumn &&
+                           (maxDim < 4.5f || gLow.Contains("decor") || mLow.Contains("decor") || gLow.Contains("prop") || mLow.Contains("prop") || gLow.Contains("detail"));
 
             string subCategory = "Architecture";
             if (isPlatform) subCategory = "Platforms";
             else if (isWall) subCategory = "Walls";
             else if (isColumn) subCategory = "Columns";
-            else if (maxDim > 20.0f) subCategory = "Structures";
+            else if (isDecor) subCategory = "Decor";
+            else if (maxDim > 14.0f) subCategory = "Structures";
 
             string baseName;
             if (gLow.Contains("16x2x16") || mLow.Contains("16x2x16"))
@@ -122,21 +215,26 @@ namespace DeadCoreEditor
             if (baseName.StartsWith("m ", StringComparison.OrdinalIgnoreCase)) baseName = baseName.Substring(2);
             if (baseName.StartsWith("geo ", StringComparison.OrdinalIgnoreCase)) baseName = baseName.Substring(4);
 
-            // Strip ugly LOD indicators
+            // Strip LOD markers (except LOD4 label note if present)
             int lodIdx = baseName.IndexOf("LOD", StringComparison.OrdinalIgnoreCase);
-            if (lodIdx > 0) baseName = baseName.Substring(0, lodIdx).Trim();
+            if (lodIdx > 0 && !baseName.Contains("LOD4") && !baseName.Contains("LOD 4"))
+            {
+                baseName = baseName.Substring(0, lodIdx).Trim();
+            }
 
-            // Translate common french tags to clean labels
+            // Translate native tags
             baseName = baseName.Replace("plateforme", "Platform")
                                .Replace("tourelle", "Turret Base")
                                .Replace("anneau", "Ring")
                                .Replace("corps", "Chassis")
                                .Replace("canon", "Cannon Tube")
+                               .Replace("mur", "Wall")
+                               .Replace("pilier", "Pillar")
                                .Trim();
 
             if (string.IsNullOrWhiteSpace(baseName) || baseName.Length < 2)
             {
-                baseName = isPlatform ? "Platform Slab" : (isWall ? "Modular Wall" : (isColumn ? "Pillar Column" : "Architecture Block"));
+                baseName = isPlatform ? "Platform Slab" : (isWall ? "Modular Wall" : (isColumn ? "Pillar Column" : (isDecor ? "Decor Prop" : "Architecture Block")));
             }
 
             return (subCategory, baseName, isPlatform);
@@ -150,6 +248,7 @@ namespace DeadCoreEditor
     public static class SceneHarvestingService
     {
         public static Light NativeSceneSun = null;
+        public static bool IsHarvestingAdditive = false;
 
         private static readonly List<Mesh> _proceduralMeshes = new List<Mesh>();
         private static readonly List<Material> _proceduralMaterials = new List<Material>();
@@ -193,9 +292,11 @@ namespace DeadCoreEditor
                 return;
             }
 
-            var scene = SceneManager.GetActiveScene();
-            if (scene.isLoaded)
+            for (int s = 0; s < SceneManager.sceneCount; s++)
             {
+                Scene scene = SceneManager.GetSceneAt(s);
+                if (!scene.isLoaded) continue;
+
                 GameObject[] roots = scene.GetRootGameObjects();
                 for (int r = 0; r < roots.Length; r++)
                 {
@@ -281,7 +382,7 @@ namespace DeadCoreEditor
             Dictionary<int, Material[]> meshToOriginalMaterials = new Dictionary<int, Material[]>();
             Dictionary<string, int> displayNameCounts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
 
-            // 1. Cache all materials & mapping
+            // 1. Cache all materials & mapping across both MeshRenderer and SkinnedMeshRenderer
             MeshRenderer[] renderers = Resources.FindObjectsOfTypeAll<MeshRenderer>();
             for (int i = 0; i < renderers.Length; i++)
             {
@@ -295,7 +396,6 @@ namespace DeadCoreEditor
                     if (mat != null && seenMaterials.Add(mat))
                     {
                         EnableGPUInstancingOnMaterial(mat);
-
                         if (EditorSessionManager.CachedSceneMaterial == null && !mat.name.ToLower().Contains("laser"))
                         {
                             EditorSessionManager.CachedSceneMaterial = mat;
@@ -314,68 +414,459 @@ namespace DeadCoreEditor
                 }
             }
 
-            // 2. Gameplay entities & procedural hazards
+            SkinnedMeshRenderer[] smRenderers = Resources.FindObjectsOfTypeAll<SkinnedMeshRenderer>();
+            for (int i = 0; i < smRenderers.Length; i++)
+            {
+                SkinnedMeshRenderer smr = smRenderers[i];
+                if (smr == null || smr.sharedMesh == null) continue;
+
+                Material[] mats = smr.sharedMaterials;
+                for (int m = 0; m < mats.Length; m++)
+                {
+                    Material mat = mats[m];
+                    if (mat != null && seenMaterials.Add(mat))
+                    {
+                        EnableGPUInstancingOnMaterial(mat);
+                    }
+                }
+
+                int mId = smr.sharedMesh.GetInstanceID();
+                if (!meshToOriginalMaterials.ContainsKey(mId) && mats != null && mats.Length > 0)
+                {
+                    meshToOriginalMaterials[mId] = mats;
+                }
+            }
+
+            // 2. Native gameplay entities & procedural hazards
             HarvestNativeGameplayEntities();
             HarvestProceduralHazardsAndLights();
 
-            // 3. Current active scene architecture
-            Scene activeScene = SceneManager.GetActiveScene();
-            HarvestArchitectureFromScene(activeScene, seenMeshInstanceIDs, displayNameCounts, meshToOriginalMaterials);
+            // 3. TARGETED HARVEST: Level Design roots (_LD, L_D, LevelDesign)
+            HarvestTargetedRoots(new string[] { "_ld", "l_d", "ld", "leveldesign", "level_design" }, "Level Design", seenMeshInstanceIDs, displayNameCounts, meshToOriginalMaterials);
 
-            // 4. Cache native sun
+            // 4. TARGETED HARVEST: Level Art & Atmosphere roots (_LA, L_A, Atmosphere, Art, Props)
+            HarvestTargetedRoots(new string[] { "_la", "l_a", "la", "levelatmosphere", "level_atmosphere", "levelart", "level_art", "atmosphere", "art", "props", "decor", "environment", "env", "world" }, "Level Art / Atmosphere", seenMeshInstanceIDs, displayNameCounts, meshToOriginalMaterials);
+
+            // 5. Sweep all remaining loaded scene hierarchies
+            HarvestAllLoadedScenesArchitecture(seenMeshInstanceIDs, displayNameCounts, meshToOriginalMaterials);
+
+            // 6. FEATURE A: AssetBundle Deep Excavation (Reflection-based, zero compile dependencies)
+            HarvestLoadedAssetBundles(seenMeshInstanceIDs, displayNameCounts, meshToOriginalMaterials);
+
+            // 7. FEATURE F: Cross-Level / Multi-Tower Additive Harvesting
+            HarvestCrossLevelTowers(seenMeshInstanceIDs, displayNameCounts, meshToOriginalMaterials);
+
+            // 8. Deep search through remaining loaded components in memory
+            HarvestLoadedComponentsFromMemory(seenMeshInstanceIDs, displayNameCounts, meshToOriginalMaterials);
+
+            // 9. Cache lighting
             DebugDumpSceneLighting();
 
-            // 5. Sweep loaded memory meshes for massive catalog expansion
+            // 10. Residual mesh memory sweep
             HarvestResidualMeshesFromMemory(seenMeshInstanceIDs, displayNameCounts, meshToOriginalMaterials);
 
-            MelonLogger.Msg($">> [Harvest] Harvested {EditorSessionManager.AllAssets.Count} unique assets into catalog!");
+            MelonLogger.Msg($">> [Harvest] Complete! Catalog populated with {EditorSessionManager.AllAssets.Count} unique assets (1.2m - 24.0m, LOD4 kept).");
         }
 
-        private static void HarvestArchitectureFromScene(Scene scene, HashSet<int> seenMeshIDs, Dictionary<string, int> displayNameCounts, Dictionary<int, Material[]> meshToOriginalMaterials)
+        // =========================================================================
+        // FEATURE A: ASSETBUNDLE DEEP EXCAVATION (Decoupled Reflection)
+        // =========================================================================
+
+        public static void HarvestLoadedAssetBundles(HashSet<int> seenMeshIDs, Dictionary<string, int> displayNameCounts, Dictionary<int, Material[]> meshToOriginalMaterials)
+        {
+            try
+            {
+                Type assetBundleType = null;
+                Assembly[] asms = AppDomain.CurrentDomain.GetAssemblies();
+                for (int i = 0; i < asms.Length; i++)
+                {
+                    assetBundleType = asms[i].GetType("UnityEngine.AssetBundle");
+                    if (assetBundleType != null) break;
+                }
+
+                if (assetBundleType == null) return;
+
+                MethodInfo getAllMethod = assetBundleType.GetMethod("GetAllLoadedAssetBundles", BindingFlags.Public | BindingFlags.Static);
+                if (getAllMethod == null) return;
+
+                IEnumerable rawBundles = getAllMethod.Invoke(null, null) as IEnumerable;
+                if (rawBundles == null) return;
+
+                MethodInfo loadAllMethod = assetBundleType.GetMethod("LoadAllAssets", new Type[] { typeof(Type) });
+                if (loadAllMethod == null) return;
+
+                int bundleHarvested = 0;
+
+                foreach (object bundle in rawBundles)
+                {
+                    if (bundle == null) continue;
+
+                    // 1. Inspect all GameObjects stored in the bundle
+                    Il2CppSystem.Object[] rawGos = loadAllMethod.Invoke(bundle, new object[] { typeof(GameObject) }) as Il2CppSystem.Object[];
+                    if (rawGos != null)
+                    {
+                        for (int i = 0; i < rawGos.Length; i++)
+                        {
+                            if (rawGos[i] == null) continue;
+                            GameObject go = rawGos[i].TryCast<GameObject>();
+                            if (go == null) continue;
+
+                            MeshFilter[] mfs = go.GetComponentsInChildren<MeshFilter>(true);
+                            for (int f = 0; f < mfs.Length; f++)
+                            {
+                                MeshFilter mf = mfs[f];
+                                if (mf == null || mf.sharedMesh == null) continue;
+
+                                Renderer r = mf.GetComponent<Renderer>();
+                                if (TryHarvestMesh(mf.sharedMesh, mf.gameObject.name, mf.sharedMesh.name, mf.gameObject, r, seenMeshIDs, displayNameCounts, meshToOriginalMaterials))
+                                {
+                                    bundleHarvested++;
+                                }
+                            }
+
+                            SkinnedMeshRenderer[] smrs = go.GetComponentsInChildren<SkinnedMeshRenderer>(true);
+                            for (int s = 0; s < smrs.Length; s++)
+                            {
+                                SkinnedMeshRenderer smr = smrs[s];
+                                if (smr == null || smr.sharedMesh == null) continue;
+
+                                if (TryHarvestMesh(smr.sharedMesh, smr.gameObject.name, smr.sharedMesh.name, smr.gameObject, smr, seenMeshIDs, displayNameCounts, meshToOriginalMaterials))
+                                {
+                                    bundleHarvested++;
+                                }
+                            }
+                        }
+                    }
+
+                    // 2. Direct Meshes stored in the bundle
+                    Il2CppSystem.Object[] rawMeshes = loadAllMethod.Invoke(bundle, new object[] { typeof(Mesh) }) as Il2CppSystem.Object[];
+                    if (rawMeshes != null)
+                    {
+                        for (int m = 0; m < rawMeshes.Length; m++)
+                        {
+                            if (rawMeshes[m] == null) continue;
+                            Mesh mesh = rawMeshes[m].TryCast<Mesh>();
+                            if (mesh == null) continue;
+
+                            if (TryHarvestMesh(mesh, mesh.name, mesh.name, null, null, seenMeshIDs, displayNameCounts, meshToOriginalMaterials))
+                            {
+                                bundleHarvested++;
+                            }
+                        }
+                    }
+                }
+
+                if (bundleHarvested > 0)
+                {
+                    MelonLogger.Msg($">> [Harvest-AssetBundles] Extracted {bundleHarvested} assets from loaded AssetBundles.");
+                }
+            }
+            catch (Exception ex)
+            {
+                MelonLogger.Warning($"[Harvest-AssetBundles] Note: {ex.Message}");
+            }
+        }
+
+        // =========================================================================
+        // FEATURE F: CROSS-LEVEL / MULTI-TOWER ADDITIVE HARVESTING
+        // =========================================================================
+
+        public static void HarvestCrossLevelTowers(HashSet<int> seenMeshIDs, Dictionary<string, int> displayNameCounts, Dictionary<int, Material[]> meshToOriginalMaterials)
+        {
+            IsHarvestingAdditive = true;
+            try
+            {
+                List<string> levelPaths = GetDiscoveredLevelScenePaths();
+                string activeScenePath = SceneManager.GetActiveScene().path;
+
+                for (int i = 0; i < levelPaths.Count; i++)
+                {
+                    string scenePath = levelPaths[i];
+                    if (string.IsNullOrWhiteSpace(scenePath)) continue;
+
+                    // Skip active scene (already scanned)
+                    if (string.Equals(scenePath, activeScenePath, StringComparison.OrdinalIgnoreCase)) continue;
+
+                    string sName = System.IO.Path.GetFileNameWithoutExtension(scenePath);
+                    try
+                    {
+                        SceneManager.LoadScene(scenePath, LoadSceneMode.Additive);
+                        Scene loadedScene = SceneManager.GetSceneByPath(scenePath);
+
+                        // Fixed: IsValid() is a method on the Scene struct
+                        if (!loadedScene.IsValid())
+                        {
+                            loadedScene = SceneManager.GetSceneAt(SceneManager.sceneCount - 1);
+                        }
+
+                        if (loadedScene.IsValid() && loadedScene.isLoaded)
+                        {
+                            int prevCount = seenMeshIDs.Count;
+                            HarvestSceneRoots(loadedScene, seenMeshIDs, displayNameCounts, meshToOriginalMaterials);
+                            int added = seenMeshIDs.Count - prevCount;
+                            MelonLogger.Msg($">> [Harvest-CrossLevel] Additively harvested {added} assets from '{sName}'");
+
+                            SceneManager.UnloadSceneAsync(loadedScene);
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        MelonLogger.Warning($"[Harvest-CrossLevel] Skipped '{sName}': {ex.Message}");
+                    }
+                }
+            }
+            finally
+            {
+                IsHarvestingAdditive = false;
+            }
+        }
+
+        private static List<string> GetDiscoveredLevelScenePaths()
+        {
+            List<string> list = new List<string>();
+            int count = SceneManager.sceneCountInBuildSettings;
+            for (int i = 0; i < count; i++)
+            {
+                string path = SceneUtility.GetScenePathByBuildIndex(i);
+                if (string.IsNullOrEmpty(path)) continue;
+                string pLow = path.ToLowerInvariant();
+
+                // Harvest actual world levels/towers, ignoring menus, boots, and loaders
+                if ((pLow.Contains("level") || pLow.Contains("spark") || pLow.Contains("tower") || pLow.Contains("stage")) &&
+                    !pLow.Contains("menu") && !pLow.Contains("boot") && !pLow.Contains("init") && !pLow.Contains("title") && !pLow.Contains("load"))
+                {
+                    list.Add(path);
+                }
+            }
+            return list;
+        }
+
+        private static void HarvestSceneRoots(Scene scene, HashSet<int> seenMeshIDs, Dictionary<string, int> displayNameCounts, Dictionary<int, Material[]> meshToOriginalMaterials)
         {
             if (!scene.isLoaded) return;
 
             GameObject[] roots = scene.GetRootGameObjects();
             for (int r = 0; r < roots.Length; r++)
             {
-                if (roots[r] == null) continue;
-                MeshFilter[] childFilters = roots[r].GetComponentsInChildren<MeshFilter>(true);
+                GameObject root = roots[r];
+                if (root == null) continue;
 
-                for (int c = 0; c < childFilters.Length; c++)
+                MeshFilter[] filters = root.GetComponentsInChildren<MeshFilter>(true);
+                for (int f = 0; f < filters.Length; f++)
                 {
-                    MeshFilter mf = childFilters[c];
+                    MeshFilter mf = filters[f];
                     if (mf == null || mf.sharedMesh == null || mf.gameObject == null) continue;
 
-                    Mesh mesh = mf.sharedMesh;
-                    int instanceID = mesh.GetInstanceID();
+                    Renderer rend = mf.GetComponent<MeshRenderer>() ?? mf.GetComponentInParent<MeshRenderer>();
+                    TryHarvestMesh(mf.sharedMesh, mf.gameObject.name, mf.sharedMesh.name, mf.gameObject, rend, seenMeshIDs, displayNameCounts, meshToOriginalMaterials);
+                }
 
-                    // Skip gameplay components handled explicitly
-                    if (mf.GetComponent<Jumper>() != null || mf.GetComponent<TurretScript>() != null ||
-                        mf.GetComponent<LaserScript>() != null || mf.GetComponent<Helix>() != null ||
-                        mf.GetComponent<CheckPointScript>() != null)
-                    {
-                        continue;
-                    }
+                SkinnedMeshRenderer[] smrs = root.GetComponentsInChildren<SkinnedMeshRenderer>(true);
+                for (int s = 0; s < smrs.Length; s++)
+                {
+                    SkinnedMeshRenderer smr = smrs[s];
+                    if (smr == null || smr.sharedMesh == null || smr.gameObject == null) continue;
 
-                    string mName = mesh.name.Trim();
-                    string goName = mf.gameObject.name.Trim();
-
-                    if (ModelHarvestFilter.ShouldIgnoreMesh(mesh, mName, goName)) continue;
-                    if (!ModelHarvestFilter.IsValidHarvestSize(mesh.bounds)) continue;
-
-                    if (!seenMeshIDs.Add(instanceID)) continue;
-
-                    GameObject templateObj = CreateCleanVaultTemplate(mesh, goName, mName, mf.GetComponent<MeshRenderer>(), meshToOriginalMaterials);
-                    _proceduralTemplates.Add(templateObj);
-
-                    RegisterModelAsset(templateObj, mesh, goName, mName, displayNameCounts);
+                    TryHarvestMesh(smr.sharedMesh, smr.gameObject.name, smr.sharedMesh.name, smr.gameObject, smr, seenMeshIDs, displayNameCounts, meshToOriginalMaterials);
                 }
             }
+        }
+
+        // =========================================================================
+        // TARGETED & GENERAL SWEEPS
+        // =========================================================================
+
+        private static void HarvestTargetedRoots(string[] targetKeywords, string groupLabel, HashSet<int> seenMeshIDs, Dictionary<string, int> displayNameCounts, Dictionary<int, Material[]> meshToOriginalMaterials)
+        {
+            int harvestedCount = 0;
+
+            for (int s = 0; s < SceneManager.sceneCount; s++)
+            {
+                Scene scene = SceneManager.GetSceneAt(s);
+                if (!scene.isLoaded) continue;
+
+                GameObject[] roots = scene.GetRootGameObjects();
+                for (int r = 0; r < roots.Length; r++)
+                {
+                    GameObject root = roots[r];
+                    if (root == null) continue;
+
+                    string rLow = root.name.ToLowerInvariant();
+                    bool isTarget = false;
+
+                    for (int k = 0; k < targetKeywords.Length; k++)
+                    {
+                        if (rLow == targetKeywords[k] || rLow.Contains(targetKeywords[k]))
+                        {
+                            isTarget = true;
+                            break;
+                        }
+                    }
+
+                    if (!isTarget) continue;
+
+                    MeshFilter[] filters = root.GetComponentsInChildren<MeshFilter>(true);
+                    for (int f = 0; f < filters.Length; f++)
+                    {
+                        MeshFilter mf = filters[f];
+                        if (mf == null || mf.sharedMesh == null || mf.gameObject == null) continue;
+
+                        if (TryHarvestMesh(mf.sharedMesh, mf.gameObject.name, mf.sharedMesh.name, mf.gameObject,
+                            mf.GetComponent<MeshRenderer>() ?? mf.GetComponentInParent<MeshRenderer>(),
+                            seenMeshIDs, displayNameCounts, meshToOriginalMaterials))
+                        {
+                            harvestedCount++;
+                        }
+                    }
+
+                    SkinnedMeshRenderer[] smrs = root.GetComponentsInChildren<SkinnedMeshRenderer>(true);
+                    for (int sm = 0; sm < smrs.Length; sm++)
+                    {
+                        SkinnedMeshRenderer smr = smrs[sm];
+                        if (smr == null || smr.sharedMesh == null || smr.gameObject == null) continue;
+
+                        if (TryHarvestMesh(smr.sharedMesh, smr.gameObject.name, smr.sharedMesh.name, smr.gameObject,
+                            smr, seenMeshIDs, displayNameCounts, meshToOriginalMaterials))
+                        {
+                            harvestedCount++;
+                        }
+                    }
+                }
+            }
+
+            if (harvestedCount > 0)
+            {
+                MelonLogger.Msg($">> [Harvest-{groupLabel}] Harvested {harvestedCount} models from '{groupLabel}' roots.");
+            }
+        }
+
+        private static void HarvestAllLoadedScenesArchitecture(HashSet<int> seenMeshIDs, Dictionary<string, int> displayNameCounts, Dictionary<int, Material[]> meshToOriginalMaterials)
+        {
+            int generalCount = 0;
+
+            for (int s = 0; s < SceneManager.sceneCount; s++)
+            {
+                Scene scene = SceneManager.GetSceneAt(s);
+                if (!scene.isLoaded) continue;
+
+                GameObject[] roots = scene.GetRootGameObjects();
+                for (int r = 0; r < roots.Length; r++)
+                {
+                    GameObject root = roots[r];
+                    if (root == null) continue;
+
+                    if (root == _harvesterVault || root.name.StartsWith("Studio_") || root.name.StartsWith("Custom_"))
+                        continue;
+
+                    MeshFilter[] childFilters = root.GetComponentsInChildren<MeshFilter>(true);
+                    for (int c = 0; c < childFilters.Length; c++)
+                    {
+                        MeshFilter mf = childFilters[c];
+                        if (mf == null || mf.sharedMesh == null || mf.gameObject == null) continue;
+
+                        if (TryHarvestMesh(mf.sharedMesh, mf.gameObject.name, mf.sharedMesh.name, mf.gameObject,
+                            mf.GetComponent<MeshRenderer>() ?? mf.GetComponentInParent<MeshRenderer>(),
+                            seenMeshIDs, displayNameCounts, meshToOriginalMaterials))
+                        {
+                            generalCount++;
+                        }
+                    }
+
+                    SkinnedMeshRenderer[] smrs = root.GetComponentsInChildren<SkinnedMeshRenderer>(true);
+                    for (int sm = 0; sm < smrs.Length; sm++)
+                    {
+                        SkinnedMeshRenderer smr = smrs[sm];
+                        if (smr == null || smr.sharedMesh == null || smr.gameObject == null) continue;
+
+                        if (TryHarvestMesh(smr.sharedMesh, smr.gameObject.name, smr.sharedMesh.name, smr.gameObject,
+                            smr, seenMeshIDs, displayNameCounts, meshToOriginalMaterials))
+                        {
+                            generalCount++;
+                        }
+                    }
+                }
+            }
+
+            if (generalCount > 0)
+            {
+                MelonLogger.Msg($">> [Harvest-General] Harvested {generalCount} additional models across scene hierarchies.");
+            }
+        }
+
+        private static void HarvestLoadedComponentsFromMemory(HashSet<int> seenMeshIDs, Dictionary<string, int> displayNameCounts, Dictionary<int, Material[]> meshToOriginalMaterials)
+        {
+            int extraCount = 0;
+
+            MeshFilter[] allFilters = Resources.FindObjectsOfTypeAll<MeshFilter>();
+            for (int i = 0; i < allFilters.Length; i++)
+            {
+                MeshFilter mf = allFilters[i];
+                if (mf == null || mf.sharedMesh == null || mf.gameObject == null) continue;
+
+                if (TryHarvestMesh(mf.sharedMesh, mf.gameObject.name, mf.sharedMesh.name, mf.gameObject,
+                    mf.GetComponent<MeshRenderer>(), seenMeshIDs, displayNameCounts, meshToOriginalMaterials))
+                {
+                    extraCount++;
+                }
+            }
+
+            SkinnedMeshRenderer[] allSkinned = Resources.FindObjectsOfTypeAll<SkinnedMeshRenderer>();
+            for (int i = 0; i < allSkinned.Length; i++)
+            {
+                SkinnedMeshRenderer smr = allSkinned[i];
+                if (smr == null || smr.sharedMesh == null || smr.gameObject == null) continue;
+
+                if (TryHarvestMesh(smr.sharedMesh, smr.gameObject.name, smr.sharedMesh.name, smr.gameObject,
+                    smr, seenMeshIDs, displayNameCounts, meshToOriginalMaterials))
+                {
+                    extraCount++;
+                }
+            }
+
+            if (extraCount > 0)
+            {
+                MelonLogger.Msg($">> [Harvest-DeepMemory] Discovered {extraCount} additional prefab/memory components.");
+            }
+        }
+
+        private static bool TryHarvestMesh(Mesh mesh, string goName, string meshName, GameObject sourceGo, Renderer sourceRend,
+            HashSet<int> seenMeshIDs, Dictionary<string, int> displayNameCounts, Dictionary<int, Material[]> meshToOriginalMaterials)
+        {
+            if (mesh == null) return false;
+            int instanceID = mesh.GetInstanceID();
+
+            if (seenMeshIDs.Contains(instanceID)) return false;
+
+            if (sourceGo != null)
+            {
+                if (sourceGo.GetComponent<Jumper>() != null || sourceGo.GetComponent<TurretScript>() != null ||
+                    sourceGo.GetComponent<LaserScript>() != null || sourceGo.GetComponent<Helix>() != null ||
+                    sourceGo.GetComponent<CheckPointScript>() != null)
+                {
+                    return false;
+                }
+            }
+
+            string mName = meshName.Trim();
+            string gName = goName.Trim();
+
+            if (ModelHarvestFilter.ShouldIgnoreMesh(mesh, mName, gName, sourceGo)) return false;
+            if (!ModelHarvestFilter.IsValidHarvestSize(mesh.bounds, sourceGo != null ? sourceGo.transform : null, 1.2f, 24.0f)) return false;
+
+            seenMeshIDs.Add(instanceID);
+
+            GameObject templateObj = CreateCleanVaultTemplate(mesh, gName, mName, sourceRend, meshToOriginalMaterials);
+            _proceduralTemplates.Add(templateObj);
+
+            RegisterModelAsset(templateObj, mesh, gName, mName, displayNameCounts);
+            return true;
         }
 
         private static void HarvestResidualMeshesFromMemory(HashSet<int> seenMeshIDs, Dictionary<string, int> displayNameCounts, Dictionary<int, Material[]> meshToOriginalMaterials)
         {
             Mesh[] allLoadedMeshes = Resources.FindObjectsOfTypeAll<Mesh>();
+            int memoryCount = 0;
+
             for (int m = 0; m < allLoadedMeshes.Length; m++)
             {
                 Mesh mesh = allLoadedMeshes[m];
@@ -385,18 +876,24 @@ namespace DeadCoreEditor
                 if (seenMeshIDs.Contains(instanceID)) continue;
 
                 string mName = mesh.name.Trim();
-                if (ModelHarvestFilter.ShouldIgnoreMesh(mesh, mName, mName)) continue;
-                if (!ModelHarvestFilter.IsValidHarvestSize(mesh.bounds)) continue;
+                if (ModelHarvestFilter.ShouldIgnoreMesh(mesh, mName, mName, null)) continue;
+                if (!ModelHarvestFilter.IsValidHarvestSize(mesh.bounds, null, 1.2f, 24.0f)) continue;
 
                 seenMeshIDs.Add(instanceID);
 
                 GameObject templateGo = CreateCleanVaultTemplate(mesh, mName, mName, null, meshToOriginalMaterials);
                 _proceduralTemplates.Add(templateGo);
                 RegisterModelAsset(templateGo, mesh, mName, mName, displayNameCounts);
+                memoryCount++;
+            }
+
+            if (memoryCount > 0)
+            {
+                MelonLogger.Msg($">> [Harvest-Memory] Extracted {memoryCount} residual loaded meshes (1.2m - 24.0m).");
             }
         }
 
-        private static GameObject CreateCleanVaultTemplate(Mesh mesh, string goName, string mName, MeshRenderer sourceRend, Dictionary<int, Material[]> meshToOriginalMaterials)
+        private static GameObject CreateCleanVaultTemplate(Mesh mesh, string goName, string mName, Renderer sourceRend, Dictionary<int, Material[]> meshToOriginalMaterials)
         {
             GameObject templateGo = new GameObject($"Template_{mName}");
             templateGo.transform.SetParent(_harvesterVault.transform, false);
@@ -464,8 +961,6 @@ namespace DeadCoreEditor
             EditorSessionManager.AllAssets.Add(asset);
         }
 
-        // Keep HarvestNativeGameplayEntities and HarvestProceduralHazardsAndLights unchanged...
-
         // =========================================================================
         // SECTION 3: NATIVE GAMEPLAY HARVESTING
         // =========================================================================
@@ -508,7 +1003,7 @@ namespace DeadCoreEditor
                 EditorSessionManager.AllAssets.Add(jAsset);
             }
 
-            // 2. Checkpoint & Gates (CLASS1 COMPATIBLE)
+            // 2. Checkpoint & Gates
             try
             {
                 EditorSessionManager.PrefabCheckPoint = GameObject.FindObjectOfType<CheckPointScript>();
@@ -906,13 +1401,13 @@ namespace DeadCoreEditor
                 if (IsProtected(root, player, slm != null ? slm.gameObject : null)) continue;
 
                 string rLow = root.name.ToLower();
-                if (rLow == "_ld" || rLow == "l_d")
+                if (rLow == "_ld" || rLow == "l_d" || rLow == "ld")
                 {
                     root.SetActive(false);
                     continue;
                 }
 
-                if (rLow == "_la" || rLow == "l_a")
+                if (rLow == "_la" || rLow == "l_a" || rLow == "la")
                 {
                     root.SetActive(true);
                     continue;
@@ -1043,6 +1538,9 @@ namespace DeadCoreEditor
         [HarmonyPostfix]
         public static void Postfix()
         {
+            // Do not initialize custom level if an additive background scan is running
+            if (SceneHarvestingService.IsHarvestingAdditive) return;
+
             string currentScene = SceneManager.GetActiveScene().name.ToLower();
             if (currentScene.Contains("menu")) return;
 

@@ -252,6 +252,65 @@ namespace DeadCoreEditor
         }
     }
 
+    public class NeonConfig : IEditorComponent
+    {
+        public string ComponentTag => "NEON";
+        public Color Color = Color.cyan;
+        public float Intensity = 2.0f;
+        public bool IsActive = true;
+
+        // Dynamic Glitch & Waveform Modifiers
+        public GlowMode Mode = GlowMode.Steady;
+        public float Frequency = 1.5f;       // Speed in Hz
+        public float MinMultiplier = 0.1f;   // Dimmest floor
+        public float MaxMultiplier = 1.6f;   // Brightest peak
+        public int SyncGroup = 0;            // 0 = independent, 1+ = shared circuit
+        public float PhaseOffset = 0.0f;     // For chase lights & wave propagation
+
+        public NeonConfig Clone() => new NeonConfig
+        {
+            Color = this.Color,
+            Intensity = this.Intensity,
+            IsActive = this.IsActive,
+            Mode = this.Mode,
+            Frequency = this.Frequency,
+            MinMultiplier = this.MinMultiplier,
+            MaxMultiplier = this.MaxMultiplier,
+            SyncGroup = this.SyncGroup,
+            PhaseOffset = this.PhaseOffset
+        };
+
+        IEditorComponent IEditorComponent.Clone() => Clone();
+
+        public string Serialize()
+        {
+            var inv = CultureInfo.InvariantCulture;
+            string hex = PersistenceUtility.ColorToHex(Color);
+            return $"{(IsActive ? 1 : 0)}:{hex}:{Intensity.ToString("F2", inv)}:" +
+                   $"{(int)Mode}:{Frequency.ToString("F2", inv)}:{MinMultiplier.ToString("F2", inv)}:" +
+                   $"{MaxMultiplier.ToString("F2", inv)}:{SyncGroup}:{PhaseOffset.ToString("F2", inv)}";
+        }
+
+        public void Deserialize(string rawData)
+        {
+            if (string.IsNullOrWhiteSpace(rawData)) return;
+            string[] p = rawData.Split(':');
+            var inv = CultureInfo.InvariantCulture;
+
+            if (p.Length >= 1) IsActive = p[0] == "1";
+            if (p.Length >= 2) Color = PersistenceUtility.HexToColor(p[1], Color.cyan);
+            if (p.Length >= 3 && float.TryParse(p[2], NumberStyles.Float, inv, out float inten))
+                Intensity = inten;
+
+            if (p.Length >= 4) Mode = (GlowMode)PersistenceUtility.ParseInt(p[3], 0);
+            if (p.Length >= 5) Frequency = Mathf.Clamp(PersistenceUtility.ParseFloat(p[4], 1.5f), 0.1f, 25f);
+            if (p.Length >= 6) MinMultiplier = Mathf.Clamp(PersistenceUtility.ParseFloat(p[5], 0.1f), 0.0f, 2f);
+            if (p.Length >= 7) MaxMultiplier = Mathf.Clamp(PersistenceUtility.ParseFloat(p[6], 1.6f), 0.5f, 6f);
+            if (p.Length >= 8) SyncGroup = PersistenceUtility.ParseInt(p[7], 0);
+            if (p.Length >= 9) PhaseOffset = PersistenceUtility.ParseFloat(p[8], 0f);
+        }
+    }
+
     public class LightConfig : IEditorComponent
     {
         public string ComponentTag => "LIGHT";
@@ -261,6 +320,14 @@ namespace DeadCoreEditor
         public float VolumetricIntensity = 4.0f;
         public bool IsDirectional = false;
 
+        // Dynamic Glitch & Waveform Modifiers
+        public GlowMode Mode = GlowMode.Steady;
+        public float Frequency = 1.5f;
+        public float MinMultiplier = 0.1f;
+        public float MaxMultiplier = 1.6f;
+        public int SyncGroup = 0;
+        public float PhaseOffset = 0.0f;
+
         public LightConfig Clone()
         {
             return new LightConfig
@@ -269,7 +336,13 @@ namespace DeadCoreEditor
                 SpotAngle = this.SpotAngle,
                 Intensity = this.Intensity,
                 VolumetricIntensity = this.VolumetricIntensity,
-                IsDirectional = this.IsDirectional
+                IsDirectional = this.IsDirectional,
+                Mode = this.Mode,
+                Frequency = this.Frequency,
+                MinMultiplier = this.MinMultiplier,
+                MaxMultiplier = this.MaxMultiplier,
+                SyncGroup = this.SyncGroup,
+                PhaseOffset = this.PhaseOffset
             };
         }
 
@@ -282,7 +355,9 @@ namespace DeadCoreEditor
             byte g = (byte)Mathf.Clamp(Mathf.RoundToInt(Color.g * 255f), 0, 255);
             byte b = (byte)Mathf.Clamp(Mathf.RoundToInt(Color.b * 255f), 0, 255);
             string hex = $"{r:X2}{g:X2}{b:X2}";
-            return $"{Intensity.ToString("F2", inv)}:{SpotAngle.ToString("F1", inv)}:{hex}:{VolumetricIntensity.ToString("F2", inv)}:{(IsDirectional ? 1 : 0)}";
+            return $"{Intensity.ToString("F2", inv)}:{SpotAngle.ToString("F1", inv)}:{hex}:{VolumetricIntensity.ToString("F2", inv)}:" +
+                   $"{(IsDirectional ? 1 : 0)}:{(int)Mode}:{Frequency.ToString("F2", inv)}:{MinMultiplier.ToString("F2", inv)}:" +
+                   $"{MaxMultiplier.ToString("F2", inv)}:{SyncGroup}:{PhaseOffset.ToString("F2", inv)}";
         }
 
         public void Deserialize(string rawData)
@@ -306,45 +381,23 @@ namespace DeadCoreEditor
             }
             if (p.Length >= 4 && float.TryParse(p[3], NumberStyles.Float, inv, out float v)) VolumetricIntensity = v;
             if (p.Length >= 5) IsDirectional = p[4] == "1";
+
+            if (p.Length >= 6) Mode = (GlowMode)PersistenceUtility.ParseInt(p[5], 0);
+            if (p.Length >= 7) Frequency = Mathf.Clamp(PersistenceUtility.ParseFloat(p[6], 1.5f), 0.1f, 25f);
+            if (p.Length >= 8) MinMultiplier = Mathf.Clamp(PersistenceUtility.ParseFloat(p[7], 0.1f), 0.0f, 2f);
+            if (p.Length >= 9) MaxMultiplier = Mathf.Clamp(PersistenceUtility.ParseFloat(p[8], 1.6f), 0.5f, 6f);
+            if (p.Length >= 10) SyncGroup = PersistenceUtility.ParseInt(p[9], 0);
+            if (p.Length >= 11) PhaseOffset = PersistenceUtility.ParseFloat(p[10], 0f);
         }
     }
-
-    public class NeonConfig : IEditorComponent
+    public enum GlowMode
     {
-        public string ComponentTag => "NEON";
-        public Color Color = Color.cyan;
-        public float Intensity = 2.0f;
-        public bool IsActive = true;
-
-        // Strongly-typed Clone returning NeonConfig
-        public NeonConfig Clone() => new NeonConfig
-        {
-            Color = this.Color,
-            Intensity = this.Intensity,
-            IsActive = this.IsActive
-        };
-
-        // Explicit interface implementation
-        IEditorComponent IEditorComponent.Clone() => Clone();
-
-        public string Serialize()
-        {
-            var inv = CultureInfo.InvariantCulture;
-            string hex = PersistenceUtility.ColorToHex(Color);
-            return $"{(IsActive ? 1 : 0)}:{hex}:{Intensity.ToString("F2", inv)}";
-        }
-
-        public void Deserialize(string rawData)
-        {
-            if (string.IsNullOrWhiteSpace(rawData)) return;
-            string[] p = rawData.Split(':');
-            var inv = CultureInfo.InvariantCulture;
-
-            if (p.Length >= 1) IsActive = p[0] == "1";
-            if (p.Length >= 2) Color = PersistenceUtility.HexToColor(p[1], Color.cyan);
-            if (p.Length >= 3 && float.TryParse(p[2], NumberStyles.Float, inv, out float inten))
-                Intensity = inten;
-        }
+        Steady = 0,     // Constant glow
+        Breathe = 1,    // Smooth sine wave
+        Glitch = 2,     // Short-circuits, electric micro-dropouts & spikes
+        Surge = 3,      // Slow exponential power buildup followed by blackout
+        Alarm = 4,      // High-frequency emergency square-wave strobe
+        Heartbeat = 5   // Double-pulse rhythm (tension/countdown)
     }
 
     public class SkyboxConfig : IEditorComponent

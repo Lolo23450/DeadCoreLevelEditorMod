@@ -443,7 +443,13 @@ namespace DeadCoreEditor
 
             ApplyCableConfig(cableObj, cfg);
             EditorSessionManager.RegisterPlacedObject(cableObj);
-            UpdateCableVisualHandles(cableObj);
+
+            // Only show handles if we are currently in Edit Mode
+            if (EditorSessionManager.IsEditModeActive)
+                UpdateCableVisualHandles(cableObj);
+            else
+                HideCableVisualHandles(cableObj);
+
             return cableObj;
         }
 

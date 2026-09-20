@@ -6,11 +6,14 @@ using MelonLoader;
 using UnityEngine;
 using UnityEngine.UI;
 using UnityEngine.EventSystems;
+using UnityEngine.Networking;
 using SceneManager = UnityEngine.SceneManagement.SceneManager;
 using Il2Cpp;
 using Il2CppInterop.Runtime;
 using Il2CppTMPro;
 using Il2CppDeadCore.UI;
+using System.Threading.Tasks;
+using System.Net.Http;
 
 using File = System.IO.File;
 using Directory = System.IO.Directory;
@@ -892,6 +895,11 @@ namespace DeadCoreEditor
                 {
                     new DropdownItem("Preferences & Shortcuts", () => _preferencesWin?.Toggle()),
                     new DropdownItem("Save Level (F5)", () => LevelPersistenceService.SaveLevel(MapBrowserService.SelectedMapName)),
+                    new DropdownItem("Publish to Community", () =>
+                    {
+                        LevelPersistenceService.SaveLevel(MapBrowserService.SelectedMapName);
+                        CommunityLevelService.PublishCurrentLevel(MapBrowserService.SelectedMapPath);
+                    }, new Color(0.3f, 0.95f, 0.5f)),
                     new DropdownItem("Load Level (F6)", () => LevelPersistenceService.LoadLevel(MapBrowserService.SelectedMapName)),
                     new DropdownItem("Capture Snapshot (F4)", () => ThumbnailCaptureService.CaptureLevelThumbnail(MapBrowserService.SelectedMapPath, EditorSessionManager.PlacedObjects, EditorSessionManager.LevelSpawnPosition)),
                     new DropdownItem("Reset Level", () => EditorSessionManager.ClearAllPlacedObjects(), new Color(0.9f, 0.3f, 0.3f)),
@@ -912,10 +920,10 @@ namespace DeadCoreEditor
                     new DropdownItem("Replace with Equipped Prop", () => SwapSelectedObjectsWithEquipped()),
                     new DropdownItem("+ Procedural Wire / Cable", () =>
                     {
-                        Vector3 camPos = EditorViewportCamera.ViewportCamera != null 
-                            ? EditorViewportCamera.ViewportCamera.transform.position + EditorViewportCamera.ViewportCamera.transform.forward * 8f 
+                        Vector3 camPos = EditorViewportCamera.ViewportCamera != null
+                            ? EditorViewportCamera.ViewportCamera.transform.position + EditorViewportCamera.ViewportCamera.transform.forward * 8f
                             : EditorSessionManager.LevelSpawnPosition;
-        
+
                         GameObject cable = ProceduralCableService.CreateProceduralCable(camPos, new Vector3(-4f, 1f, 0f), new Vector3(4f, -0.5f, 0f));
                         EditorSessionManager.SelectObject(cable);
                         RefreshHierarchy();
@@ -938,6 +946,8 @@ namespace DeadCoreEditor
             {
                 OpenDropdownMenu(anchor, new List<DropdownItem>
                 {
+                    new DropdownItem("Select All (Ctrl+A)", () => EditorSessionManager.SelectAllPlacedObjects()),
+                    new DropdownItem("Deselect All", () => EditorSessionManager.SelectObject(null)),
                     new DropdownItem("Undo (Ctrl+Z)", () => EditorSessionManager.PerformUndo()),
                     new DropdownItem("Redo (Ctrl+Y)", () => EditorSessionManager.PerformRedo()),
                     new DropdownItem("Duplicate (Ctrl+D)", () => EditorSessionManager.DuplicateSelectedObjects()),
@@ -986,9 +996,15 @@ namespace DeadCoreEditor
             LayoutElement sle = spacer.AddComponent<LayoutElement>();
             sle.flexibleWidth = 1f;
 
+            // Direct Publish Button in Header
+            CreateButtonPrimitive(_toolbarPanel.transform, "Btn_HeaderPublish", "PUBLISH", 90f, () =>
+            {
+                LevelPersistenceService.SaveLevel(MapBrowserService.SelectedMapName);
+                CommunityLevelService.PublishCurrentLevel(MapBrowserService.SelectedMapPath);
+            }, new Color(0.18f, 0.65f, 0.35f, 1f));
+
             CreateButtonPrimitive(_toolbarPanel.transform, "Btn_Playtest", "PLAYTEST (F1)", 125f, () => EditorSessionManager.ToggleEditMode(), new Color(0.18f, 0.65f, 0.32f));
         }
-
         private static void CreateToolbarDivider(Transform parent)
         {
             GameObject div = new GameObject("Divider", Il2CppType.Of<RectTransform>());
@@ -2669,6 +2685,62 @@ namespace DeadCoreEditor
                         EditorSessionManager.ApplyLightConfig(targets[t], lc);
                 });
 
+                // --- Dynamic Light Flicker Profile ---
+                GameObject lAnimHeader = CreateRowContainerPrimitive(card.transform, "Row_LAnimHeader", 20f);
+                CreateTextPrimitive(lAnimHeader.transform, "-- Flicker & Strobe Profile --", Vector2.zero, Vector2.one, Vector2.zero, Vector2.zero, 9.5f, FontStyles.Bold, new Color(0.3f, 0.85f, 1f), TextAlignmentOptions.MidlineLeft);
+
+                GameObject lModeRow = CreateRowContainerPrimitive(card.transform, "Row_LGlowMode", 24f);
+                SetupRowHorizontalLayoutPrimitive(lModeRow, 4f);
+                CreateButtonPrimitive(lModeRow.transform, "Btn_LGlowMode", $"Profile: [{lc.Mode}]", 240f, () =>
+                {
+                    lc.Mode = (GlowMode)(((int)lc.Mode + 1) % 6);
+                    var targets = GetSelectionTargets(obj);
+                    for (int t = 0; t < targets.Count; t++)
+                    {
+                        if (EditorSessionManager.PlacedLights.TryGetValue(targets[t], out var tlc))
+                        {
+                            tlc.Mode = lc.Mode;
+                            EditorSessionManager.ApplyLightConfig(targets[t], tlc);
+                        }
+                    }
+                    RebuildModularInspectorCards(obj);
+                }, new Color(0.18f, 0.28f, 0.40f));
+
+                if (lc.Mode != GlowMode.Steady)
+                {
+                    AddSliderRow(card.transform, "Frequency (Hz)", 0.2f, 12f, lc.Frequency, "{0:F1} Hz", (v) =>
+                    {
+                        lc.Frequency = v;
+                        var targets = GetSelectionTargets(obj);
+                        for (int t = 0; t < targets.Count; t++)
+                            if (EditorSessionManager.PlacedLights.TryGetValue(targets[t], out var tlc)) tlc.Frequency = v;
+                    });
+
+                    AddSliderRow(card.transform, "Min Floor", 0.0f, 1.5f, lc.MinMultiplier, "{0:F2}x", (v) =>
+                    {
+                        lc.MinMultiplier = v;
+                        var targets = GetSelectionTargets(obj);
+                        for (int t = 0; t < targets.Count; t++)
+                            if (EditorSessionManager.PlacedLights.TryGetValue(targets[t], out var tlc)) tlc.MinMultiplier = v;
+                    });
+
+                    AddSliderRow(card.transform, "Max Peak", 1.0f, 4.0f, lc.MaxMultiplier, "{0:F2}x", (v) =>
+                    {
+                        lc.MaxMultiplier = v;
+                        var targets = GetSelectionTargets(obj);
+                        for (int t = 0; t < targets.Count; t++)
+                            if (EditorSessionManager.PlacedLights.TryGetValue(targets[t], out var tlc)) tlc.MaxMultiplier = v;
+                    });
+
+                    AddSliderRow(card.transform, "Circuit Sync ID", 0f, 12f, lc.SyncGroup, "Group {0:F0}", (v) =>
+                    {
+                        lc.SyncGroup = Mathf.RoundToInt(v);
+                        var targets = GetSelectionTargets(obj);
+                        for (int t = 0; t < targets.Count; t++)
+                            if (EditorSessionManager.PlacedLights.TryGetValue(targets[t], out var tlc)) tlc.SyncGroup = lc.SyncGroup;
+                    });
+                }
+
                 _activeInspectorCards.Add(card);
             }
 
@@ -2812,6 +2884,12 @@ namespace DeadCoreEditor
                             if (EditorSessionManager.IsWaypointMarker(po, out GameObject ro, out _)) po = ro;
                             EditorSessionManager.MotionPaths.Remove(po);
                             EditorSessionManager.DestroyWaypointVisuals(po);
+
+                            // Explicitly remove from the entity registry
+                            if (EditorSessionManager.EntityRegistry.TryGetValue(po, out var entData))
+                            {
+                                entData.Remove<ObjectMotionPath>();
+                            }
                         }
                         RebuildModularInspectorCards(obj);
                     }, new Color(0.7f, 0.2f, 0.2f, 0.9f));
@@ -2929,6 +3007,70 @@ namespace DeadCoreEditor
                         }
                     }
                 });
+
+                // --- Dynamic Glow & Glitch Modifier ---
+                GameObject animHeader = CreateRowContainerPrimitive(card.transform, "Row_AnimHeader", 20f);
+                CreateTextPrimitive(animHeader.transform, "-- Glitch & Animation Profile --", Vector2.zero, Vector2.one, Vector2.zero, Vector2.zero, 9.5f, FontStyles.Bold, new Color(0.3f, 0.85f, 1f), TextAlignmentOptions.MidlineLeft);
+
+                GameObject modeRow = CreateRowContainerPrimitive(card.transform, "Row_GlowMode", 24f);
+                SetupRowHorizontalLayoutPrimitive(modeRow, 4f);
+                CreateButtonPrimitive(modeRow.transform, "Btn_GlowMode", $"Profile: [{nc.Mode}]", 240f, () =>
+                {
+                    nc.Mode = (GlowMode)(((int)nc.Mode + 1) % 6);
+                    var targets = GetSelectionTargets(obj);
+                    for (int t = 0; t < targets.Count; t++)
+                    {
+                        if (EditorSessionManager.PlacedNeonConfigs.TryGetValue(targets[t], out var tnc))
+                        {
+                            tnc.Mode = nc.Mode;
+                            EditorSessionManager.ApplyNeonConfig(targets[t], tnc);
+                        }
+                    }
+                    RebuildModularInspectorCards(obj);
+                }, new Color(0.18f, 0.28f, 0.40f));
+
+                if (nc.Mode != GlowMode.Steady)
+                {
+                    AddSliderRow(card.transform, "Frequency (Hz)", 0.2f, 12f, nc.Frequency, "{0:F1} Hz", (v) =>
+                    {
+                        nc.Frequency = v;
+                        var targets = GetSelectionTargets(obj);
+                        for (int t = 0; t < targets.Count; t++)
+                            if (EditorSessionManager.PlacedNeonConfigs.TryGetValue(targets[t], out var tnc)) tnc.Frequency = v;
+                    });
+
+                    AddSliderRow(card.transform, "Min Floor", 0.0f, 1.5f, nc.MinMultiplier, "{0:F2}x", (v) =>
+                    {
+                        nc.MinMultiplier = v;
+                        var targets = GetSelectionTargets(obj);
+                        for (int t = 0; t < targets.Count; t++)
+                            if (EditorSessionManager.PlacedNeonConfigs.TryGetValue(targets[t], out var tnc)) tnc.MinMultiplier = v;
+                    });
+
+                    AddSliderRow(card.transform, "Max Peak", 1.0f, 4.0f, nc.MaxMultiplier, "{0:F2}x", (v) =>
+                    {
+                        nc.MaxMultiplier = v;
+                        var targets = GetSelectionTargets(obj);
+                        for (int t = 0; t < targets.Count; t++)
+                            if (EditorSessionManager.PlacedNeonConfigs.TryGetValue(targets[t], out var tnc)) tnc.MaxMultiplier = v;
+                    });
+
+                    AddSliderRow(card.transform, "Circuit Sync ID", 0f, 12f, nc.SyncGroup, "Group {0:F0}", (v) =>
+                    {
+                        nc.SyncGroup = Mathf.RoundToInt(v);
+                        var targets = GetSelectionTargets(obj);
+                        for (int t = 0; t < targets.Count; t++)
+                            if (EditorSessionManager.PlacedNeonConfigs.TryGetValue(targets[t], out var tnc)) tnc.SyncGroup = nc.SyncGroup;
+                    });
+
+                    AddSliderRow(card.transform, "Phase Lag", 0.0f, 2.0f, nc.PhaseOffset, "{0:F2}s", (v) =>
+                    {
+                        nc.PhaseOffset = v;
+                        var targets = GetSelectionTargets(obj);
+                        for (int t = 0; t < targets.Count; t++)
+                            if (EditorSessionManager.PlacedNeonConfigs.TryGetValue(targets[t], out var tnc)) tnc.PhaseOffset = v;
+                    });
+                }
 
                 _activeInspectorCards.Add(card);
             }
@@ -4669,16 +4811,28 @@ namespace DeadCoreEditor
             }
         }
 
+        // =========================================================================
+        // 1. ENFORCE TAB-SPECIFIC LIST ITEMS & REMOVE OPPOSITE BUTTONS
+        // =========================================================================
         public static void EnforceCustomListOnly(LogsMenu menu)
         {
             if (menu == null || menu._logsButtonRoot == null) return;
+
+            bool isCommunity = (DeadCoreLevelEditorMod.ActiveTab == 1);
+            string allowedPrefix = isCommunity ? "OnlineMap_" : "CustomMap_";
+            string forbiddenPrefix = isCommunity ? "CustomMap_" : "OnlineMap_";
 
             int count = menu._logsButtonRoot.childCount;
             for (int i = 0; i < count; i++)
             {
                 Transform child = menu._logsButtonRoot.GetChild(i);
-                if (child != null && !child.name.StartsWith("CustomMap_"))
-                    child.gameObject.SetActive(false);
+                if (child != null)
+                {
+                    if (child.name.StartsWith(allowedPrefix))
+                        child.gameObject.SetActive(true);
+                    else
+                        child.gameObject.SetActive(false);
+                }
             }
         }
 
@@ -4699,6 +4853,9 @@ namespace DeadCoreEditor
             if (_nativeDeleteButton != null && _nativeDeleteButton.activeInHierarchy) SetButtonText(_nativeDeleteButton, "Delete", 34f);
         }
 
+        // =========================================================================
+        // 2. TAB SWITCHING & BOTTOM BAR CLEANUP
+        // =========================================================================
         public static void TransformLogsMenu(LogsMenu menu, int currentTab)
         {
             if (menu == null) return;
@@ -4714,6 +4871,7 @@ namespace DeadCoreEditor
 
             RebrandAndTrimNativeTabs(menu);
 
+            // Completely clear previous list items
             _spawnedRowObjects.Clear();
             if (menu._logsButtonRoot != null)
             {
@@ -4722,8 +4880,10 @@ namespace DeadCoreEditor
                     Transform child = menu._logsButtonRoot.GetChild(i);
                     if (child != null)
                     {
-                        if (child.name.StartsWith("CustomMap_")) GameObject.DestroyImmediate(child.gameObject);
-                        else child.gameObject.SetActive(false);
+                        if (child.name.StartsWith("CustomMap_") || child.name.StartsWith("OnlineMap_"))
+                            GameObject.DestroyImmediate(child.gameObject);
+                        else
+                            child.gameObject.SetActive(false);
                     }
                 }
             }
@@ -4731,9 +4891,18 @@ namespace DeadCoreEditor
             if (menu._logPrefab == null || menu._logsButtonRoot == null) return;
             menu._logPrefab.gameObject.SetActive(false);
 
-            List<string> fileList = new List<string>();
+            // TAB 0: MY LEVELS (LOCAL)
             if (currentTab == 0)
             {
+                // Hide community overlay
+                if (_communityCardRoot != null) _communityCardRoot.SetActive(false);
+                if (_nativeMetadataRoot != null) _nativeMetadataRoot.SetActive(true);
+
+                // Show local buttons
+                if (_nativeCreateButton != null) _nativeCreateButton.SetActive(true);
+                if (_nativeDeleteButton != null) _nativeDeleteButton.SetActive(true);
+
+                List<string> fileList = new List<string>();
                 if (Directory.Exists(MapBrowserService.MyLevelsDir))
                     fileList.AddRange(Directory.GetFiles(MapBrowserService.MyLevelsDir, "*.txt"));
 
@@ -4742,63 +4911,103 @@ namespace DeadCoreEditor
                     MapBrowserService.EnsureDirectories();
                     fileList.Add(Path.Combine(MapBrowserService.MyLevelsDir, "Default_Level.txt"));
                 }
+
+                for (int i = 0; i < fileList.Count; i++)
+                {
+                    string filePath = fileList[i];
+                    string fileName = Path.GetFileNameWithoutExtension(filePath);
+                    LevelMetadata meta = ReadLevelMetadata(filePath, fileName);
+
+                    GameObject itemObj = GameObject.Instantiate(menu._logPrefab.gameObject, menu._logsButtonRoot.transform);
+                    itemObj.name = $"CustomMap_{fileName}";
+                    itemObj.SetActive(true);
+                    DisableLocalizationScripts(itemObj);
+
+                    SetupRowVisuals(itemObj, (i + 1).ToString("D2"), meta.Title);
+
+                    string capturedPath = filePath;
+                    string capturedName = fileName;
+                    GameObject capturedObj = itemObj;
+
+                    Button btn = itemObj.GetComponent<Button>() ?? itemObj.AddComponent<Button>();
+                    btn.onClick = new Button.ButtonClickedEvent();
+                    btn.onClick.AddListener((Action)(() => OnLevelSelected(menu, capturedPath, capturedName, capturedObj)));
+                    _spawnedRowObjects.Add(itemObj);
+
+                    if (i == 0 || capturedPath == MapBrowserService.SelectedMapPath)
+                        OnLevelSelected(menu, capturedPath, capturedName, capturedObj);
+                }
             }
+            // TAB 1: COMMUNITY (CLOUD)
             else
             {
-                if (Directory.Exists(MapBrowserService.DownloadedLevelsDir))
-                    fileList.AddRange(Directory.GetFiles(MapBrowserService.DownloadedLevelsDir, "*.txt"));
-            }
+                // Hide local metadata & buttons
+                if (_nativeMetadataRoot != null) _nativeMetadataRoot.SetActive(false);
+                if (_nativeCreateButton != null) _nativeCreateButton.SetActive(false);
+                if (_nativeDeleteButton != null) _nativeDeleteButton.SetActive(false);
 
-            for (int i = 0; i < fileList.Count; i++)
-            {
-                string filePath = fileList[i];
-                string fileName = Path.GetFileNameWithoutExtension(filePath);
-                LevelMetadata meta = ReadLevelMetadata(filePath, fileName);
+                var cloudLevels = CommunityLevelService.CachedCommunityLevels;
 
-                GameObject itemObj = GameObject.Instantiate(menu._logPrefab.gameObject, menu._logsButtonRoot.transform);
-                itemObj.name = $"CustomMap_{fileName}";
-                itemObj.SetActive(true);
-
-                DisableLocalizationScripts(itemObj);
-
-                LogToggle lt = itemObj.GetComponent<LogToggle>();
-                if (lt != null)
+                if (cloudLevels == null || cloudLevels.Count == 0)
                 {
-                    if (lt._idLabel != null) { lt._idLabel.text = (i + 1).ToString("D2"); lt._idLabel.enableWordWrapping = false; }
-                    if (lt._nameLabel != null) { lt._nameLabel.text = meta.Title; lt._nameLabel.enableWordWrapping = false; }
-                    GameObject.DestroyImmediate(lt);
+                    GameObject emptyObj = GameObject.Instantiate(menu._logPrefab.gameObject, menu._logsButtonRoot.transform);
+                    emptyObj.name = "OnlineMap_Empty";
+                    emptyObj.SetActive(true);
+                    DisableLocalizationScripts(emptyObj);
+                    SetupRowVisuals(emptyObj, "--", CommunityLevelService.IsFetching ? "Fetching levels..." : "No community levels uploaded yet.");
+                    _spawnedRowObjects.Add(emptyObj);
+                    return;
                 }
 
-                TMP_Text[] tmps = itemObj.GetComponentsInChildren<TMP_Text>(true);
-                if (tmps.Length >= 2)
+                for (int i = 0; i < cloudLevels.Count; i++)
                 {
-                    tmps[0].text = (i + 1).ToString("D2"); tmps[0].enableWordWrapping = false;
-                    tmps[1].text = meta.Title; tmps[1].enableWordWrapping = false;
+                    RemoteLevelItem item = cloudLevels[i];
+                    string expectedLocalPath = Path.Combine(MapBrowserService.DownloadedLevelsDir, $"{item.title}_{item.id}.txt");
+                    bool isDownloaded = File.Exists(expectedLocalPath);
+
+                    GameObject itemObj = GameObject.Instantiate(menu._logPrefab.gameObject, menu._logsButtonRoot.transform);
+                    itemObj.name = $"OnlineMap_{item.id}";
+                    itemObj.SetActive(true);
+                    DisableLocalizationScripts(itemObj);
+
+                    string statusTag = isDownloaded ? "<color=#00E5FF>[Installed]</color> " : "";
+                    SetupRowVisuals(itemObj, (i + 1).ToString("D2"), statusTag + item.title);
+
+                    RemoteLevelItem capturedItem = item;
+                    GameObject capturedObj = itemObj;
+
+                    Button btn = itemObj.GetComponent<Button>() ?? itemObj.AddComponent<Button>();
+                    btn.onClick = new Button.ButtonClickedEvent();
+                    btn.onClick.AddListener((Action)(() => OnCommunityLevelSelected(menu, capturedItem, capturedObj)));
+                    _spawnedRowObjects.Add(itemObj);
+
+                    if (i == 0)
+                        OnCommunityLevelSelected(menu, capturedItem, capturedObj);
                 }
-
-                Toggle tog = itemObj.GetComponent<Toggle>();
-                if (tog != null) GameObject.DestroyImmediate(tog);
-
-                Button btn = itemObj.GetComponent<Button>() ?? itemObj.AddComponent<Button>();
-                ColorBlock cb = btn.colors;
-                cb.normalColor = Color.white;
-                cb.highlightedColor = new Color(0.3f, 0.8f, 1f, 1f);
-                cb.pressedColor = new Color(1f, 0.7f, 0.2f, 1f);
-                btn.colors = cb;
-
-                string capturedPath = filePath;
-                string capturedName = fileName;
-                GameObject capturedObj = itemObj;
-
-                btn.onClick = new Button.ButtonClickedEvent();
-                btn.onClick.AddListener((Action)(() => OnLevelSelected(menu, capturedPath, capturedName, capturedObj)));
-                _spawnedRowObjects.Add(itemObj);
-
-                if (i == 0 || capturedPath == MapBrowserService.SelectedMapPath)
-                    OnLevelSelected(menu, capturedPath, capturedName, capturedObj);
             }
 
             SetupBottomBarButtons(menu);
+        }
+
+        private static void SetupRowVisuals(GameObject rowObj, string idText, string titleText)
+        {
+            LogToggle lt = rowObj.GetComponent<LogToggle>();
+            if (lt != null)
+            {
+                if (lt._idLabel != null) { lt._idLabel.text = idText; lt._idLabel.enableWordWrapping = false; }
+                if (lt._nameLabel != null) { lt._nameLabel.text = titleText; lt._nameLabel.enableWordWrapping = false; }
+                GameObject.DestroyImmediate(lt);
+            }
+
+            TMP_Text[] tmps = rowObj.GetComponentsInChildren<TMP_Text>(true);
+            if (tmps.Length >= 2)
+            {
+                tmps[0].text = idText; tmps[0].enableWordWrapping = false;
+                tmps[1].text = titleText; tmps[1].enableWordWrapping = false;
+            }
+
+            Toggle tog = rowObj.GetComponent<Toggle>();
+            if (tog != null) GameObject.DestroyImmediate(tog);
         }
 
         private static void RebrandAndTrimNativeTabs(LogsMenu menu)
@@ -4851,8 +5060,13 @@ namespace DeadCoreEditor
             }
         }
 
+        // =========================================================================
+        // 4. HIDE COMMUNITY CARD WHEN LOCAL LEVEL IS SELECTED
+        // =========================================================================
         private static void OnLevelSelected(LogsMenu menu, string fullPath, string fileName, GameObject selectedRowObj)
         {
+            if (_communityCardRoot != null) _communityCardRoot.SetActive(false);
+
             MapBrowserService.SelectedMapPath = fullPath;
             MapBrowserService.SelectedMapName = fileName;
 
@@ -4896,222 +5110,264 @@ namespace DeadCoreEditor
             BuildOrSyncNativeMetadataPanel(menu, meta, objectCount, fullPath);
         }
 
-        private static void BuildOrSyncNativeMetadataPanel(LogsMenu menu, LevelMetadata meta, int objectCount, string fullPath)
+        private static void OnCommunityLevelSelected(LogsMenu menu, RemoteLevelItem item, GameObject selectedRowObj)
         {
-            if (menu == null || menu._logBigPicture == null) return;
+            if (menu == null || item == null) return;
 
-            bool isMyLevels = (DeadCoreLevelEditorMod.ActiveTab == 0);
+            string localTxtPath = Path.Combine(MapBrowserService.DownloadedLevelsDir, $"{item.title}_{item.id}.txt");
+            string localPngPath = Path.Combine(MapBrowserService.DownloadedLevelsDir, $"{item.title}_{item.id}.png");
+            bool isDownloaded = File.Exists(localTxtPath);
 
-            if (menu._shortDesc != null) menu._shortDesc.gameObject.SetActive(false);
-            if (menu._longDesc != null) menu._longDesc.gameObject.SetActive(false);
+            MapBrowserService.SelectedMapPath = isDownloaded ? localTxtPath : "";
+            MapBrowserService.SelectedMapName = isDownloaded ? Path.GetFileNameWithoutExtension(localTxtPath) : item.title;
+            MapBrowserService.SelectedStagingScene = !string.IsNullOrEmpty(item.staging_scene) ? item.staging_scene : "level01_Spark01";
 
-            // 1. DO NOT TOUCH _logBigPicture's position or scale — keep it in its original native position
-            menu._logBigPicture.gameObject.SetActive(true);
-            menu._logBigPicture.color = Color.white;
-
-            // 2. OVERLAY THE METADATA PANEL DIRECTLY OVER THE NATIVE PICTURE FRAME
-            if (_nativeMetadataRoot == null || _nativeMetadataRoot.Equals(null))
+            // Highlight selected row in UI list
+            for (int i = 0; i < _spawnedRowObjects.Count; i++)
             {
-                _nativeMetadataRoot = new GameObject("Native_Metadata_Root", Il2CppType.Of<RectTransform>());
-                _nativeMetadataRoot.transform.SetParent(menu._logBigPicture.transform, false);
+                GameObject row = _spawnedRowObjects[i];
+                if (row == null) continue;
+                Image img = row.GetComponentInChildren<Image>(true);
+                if (img != null)
+                    img.color = (row == selectedRowObj) ? new Color(0.2f, 0.7f, 0.95f, 0.85f) : new Color(0.12f, 0.15f, 0.2f, 0.5f);
+            }
 
-                RectTransform rootRt = _nativeMetadataRoot.GetComponent<RectTransform>();
-                // Stretch to fill the native image bounds 1:1
+            // Display thumbnail
+            if (menu._logBigPicture != null)
+            {
+                if (File.Exists(localPngPath))
+                {
+                    Texture2D tex = ThumbnailCaptureService.LoadLevelTexture(localPngPath);
+                    if (tex != null) menu._logBigPicture.texture = tex;
+                }
+                else
+                {
+                    // Asynchronously fetch thumbnail from Cloudflare R2
+                    MelonCoroutines.Start(FetchRemoteThumbnailCoroutine(item.id, menu._logBigPicture));
+                }
+                menu._logBigPicture.gameObject.SetActive(true);
+            }
+
+            // Display Read-Only Community Details Card
+            BuildCommunityDetailCard(menu, item, isDownloaded);
+        }
+        private static System.Collections.IEnumerator FetchRemoteThumbnailCoroutine(string levelId, RawImage targetImg)
+        {
+            // Use .NET HttpClient instead of stripped UnityWebRequestTexture
+            var downloadTask = Task.Run(async () =>
+            {
+                try
+                {
+                    using var client = new HttpClient();
+                    var resp = await client.GetAsync($"{CommunityLevelService.BaseApiUrl}/api/levels/{levelId}/thumbnail");
+                    if (resp.IsSuccessStatusCode)
+                    {
+                        return await resp.Content.ReadAsByteArrayAsync();
+                    }
+                }
+                catch { }
+                return null;
+            });
+
+            while (!downloadTask.IsCompleted)
+            {
+                yield return null;
+            }
+
+            if (!downloadTask.IsFaulted && downloadTask.Result != null && downloadTask.Result.Length > 0 && targetImg != null)
+            {
+                try
+                {
+                    byte[] rawBytes = downloadTask.Result;
+                    Texture2D tex = new Texture2D(2, 2, TextureFormat.RGB24, false);
+                    if (ImageConversion.LoadImage(tex, rawBytes))
+                    {
+                        targetImg.texture = tex;
+                        targetImg.color = Color.white;
+                    }
+                }
+                catch { }
+            }
+        }
+
+        private static GameObject _communityCardRoot = null;
+        private static TMP_Text _communityDownloadBtnText = null;
+
+        // =========================================================================
+        // 3. OVERHAULED COMMUNITY LEVEL DETAIL CARD
+        // =========================================================================
+        private static void BuildCommunityDetailCard(LogsMenu menu, RemoteLevelItem item, bool isDownloaded)
+        {
+            if (_nativeMetadataRoot != null) _nativeMetadataRoot.SetActive(false);
+
+            if (_communityCardRoot == null || _communityCardRoot.Equals(null))
+            {
+                _communityCardRoot = new GameObject("Community_Detail_Root", Il2CppType.Of<RectTransform>());
+                _communityCardRoot.transform.SetParent(menu._logBigPicture.transform, false);
+
+                RectTransform rootRt = _communityCardRoot.GetComponent<RectTransform>();
                 rootRt.anchorMin = Vector2.zero;
                 rootRt.anchorMax = Vector2.one;
                 rootRt.pivot = new Vector2(0.5f, 0.5f);
                 rootRt.offsetMin = Vector2.zero;
                 rootRt.offsetMax = Vector2.zero;
 
-                // Subtle dark scrim so the level screenshot shows through while keeping text readable
-                Image bgImg = _nativeMetadataRoot.AddComponent<Image>();
-                bgImg.color = new Color(0.02f, 0.04f, 0.07f, 0.40f);
+                _communityCardRoot.AddComponent<Image>().color = new Color(0.03f, 0.05f, 0.09f, 0.70f);
 
-                VerticalLayoutGroup vlg = _nativeMetadataRoot.AddComponent<VerticalLayoutGroup>();
-                vlg.padding = new RectOffset(14, 14, 8, 16);
-                vlg.spacing = 6f;
+                VerticalLayoutGroup vlg = _communityCardRoot.AddComponent<VerticalLayoutGroup>();
+                vlg.padding = new RectOffset(16, 16, 14, 14);
+                vlg.spacing = 8f;
                 vlg.childControlWidth = true;
                 vlg.childControlHeight = false;
                 vlg.childForceExpandWidth = true;
                 vlg.childForceExpandHeight = false;
-
-                TMP_Text sampleText = menu._shortDesc != null ? menu._shortDesc : menu.GetComponentInChildren<TMP_Text>(true);
-
-                CreateNativeInputRow(_nativeMetadataRoot.transform, sampleText, "LEVEL TITLE", 30f, 14f, out _titleInput);
-                CreateNativeInputRow(_nativeMetadataRoot.transform, sampleText, "AUTHOR", 30f, 14f, out _authorInput);
-                CreateDifficultyRow(_nativeMetadataRoot.transform, sampleText, 32f);
-                CreateSceneSelectorRow(_nativeMetadataRoot.transform, sampleText, 30f);
-                CreateNativeInputRow(_nativeMetadataRoot.transform, sampleText, "DESCRIPTION", 46f, 13f, out _descInput, true);
-                CreateLevelStatsHUD(_nativeMetadataRoot.transform, sampleText, 46f);
-                CreateNativeSaveButton(_nativeMetadataRoot.transform, sampleText, 34f);
             }
 
-            _nativeMetadataRoot.transform.SetAsLastSibling();
+            _communityCardRoot.SetActive(true);
+            _communityCardRoot.transform.SetAsLastSibling();
 
-            // Keep the native yellow expand icon in the bottom-right corner visible on top
-            for (int i = 0; i < menu._logBigPicture.transform.childCount; i++)
+            // Clear old elements
+            for (int i = _communityCardRoot.transform.childCount - 1; i >= 0; i--)
             {
-                Transform child = menu._logBigPicture.transform.GetChild(i);
-                if (child != null && child.gameObject != _nativeMetadataRoot && child.name.ToLower().Contains("expand"))
+                GameObject.Destroy(_communityCardRoot.transform.GetChild(i).gameObject);
+            }
+
+            TMP_Text sample = menu._shortDesc != null ? menu._shortDesc : menu.GetComponentInChildren<TMP_Text>(true);
+
+            // 1. Header: Title + Difficulty Badge
+            GameObject headerRow = new GameObject("HeaderRow", Il2CppType.Of<RectTransform>());
+            headerRow.transform.SetParent(_communityCardRoot.transform, false);
+            headerRow.AddComponent<LayoutElement>().preferredHeight = 32f;
+            HorizontalLayoutGroup hhlg = headerRow.AddComponent<HorizontalLayoutGroup>();
+            hhlg.childControlWidth = true;
+            hhlg.childForceExpandWidth = false;
+            hhlg.spacing = 10f;
+
+            var title = StudioUIManager.CreateTextPrimitive(headerRow.transform, item.title, Vector2.zero, Vector2.one, Vector2.zero, Vector2.zero, 18f, FontStyles.Bold, Color.white, TextAlignmentOptions.MidlineLeft);
+            if (sample != null) { title.font = sample.font; title.fontSharedMaterial = sample.fontSharedMaterial; }
+            title.gameObject.AddComponent<LayoutElement>().flexibleWidth = 1f;
+
+            // Difficulty Pill Badge
+            Color diffColor = GetDifficultyColor(item.difficulty);
+            GameObject diffBadge = new GameObject("DiffBadge", Il2CppType.Of<RectTransform>());
+            diffBadge.transform.SetParent(headerRow.transform, false);
+            LayoutElement dble = diffBadge.AddComponent<LayoutElement>();
+            dble.preferredWidth = 90f;
+            dble.preferredHeight = 26f;
+            diffBadge.AddComponent<Image>().color = new Color(diffColor.r, diffColor.g, diffColor.b, 0.25f);
+            var diffText = StudioUIManager.CreateTextPrimitive(diffBadge.transform, item.difficulty.ToUpper(), Vector2.zero, Vector2.one, Vector2.zero, Vector2.zero, 11f, FontStyles.Bold, diffColor, TextAlignmentOptions.Center);
+            if (sample != null) { diffText.font = sample.font; diffText.fontSharedMaterial = sample.fontSharedMaterial; }
+
+            // 2. Author & Scene Subheading
+            var authorSub = StudioUIManager.CreateTextPrimitive(_communityCardRoot.transform, $"Author: <color=white><b>{item.author}</b></color>    |    Base Scene: <color=#00E5FF>{item.staging_scene}</color>", Vector2.zero, Vector2.one, Vector2.zero, new Vector2(0f, 20f), 12.5f, FontStyles.Normal, new Color(0.65f, 0.75f, 0.88f), TextAlignmentOptions.MidlineLeft);
+            if (sample != null) { authorSub.font = sample.font; authorSub.fontSharedMaterial = sample.fontSharedMaterial; }
+
+            // 3. Stats Row (Downloads, Objects)
+            GameObject statsRow = new GameObject("StatsRow", Il2CppType.Of<RectTransform>());
+            statsRow.transform.SetParent(_communityCardRoot.transform, false);
+            statsRow.AddComponent<LayoutElement>().preferredHeight = 26f;
+            HorizontalLayoutGroup shlg = statsRow.AddComponent<HorizontalLayoutGroup>();
+            shlg.spacing = 8f;
+            shlg.childControlWidth = true;
+            shlg.childForceExpandWidth = false;
+
+            CreateStatPill(statsRow.transform, sample, $"DOWNLOADS: {item.downloads}", new Color(0.2f, 0.7f, 1f));
+            CreateStatPill(statsRow.transform, sample, $"OBJECTS: {item.object_count}", new Color(0.3f, 0.95f, 0.5f));
+
+            // 4. Description Box
+            GameObject descBox = new GameObject("DescBox", Il2CppType.Of<RectTransform>());
+            descBox.transform.SetParent(_communityCardRoot.transform, false);
+            descBox.AddComponent<LayoutElement>().preferredHeight = 65f;
+            descBox.AddComponent<Image>().color = new Color(0.05f, 0.08f, 0.14f, 0.80f);
+
+            string descText = !string.IsNullOrWhiteSpace(item.description) ? item.description : "No description provided.";
+            var desc = StudioUIManager.CreateTextPrimitive(descBox.transform, descText, Vector2.zero, Vector2.one, new Vector2(10f, 8f), new Vector2(-10f, -8f), 11.5f, FontStyles.Italic, new Color(0.85f, 0.88f, 0.92f), TextAlignmentOptions.TopLeft);
+            if (sample != null) { desc.font = sample.font; desc.fontSharedMaterial = sample.fontSharedMaterial; }
+
+            // 5. Action Buttons (Play / Download)
+            GameObject btnRow = new GameObject("ActionBtnRow", Il2CppType.Of<RectTransform>());
+            btnRow.transform.SetParent(_communityCardRoot.transform, false);
+            btnRow.AddComponent<LayoutElement>().preferredHeight = 36f;
+            HorizontalLayoutGroup bhlg = btnRow.AddComponent<HorizontalLayoutGroup>();
+            bhlg.spacing = 10f;
+            bhlg.childControlWidth = true;
+            bhlg.childForceExpandWidth = true;
+
+            if (isDownloaded)
+            {
+                // Play Button (Vibrant Green)
+                GameObject playBtn = new GameObject("Btn_Play", Il2CppType.Of<RectTransform>());
+                playBtn.transform.SetParent(btnRow.transform, false);
+                playBtn.AddComponent<Image>().color = new Color(0.18f, 0.65f, 0.35f, 0.95f);
+                Button pb = playBtn.AddComponent<Button>();
+                pb.onClick.AddListener((Action)(() => MapBrowserService.LaunchSelectedMap()));
+
+                var pTxt = StudioUIManager.CreateTextPrimitive(playBtn.transform, "▶  PLAY LEVEL", Vector2.zero, Vector2.one, Vector2.zero, Vector2.zero, 13.5f, FontStyles.Bold, Color.white, TextAlignmentOptions.Center);
+                if (sample != null) { pTxt.font = sample.font; pTxt.fontSharedMaterial = sample.fontSharedMaterial; }
+
+                // Update/Re-download button
+                GameObject reBtn = new GameObject("Btn_ReDownload", Il2CppType.Of<RectTransform>());
+                reBtn.transform.SetParent(btnRow.transform, false);
+                reBtn.AddComponent<LayoutElement>().preferredWidth = 140f;
+                reBtn.AddComponent<Image>().color = new Color(0.14f, 0.18f, 0.26f, 0.95f);
+                Button rb = reBtn.AddComponent<Button>();
+                var rTxt = StudioUIManager.CreateTextPrimitive(reBtn.transform, "↻ UPDATE", Vector2.zero, Vector2.one, Vector2.zero, Vector2.zero, 12f, FontStyles.Bold, new Color(0.4f, 0.8f, 1f), TextAlignmentOptions.Center);
+                if (sample != null) { rTxt.font = sample.font; rTxt.fontSharedMaterial = sample.fontSharedMaterial; }
+
+                rb.onClick.AddListener((Action)(() =>
                 {
-                    child.SetAsLastSibling();
-                }
-            }
-
-            _nativeMetadataRoot.SetActive(isMyLevels);
-
-            if (_titleInput != null) _titleInput.text = meta.Title;
-            if (_authorInput != null) _authorInput.text = meta.Author;
-            if (_descInput != null) _descInput.text = meta.Description;
-
-            if (_sceneLabelText != null)
-            {
-                _sceneLabelText.text = !string.IsNullOrEmpty(meta.StagingScene) ? meta.StagingScene : "level01_Spark01";
-                MapBrowserService.SelectedStagingScene = _sceneLabelText.text;
-            }
-
-            _selectedDifficultyIndex = 2;
-            for (int i = 0; i < DifficultyNames.Length; i++)
-            {
-                if (string.Equals(meta.Difficulty, DifficultyNames[i], StringComparison.OrdinalIgnoreCase))
-                {
-                    _selectedDifficultyIndex = i;
-                    break;
-                }
-            }
-            HighlightSelectedDifficulty();
-            UpdateLevelStatsHUD(fullPath, objectCount);
-        }
-        private static void CreateNativeInputRow(Transform parent, TMP_Text sampleTmp, string labelName, float height, float fontSize, out TMP_InputField inputField, bool isMultiLine = false)
-        {
-            GameObject row = new GameObject("Row_" + labelName, Il2CppType.Of<RectTransform>());
-            row.transform.SetParent(parent, false);
-
-            LayoutElement le = row.AddComponent<LayoutElement>();
-            le.preferredHeight = height;
-            le.minHeight = height;
-            le.flexibleWidth = 1f;
-
-            HorizontalLayoutGroup hlg = row.AddComponent<HorizontalLayoutGroup>();
-            hlg.spacing = 8f;
-            hlg.childControlWidth = true;
-            hlg.childControlHeight = true;
-            hlg.childForceExpandWidth = false;
-            hlg.childForceExpandHeight = true;
-
-            // Fixed-width column ensures all labels align perfectly
-            GameObject labelObj = new GameObject("Label", Il2CppType.Of<RectTransform>());
-            labelObj.transform.SetParent(row.transform, false);
-
-            LayoutElement labelLe = labelObj.AddComponent<LayoutElement>();
-            labelLe.preferredWidth = 140f;
-            labelLe.minWidth = 140f;
-            labelLe.flexibleWidth = 0f;
-
-            TMP_Text labelTmp = labelObj.AddComponent<TextMeshProUGUI>();
-            if (sampleTmp != null) { labelTmp.font = sampleTmp.font; labelTmp.fontSharedMaterial = sampleTmp.fontSharedMaterial; }
-            labelTmp.fontSize = 15f;
-            labelTmp.fontStyle = FontStyles.Bold;
-            labelTmp.color = new Color(0.2f, 0.85f, 1f, 1f);
-            labelTmp.text = labelName;
-            labelTmp.alignment = TextAlignmentOptions.MidlineLeft;
-
-            // Translucent glass input background
-            GameObject inputObj = new GameObject("InputField", Il2CppType.Of<RectTransform>());
-            inputObj.transform.SetParent(row.transform, false);
-
-            LayoutElement inLe = inputObj.AddComponent<LayoutElement>();
-            inLe.flexibleWidth = 1f;
-
-            inputObj.AddComponent<Image>().color = new Color(0.04f, 0.08f, 0.15f, 0.55f);
-
-            GameObject textObj = new GameObject("Text", Il2CppType.Of<RectTransform>());
-            textObj.transform.SetParent(inputObj.transform, false);
-            RectTransform textRt = textObj.GetComponent<RectTransform>();
-            textRt.anchorMin = Vector2.zero;
-            textRt.anchorMax = Vector2.one;
-            textRt.offsetMin = new Vector2(8f, 2f);
-            textRt.offsetMax = new Vector2(-8f, -2f);
-
-            TMP_Text inTmp = textObj.AddComponent<TextMeshProUGUI>();
-            if (sampleTmp != null) { inTmp.font = sampleTmp.font; inTmp.fontSharedMaterial = sampleTmp.fontSharedMaterial; }
-            inTmp.fontSize = fontSize;
-            inTmp.color = Color.white;
-            inTmp.alignment = isMultiLine ? TextAlignmentOptions.TopLeft : TextAlignmentOptions.MidlineLeft;
-
-            inputField = inputObj.AddComponent<TMP_InputField>();
-            inputField.textViewport = textRt;
-            inputField.textComponent = inTmp;
-            inputField.lineType = isMultiLine ? TMP_InputField.LineType.MultiLineNewline : TMP_InputField.LineType.SingleLine;
-        }
-
-        private static void CreateDifficultyRow(Transform parent, TMP_Text sampleTmp, float height = 34f)
-        {
-            GameObject row = new GameObject("Row_Difficulty", Il2CppType.Of<RectTransform>());
-            row.transform.SetParent(parent, false);
-
-            LayoutElement le = row.AddComponent<LayoutElement>();
-            le.preferredHeight = height;
-            le.minHeight = height;
-            le.flexibleWidth = 1f;
-
-            HorizontalLayoutGroup hlg = row.AddComponent<HorizontalLayoutGroup>();
-            hlg.spacing = 8f;
-            hlg.childControlWidth = true;
-            hlg.childControlHeight = true;
-            hlg.childForceExpandWidth = false;
-            hlg.childForceExpandHeight = true;
-
-            GameObject labelObj = new GameObject("Label", Il2CppType.Of<RectTransform>());
-            labelObj.transform.SetParent(row.transform, false);
-
-            LayoutElement labelLe = labelObj.AddComponent<LayoutElement>();
-            labelLe.preferredWidth = 140f;
-            labelLe.minWidth = 140f;
-            labelLe.flexibleWidth = 0f;
-
-            TMP_Text labelTmp = labelObj.AddComponent<TextMeshProUGUI>();
-            if (sampleTmp != null) { labelTmp.font = sampleTmp.font; labelTmp.fontSharedMaterial = sampleTmp.fontSharedMaterial; }
-            labelTmp.fontSize = 15f;
-            labelTmp.fontStyle = FontStyles.Bold;
-            labelTmp.color = new Color(0.2f, 0.85f, 1f, 1f);
-            labelTmp.text = "DIFFICULTY";
-            labelTmp.alignment = TextAlignmentOptions.MidlineLeft;
-
-            GameObject btnContainer = new GameObject("BtnContainer", Il2CppType.Of<RectTransform>());
-            btnContainer.transform.SetParent(row.transform, false);
-
-            LayoutElement bcLe = btnContainer.AddComponent<LayoutElement>();
-            bcLe.flexibleWidth = 1f;
-
-            HorizontalLayoutGroup bchlg = btnContainer.AddComponent<HorizontalLayoutGroup>();
-            bchlg.spacing = 6f;
-            bchlg.childControlWidth = true;
-            bchlg.childControlHeight = true;
-            bchlg.childForceExpandWidth = true;
-            bchlg.childForceExpandHeight = true;
-
-            _diffButtons.Clear();
-
-            for (int i = 0; i < DifficultyNames.Length; i++)
-            {
-                int captureIdx = i;
-                GameObject btn = new GameObject("Diff_" + DifficultyNames[i], Il2CppType.Of<RectTransform>());
-                btn.transform.SetParent(btnContainer.transform, false);
-
-                btn.AddComponent<Image>().color = new Color(0.04f, 0.08f, 0.14f, 0.50f);
-                Button bComp = btn.AddComponent<Button>();
-                bComp.onClick.AddListener((Action)(() =>
-                {
-                    _selectedDifficultyIndex = captureIdx;
-                    HighlightSelectedDifficulty();
+                    rTxt.text = "DOWNLOADING...";
+                    CommunityLevelService.DownloadLevel(item, (success) => { if (success) TransformLogsMenu(menu, 1); });
                 }));
-
-                TMP_Text bTmp = StudioUIManager.CreateTextPrimitive(btn.transform, DifficultyNames[i], Vector2.zero, Vector2.one, Vector2.zero, Vector2.zero, 13f, FontStyles.Bold, DifficultyColors[i], TextAlignmentOptions.Center);
-                if (sampleTmp != null) { bTmp.font = sampleTmp.font; bTmp.fontSharedMaterial = sampleTmp.fontSharedMaterial; }
-
-                _diffButtons.Add(btn);
             }
+            else
+            {
+                // Download Button (Cyan/Blue)
+                GameObject dlBtn = new GameObject("Btn_Download", Il2CppType.Of<RectTransform>());
+                dlBtn.transform.SetParent(btnRow.transform, false);
+                dlBtn.AddComponent<Image>().color = new Color(0.12f, 0.55f, 0.90f, 0.95f);
+                Button db = dlBtn.AddComponent<Button>();
+
+                var dlTxt = StudioUIManager.CreateTextPrimitive(dlBtn.transform, "DOWNLOAD & INSTALL LEVEL", Vector2.zero, Vector2.one, Vector2.zero, Vector2.zero, 13.5f, FontStyles.Bold, Color.white, TextAlignmentOptions.Center);
+                if (sample != null) { dlTxt.font = sample.font; dlTxt.fontSharedMaterial = sample.fontSharedMaterial; }
+
+                db.onClick.AddListener((Action)(() =>
+                {
+                    dlTxt.text = "DOWNLOADING...";
+                    CommunityLevelService.DownloadLevel(item, (success) =>
+                    {
+                        if (success)
+                        {
+                            // Refresh menu so the download count and [Installed] status update instantly!
+                            TransformLogsMenu(menu, 1);
+                        }
+                    });
+                }));
+            }
+        }
+
+        private static void CreateStatPill(Transform parent, TMP_Text sample, string label, Color textColor)
+        {
+            GameObject pill = new GameObject("StatPill", Il2CppType.Of<RectTransform>());
+            pill.transform.SetParent(parent, false);
+            LayoutElement le = pill.AddComponent<LayoutElement>();
+            le.preferredWidth = 135f;
+            le.preferredHeight = 24f;
+            pill.AddComponent<Image>().color = new Color(0.06f, 0.10f, 0.18f, 0.85f);
+
+            var txt = StudioUIManager.CreateTextPrimitive(pill.transform, label, Vector2.zero, Vector2.one, Vector2.zero, Vector2.zero, 10.5f, FontStyles.Bold, textColor, TextAlignmentOptions.Center);
+            if (sample != null) { txt.font = sample.font; txt.fontSharedMaterial = sample.fontSharedMaterial; }
+        }
+
+        public static Color GetDifficultyColor(string diff)
+        {
+            if (string.IsNullOrEmpty(diff)) return new Color(0.3f, 0.65f, 1.0f);
+            string d = diff.ToLowerInvariant();
+            if (d.Contains("very easy")) return new Color(0.2f, 0.95f, 0.4f);
+            if (d.Contains("easy")) return new Color(0.1f, 0.85f, 1.0f);
+            if (d.Contains("hard")) return new Color(1.0f, 0.55f, 0.1f);
+            if (d.Contains("expert") || d.Contains("insane")) return new Color(0.95f, 0.2f, 0.2f);
+            return new Color(0.3f, 0.65f, 1.0f); // Normal
         }
 
         private static void HighlightSelectedDifficulty()
@@ -5197,25 +5453,308 @@ namespace DeadCoreEditor
             _statsLabelLeft.text = $"- TOTAL OBJECTS: <b><color=#00E5FF>{objectCount}</color></b>\n- HAZARDS & LASERS: <b><color=#FF5252>{lasers}</color></b>\n- JUMP PADS: <b><color=#FFEB3B>{jumpers}</color></b>";
             _statsLabelRight.text = $"- MOVING PATHS: <b><color=#E040FB>{paths}</color></b>\n- TURRET ENEMIES: <b><color=#FF4081>{turrets}</color></b>\n- LAST SAVED: <color=#B0BEC5>{mod:dd/MM/yyyy HH:mm}</color>";
         }
-        private static void CreateNativeSaveButton(Transform parent, TMP_Text sampleTmp, float height = 36f)
+        private static void CreateNativeSaveButton(Transform parent, TMP_Text sampleTmp, float height = 34f)
         {
+            GameObject buttonRow = new GameObject("Row_ActionButtons", Il2CppType.Of<RectTransform>());
+            buttonRow.transform.SetParent(parent, false);
+
+            LayoutElement rowLe = buttonRow.AddComponent<LayoutElement>();
+            rowLe.preferredHeight = height;
+            rowLe.minHeight = height;
+            rowLe.flexibleWidth = 1f;
+
+            HorizontalLayoutGroup hlg = buttonRow.AddComponent<HorizontalLayoutGroup>();
+            hlg.spacing = 8f;
+            hlg.childControlWidth = true;
+            hlg.childControlHeight = true;
+            hlg.childForceExpandWidth = true;
+            hlg.childForceExpandHeight = true;
+
+            // 1. SAVE DETAILS BUTTON (Left - Blue)
             GameObject saveBtn = new GameObject("Btn_SaveMetadata", Il2CppType.Of<RectTransform>());
-            saveBtn.transform.SetParent(parent, false);
+            saveBtn.transform.SetParent(buttonRow.transform, false);
 
-            LayoutElement le = saveBtn.AddComponent<LayoutElement>();
-            le.preferredHeight = height;
-            le.minHeight = height;
-            le.flexibleWidth = 1f;
+            LayoutElement sle = saveBtn.AddComponent<LayoutElement>();
+            sle.flexibleWidth = 1f;
+            sle.preferredHeight = height;
 
-            // Semi-transparent blue glass button
-            saveBtn.AddComponent<Image>().color = new Color(0.12f, 0.55f, 0.88f, 0.75f);
+            saveBtn.AddComponent<Image>().color = new Color(0.12f, 0.55f, 0.88f, 0.90f);
             Button b = saveBtn.AddComponent<Button>();
-            b.onClick.RemoveAllListeners();
             b.onClick.AddListener((Action)(() => SaveCurrentMetadata(MapBrowserService.SelectedMapPath)));
 
-            _saveBtnText = StudioUIManager.CreateTextPrimitive(saveBtn.transform, "SAVE DETAILS", Vector2.zero, Vector2.one, Vector2.zero, Vector2.zero, 15f, FontStyles.Bold, Color.white, TextAlignmentOptions.Center);
-            if (sampleTmp != null) { _saveBtnText.font = sampleTmp.font; _saveBtnText.fontSharedMaterial = sampleTmp.fontSharedMaterial; }
+            _saveBtnText = StudioUIManager.CreateTextPrimitive(saveBtn.transform, "SAVE DETAILS", Vector2.zero, Vector2.one, Vector2.zero, Vector2.zero, 13f, FontStyles.Bold, Color.white, TextAlignmentOptions.Center);
+            if (sampleTmp != null && _saveBtnText != null) { _saveBtnText.font = sampleTmp.font; _saveBtnText.fontSharedMaterial = sampleTmp.fontSharedMaterial; }
+
+            // 2. PUBLISH BUTTON (Right - Green)
+            GameObject publishBtn = new GameObject("Btn_PublishCommunity", Il2CppType.Of<RectTransform>());
+            publishBtn.transform.SetParent(buttonRow.transform, false);
+
+            LayoutElement ple = publishBtn.AddComponent<LayoutElement>();
+            ple.flexibleWidth = 1f;
+            ple.preferredHeight = height;
+
+            publishBtn.AddComponent<Image>().color = new Color(0.18f, 0.65f, 0.35f, 0.95f);
+            Button pb = publishBtn.AddComponent<Button>();
+            pb.onClick.AddListener((Action)(() =>
+            {
+                SaveCurrentMetadata(MapBrowserService.SelectedMapPath);
+                CommunityLevelService.PublishCurrentLevel(MapBrowserService.SelectedMapPath);
+            }));
+
+            TMP_Text pubText = StudioUIManager.CreateTextPrimitive(publishBtn.transform, "PUBLISH TO CLOUD", Vector2.zero, Vector2.one, Vector2.zero, Vector2.zero, 13f, FontStyles.Bold, Color.white, TextAlignmentOptions.Center);
+            if (sampleTmp != null && pubText != null) { pubText.font = sampleTmp.font; pubText.fontSharedMaterial = sampleTmp.fontSharedMaterial; }
         }
+
+        // =========================================================================
+        // 2. INPUT ROWS (SLENDER STRIP + 24px LARGE FONT)
+        // =========================================================================
+        private static void CreateNativeInputRow(Transform parent, TMP_Text sampleTmp, string labelName, float height, float fontSize, out TMP_InputField inputField, bool isMultiLine = false)
+        {
+            GameObject row = new GameObject("Row_" + labelName, Il2CppType.Of<RectTransform>());
+            row.transform.SetParent(parent, false);
+
+            LayoutElement le = row.AddComponent<LayoutElement>();
+            le.preferredHeight = height;
+            le.minHeight = height;
+            le.flexibleHeight = 0f; // Locked compact height!
+            le.flexibleWidth = 1f;
+
+            HorizontalLayoutGroup hlg = row.AddComponent<HorizontalLayoutGroup>();
+            hlg.spacing = 10f;
+            hlg.childControlWidth = true;
+            hlg.childControlHeight = true;
+            hlg.childForceExpandWidth = false;
+            hlg.childForceExpandHeight = true;
+
+            // Label on thin line
+            GameObject labelObj = new GameObject("Label", Il2CppType.Of<RectTransform>());
+            labelObj.transform.SetParent(row.transform, false);
+
+            LayoutElement labelLe = labelObj.AddComponent<LayoutElement>();
+            labelLe.preferredWidth = 180f;
+            labelLe.minWidth = 180f;
+            labelLe.flexibleWidth = 0f;
+
+            TMP_Text labelTmp = labelObj.AddComponent<TextMeshProUGUI>();
+            if (sampleTmp != null) { labelTmp.font = sampleTmp.font; labelTmp.fontSharedMaterial = sampleTmp.fontSharedMaterial; }
+            labelTmp.fontSize = fontSize;
+            labelTmp.fontStyle = FontStyles.Bold;
+            labelTmp.color = new Color(0.15f, 0.85f, 1f, 1f);
+            labelTmp.text = labelName;
+            labelTmp.alignment = isMultiLine ? TextAlignmentOptions.TopLeft : TextAlignmentOptions.MidlineLeft;
+            labelTmp.enableAutoSizing = false;
+
+            // Slender input strip
+            GameObject inputObj = new GameObject("InputField", Il2CppType.Of<RectTransform>());
+            inputObj.transform.SetParent(row.transform, false);
+
+            LayoutElement inLe = inputObj.AddComponent<LayoutElement>();
+            inLe.flexibleWidth = 1f;
+            inLe.flexibleHeight = 0f;
+
+            // Subtle dark line container with 1px border aesthetic
+            inputObj.AddComponent<Image>().color = new Color(0.06f, 0.10f, 0.18f, 0.85f);
+
+            GameObject textObj = new GameObject("Text", Il2CppType.Of<RectTransform>());
+            textObj.transform.SetParent(inputObj.transform, false);
+            RectTransform textRt = textObj.GetComponent<RectTransform>();
+            textRt.anchorMin = Vector2.zero;
+            textRt.anchorMax = Vector2.one;
+            textRt.offsetMin = new Vector2(10f, 0f);
+            textRt.offsetMax = new Vector2(-10f, 0f);
+
+            TMP_Text inTmp = textObj.AddComponent<TextMeshProUGUI>();
+            if (sampleTmp != null) { inTmp.font = sampleTmp.font; inTmp.fontSharedMaterial = sampleTmp.fontSharedMaterial; }
+            inTmp.fontSize = fontSize;
+            inTmp.color = Color.white;
+            inTmp.alignment = isMultiLine ? TextAlignmentOptions.TopLeft : TextAlignmentOptions.MidlineLeft;
+            inTmp.enableAutoSizing = false;
+
+            inputField = inputObj.AddComponent<TMP_InputField>();
+            inputField.textViewport = textRt;
+            inputField.textComponent = inTmp;
+            inputField.pointSize = fontSize; // CRITICAL: forces TMP_InputField to render at 24px!
+            inputField.lineType = isMultiLine ? TMP_InputField.LineType.MultiLineNewline : TMP_InputField.LineType.SingleLine;
+        }
+
+        // =========================================================================
+        // 1. SLEEK COMPACT METADATA PANEL (LITTLEST LINES AESTHETIC)
+        // =========================================================================
+        private static void BuildOrSyncNativeMetadataPanel(LogsMenu menu, LevelMetadata meta, int objectCount, string fullPath)
+        {
+            if (menu == null || menu._logBigPicture == null) return;
+
+            bool isMyLevels = (DeadCoreLevelEditorMod.ActiveTab == 0);
+
+            if (menu._shortDesc != null) menu._shortDesc.gameObject.SetActive(false);
+            if (menu._longDesc != null) menu._longDesc.gameObject.SetActive(false);
+
+            menu._logBigPicture.gameObject.SetActive(true);
+            menu._logBigPicture.color = Color.white;
+
+            if (_communityCardRoot != null) _communityCardRoot.SetActive(false);
+
+            if (_nativeMetadataRoot != null && _nativeMetadataRoot.transform.Find("Row_ActionButtons") == null)
+            {
+                GameObject.DestroyImmediate(_nativeMetadataRoot);
+                _nativeMetadataRoot = null;
+            }
+
+            if (_nativeMetadataRoot == null || _nativeMetadataRoot.Equals(null))
+            {
+                _nativeMetadataRoot = new GameObject("Native_Metadata_Root", Il2CppType.Of<RectTransform>());
+                _nativeMetadataRoot.transform.SetParent(menu._logBigPicture.transform, false);
+
+                RectTransform rootRt = _nativeMetadataRoot.GetComponent<RectTransform>();
+                rootRt.anchorMin = Vector2.zero;
+                rootRt.anchorMax = Vector2.one;
+                rootRt.pivot = new Vector2(0.5f, 0.5f);
+                rootRt.offsetMin = Vector2.zero;
+                rootRt.offsetMax = Vector2.zero;
+
+                // Dark translucent cyber-glass background
+                Image bgImg = _nativeMetadataRoot.AddComponent<Image>();
+                bgImg.color = new Color(0.03f, 0.05f, 0.08f, 0.88f);
+
+                VerticalLayoutGroup vlg = _nativeMetadataRoot.AddComponent<VerticalLayoutGroup>();
+                vlg.padding = new RectOffset(16, 16, 12, 12);
+                vlg.spacing = 6f;
+                vlg.childControlWidth = true;
+                vlg.childControlHeight = true;
+                vlg.childForceExpandWidth = true;
+                vlg.childForceExpandHeight = false; // Prevents stretching holders!
+
+                TMP_Text sampleText = menu._shortDesc != null ? menu._shortDesc : menu.GetComponentInChildren<TMP_Text>(true);
+
+                // Slim holders (32px) + Large readable fonts (24px)
+                CreateNativeInputRow(_nativeMetadataRoot.transform, sampleText, "LEVEL TITLE", 32f, 24f, out _titleInput);
+                CreateNativeInputRow(_nativeMetadataRoot.transform, sampleText, "AUTHOR", 32f, 24f, out _authorInput);
+                CreateDifficultyRow(_nativeMetadataRoot.transform, sampleText, 32f);
+                CreateSceneSelectorRow(_nativeMetadataRoot.transform, sampleText, 32f);
+                CreateNativeInputRow(_nativeMetadataRoot.transform, sampleText, "DESCRIPTION", 46f, 20f, out _descInput, true);
+                CreateLevelStatsHUD(_nativeMetadataRoot.transform, sampleText, 36f);
+                CreateNativeSaveButton(_nativeMetadataRoot.transform, sampleText, 38f);
+
+                // Flexible spacer absorbs remaining vertical room so rows never balloon
+                GameObject spacer = new GameObject("BottomSpacer", Il2CppType.Of<RectTransform>());
+                spacer.transform.SetParent(_nativeMetadataRoot.transform, false);
+                LayoutElement spLe = spacer.AddComponent<LayoutElement>();
+                spLe.flexibleHeight = 1f;
+            }
+
+            _nativeMetadataRoot.transform.SetAsLastSibling();
+
+            for (int i = 0; i < menu._logBigPicture.transform.childCount; i++)
+            {
+                Transform child = menu._logBigPicture.transform.GetChild(i);
+                if (child != null && child.gameObject != _nativeMetadataRoot && child.name.ToLower().Contains("expand"))
+                {
+                    child.SetAsLastSibling();
+                }
+            }
+
+            _nativeMetadataRoot.SetActive(isMyLevels);
+
+            if (_titleInput != null) _titleInput.text = meta.Title;
+            if (_authorInput != null) _authorInput.text = meta.Author;
+            if (_descInput != null) _descInput.text = meta.Description;
+
+            if (_sceneLabelText != null)
+            {
+                _sceneLabelText.text = !string.IsNullOrEmpty(meta.StagingScene) ? meta.StagingScene : "level01_Spark01";
+                MapBrowserService.SelectedStagingScene = _sceneLabelText.text;
+            }
+
+            _selectedDifficultyIndex = 2;
+            for (int i = 0; i < DifficultyNames.Length; i++)
+            {
+                if (string.Equals(meta.Difficulty, DifficultyNames[i], StringComparison.OrdinalIgnoreCase))
+                {
+                    _selectedDifficultyIndex = i;
+                    break;
+                }
+            }
+            HighlightSelectedDifficulty();
+            UpdateLevelStatsHUD(fullPath, objectCount);
+        }
+
+        // =========================================================================
+        // 3. DIFFICULTY PILLS (SLIM 32px + 20px FONT)
+        // =========================================================================
+        private static void CreateDifficultyRow(Transform parent, TMP_Text sampleTmp, float height = 32f)
+        {
+            GameObject row = new GameObject("Row_Difficulty", Il2CppType.Of<RectTransform>());
+            row.transform.SetParent(parent, false);
+
+            LayoutElement le = row.AddComponent<LayoutElement>();
+            le.preferredHeight = height;
+            le.minHeight = height;
+            le.flexibleHeight = 0f;
+            le.flexibleWidth = 1f;
+
+            HorizontalLayoutGroup hlg = row.AddComponent<HorizontalLayoutGroup>();
+            hlg.spacing = 10f;
+            hlg.childControlWidth = true;
+            hlg.childControlHeight = true;
+            hlg.childForceExpandWidth = false;
+            hlg.childForceExpandHeight = true;
+
+            GameObject labelObj = new GameObject("Label", Il2CppType.Of<RectTransform>());
+            labelObj.transform.SetParent(row.transform, false);
+
+            LayoutElement labelLe = labelObj.AddComponent<LayoutElement>();
+            labelLe.preferredWidth = 180f;
+            labelLe.minWidth = 180f;
+            labelLe.flexibleWidth = 0f;
+
+            TMP_Text labelTmp = labelObj.AddComponent<TextMeshProUGUI>();
+            if (sampleTmp != null) { labelTmp.font = sampleTmp.font; labelTmp.fontSharedMaterial = sampleTmp.fontSharedMaterial; }
+            labelTmp.fontSize = 24f;
+            labelTmp.fontStyle = FontStyles.Bold;
+            labelTmp.color = new Color(0.15f, 0.85f, 1f, 1f);
+            labelTmp.text = "DIFFICULTY";
+            labelTmp.alignment = TextAlignmentOptions.MidlineLeft;
+            labelTmp.enableAutoSizing = false;
+
+            GameObject btnContainer = new GameObject("BtnContainer", Il2CppType.Of<RectTransform>());
+            btnContainer.transform.SetParent(row.transform, false);
+
+            LayoutElement bcLe = btnContainer.AddComponent<LayoutElement>();
+            bcLe.flexibleWidth = 1f;
+            bcLe.flexibleHeight = 0f;
+
+            HorizontalLayoutGroup bchlg = btnContainer.AddComponent<HorizontalLayoutGroup>();
+            bchlg.spacing = 6f;
+            bchlg.childControlWidth = true;
+            bchlg.childControlHeight = true;
+            bchlg.childForceExpandWidth = true;
+            bchlg.childForceExpandHeight = true;
+
+            _diffButtons.Clear();
+
+            for (int i = 0; i < DifficultyNames.Length; i++)
+            {
+                int captureIdx = i;
+                GameObject btn = new GameObject("Diff_" + DifficultyNames[i], Il2CppType.Of<RectTransform>());
+                btn.transform.SetParent(btnContainer.transform, false);
+
+                btn.AddComponent<Image>().color = new Color(0.06f, 0.10f, 0.18f, 0.70f);
+                Button bComp = btn.AddComponent<Button>();
+                bComp.onClick.AddListener((Action)(() =>
+                {
+                    _selectedDifficultyIndex = captureIdx;
+                    HighlightSelectedDifficulty();
+                }));
+
+                TMP_Text bTmp = StudioUIManager.CreateTextPrimitive(btn.transform, DifficultyNames[i], Vector2.zero, Vector2.one, Vector2.zero, Vector2.zero, 19f, FontStyles.Bold, DifficultyColors[i], TextAlignmentOptions.Center);
+                if (sampleTmp != null) { bTmp.font = sampleTmp.font; bTmp.fontSharedMaterial = sampleTmp.fontSharedMaterial; }
+                bTmp.enableAutoSizing = false;
+
+                _diffButtons.Add(btn);
+            }
+        }
+
+        // ====================
 
         private static void SetupBottomBarButtons(LogsMenu menu)
         {
@@ -5646,7 +6185,18 @@ namespace DeadCoreEditor
         {
             if (ActiveTab == tabIndex && _lastTransformedLogsMenu == menu && NativeLogsMenuHijacker.SpawnedRowCount > 0) return;
             ActiveTab = tabIndex;
-            NativeLogsMenuHijacker.TransformLogsMenu(menu, ActiveTab);
+
+            if (tabIndex == 1) // Community Tab
+            {
+                CommunityLevelService.FetchCommunityLevels(() =>
+                {
+                    NativeLogsMenuHijacker.TransformLogsMenu(menu, ActiveTab);
+                });
+            }
+            else
+            {
+                NativeLogsMenuHijacker.TransformLogsMenu(menu, ActiveTab);
+            }
         }
     }
 }

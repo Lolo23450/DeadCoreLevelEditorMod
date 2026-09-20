@@ -339,7 +339,13 @@ namespace DeadCoreEditor
 
             ApplyTrussConfig(trussObj, cfg);
             EditorSessionManager.RegisterPlacedObject(trussObj);
-            UpdateTrussVisualHandles(trussObj);
+
+            // Only show handles if we are currently in Edit Mode
+            if (EditorSessionManager.IsEditModeActive)
+                UpdateTrussVisualHandles(trussObj);
+            else
+                HideTrussVisualHandles(trussObj);
+
             return trussObj;
         }
 

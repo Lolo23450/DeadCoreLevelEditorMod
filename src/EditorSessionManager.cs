@@ -192,6 +192,10 @@ namespace DeadCoreEditor
             {
                 data.Set(mp.Clone());
             }
+            else
+            {
+                data.Remove<ObjectMotionPath>();
+            }
 
             if (SwitchService.PlacedSwitches.TryGetValue(obj, out var swCfg))
             {
@@ -1138,6 +1142,8 @@ namespace DeadCoreEditor
             StudioGizmoController.DestroyGizmo();
             StudioGizmoController.ClearAllCachedCentroids();
 
+            GlowAnimationService.ClearCache();
+
             SceneHarvestingService.CleanupProceduralResources();
             SkyboxControllerService.ResetToSceneDefault();
 
@@ -1198,6 +1204,11 @@ namespace DeadCoreEditor
             CharacterController cc = GetPlayerController();
 
             UpdateObjectMotionPaths(player, cc);
+
+            // =========================================================================
+            // TICK DYNAMIC LIGHT WAVEFORMS & NEON ANIMATIONS
+            // =========================================================================
+            GlowAnimationService.UpdateTick(Time.deltaTime);
 
             if (!IsEditModeActive)
             {
@@ -3286,25 +3297,11 @@ namespace DeadCoreEditor
                 }
             }
 
-            bool hasStartingPlatform = false;
-            for (int i = 0; i < PlacedObjects.Count; i++)
-            {
-                GameObject obj = PlacedObjects[i];
-                if (obj != null && (obj.name.ToLower().Contains("platform") || obj.name.ToLower().Contains("floor") || obj.name.ToLower().Contains("plateforme")))
-                {
-                    if (Vector3.Distance(obj.transform.position, startPos) < 50f)
-                    {
-                        hasStartingPlatform = true;
-                        break;
-                    }
-                }
-            }
-
-            if (!hasStartingPlatform)
+            if (PlacedObjects.Count == 0)
             {
                 Vector3 p0Pos = startPos - new Vector3(0f, 1.2f, 0f);
-                GameObject startPlatform = SpawnAssetByName("Floor_Platform_16x16", p0Pos, 0.55f);
-                if (startPlatform == null) startPlatform = SpawnAssetByName("Platform", p0Pos, 0.8f);
+                GameObject startPlatform = SpawnAssetByName("Floor_Platform_16x16", p0Pos, 0.55f)
+                                        ?? SpawnAssetByName("Platform", p0Pos, 0.8f);
 
                 if (startPlatform != null) RegisterPlacedObject(startPlatform);
             }
@@ -3327,6 +3324,11 @@ namespace DeadCoreEditor
             SetSnappingProxiesActive(false);
             _lightRefreshTimer = 0.35f;
             SetSpotlightMeshesVisible(false);
+
+            // Hide cable and truss handles so they don't show during initial playtest
+            ProceduralCableService.HideAllCableHandles();
+            StructuralTrussService.HideAllTrussHandles();
+
             CapturePlaytestSnapshots();
 
             UnfreezePlayerControls();
