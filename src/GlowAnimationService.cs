@@ -163,7 +163,7 @@ namespace DeadCoreEditor
                 for (int i = 0; i < rends.Length; i++)
                 {
                     if (rends[i] == null || rends[i].gameObject.name == "Editor_Snapping_Proxy") continue;
-                    Material m = rends[i].material;
+                    Material m = rends[i].sharedMaterial;
                     if (m == null) continue;
 
                     if (m.HasProperty("_EmissionColor"))

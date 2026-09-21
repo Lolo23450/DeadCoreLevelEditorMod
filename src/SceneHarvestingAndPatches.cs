@@ -1,4 +1,6 @@
 ﻿using System;
+using System.IO;
+using System.Text;
 using System.Collections;
 using System.Collections.Generic;
 using System.Reflection;
@@ -19,7 +21,6 @@ namespace DeadCoreEditor
 
     public static class ModelHarvestFilter
     {
-        // "dec_" allowed so decoration/decor assets pass through freely
         private static readonly HashSet<string> IgnoredMeshPrefixes = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
         {
             "ucx_", "ubx_", "usp_", "bb_", "col_", "proxy_", "nav_"
@@ -35,7 +36,6 @@ namespace DeadCoreEditor
             "particle", "emitter"
         };
 
-        // Matches LOD1, 2, 3, 5, 6, 7, 8, 9 (LOD4 is explicitly allowed/kept)
         private static readonly Regex FilteredLodRegex = new Regex(@"(?:^|[\W_])lod[12356789](?:$|[\W_])", RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
         public static bool ShouldIgnoreMesh(Mesh mesh, string meshName, string goName, GameObject sourceGo = null)
@@ -45,7 +45,7 @@ namespace DeadCoreEditor
             string mLow = meshName.ToLowerInvariant();
             string gLow = goName.ToLowerInvariant();
 
-            // 1. LOD check: Keep LOD0 and LOD4. Exclude LOD1, LOD2, LOD3, LOD5+.
+            // LOD check: Keep LOD0 and LOD4. Exclude LOD1, LOD2, LOD3, LOD5+
             bool isLod4 = mLow.Contains("lod4") || gLow.Contains("lod4");
             if (!isLod4)
             {
@@ -57,13 +57,11 @@ namespace DeadCoreEditor
                 }
             }
 
-            // 2. Hierarchy and LODGroup check: reject if renderer belongs to an excluded LOD level (keeps LOD4)
             if (sourceGo != null && HasLowerLodInHierarchy(sourceGo))
             {
                 return true;
             }
 
-            // 3. Filter out internal gameplay bugs/mosquitoes/gauges
             if (mLow.Contains("mosquito") || gLow.Contains("mosquito") ||
                 mLow.Contains("robot") || gLow.Contains("robot") ||
                 mLow.Contains("gauge") || gLow.Contains("gauge"))
@@ -71,20 +69,17 @@ namespace DeadCoreEditor
                 return true;
             }
 
-            // 4. Prefix checks
             foreach (var prefix in IgnoredMeshPrefixes)
             {
                 if (mLow.StartsWith(prefix) || gLow.StartsWith(prefix)) return true;
             }
 
-            // 5. Substring keyword checks
             for (int i = 0; i < IgnoredKeywords.Length; i++)
             {
                 string kw = IgnoredKeywords[i];
                 if (mLow.Contains(kw) || gLow.Contains(kw)) return true;
             }
 
-            // 6. Flat quad / billboard card geometry checks
             Vector3 size = mesh.bounds.size;
             float minDim = Mathf.Min(size.x, Mathf.Min(size.y, size.z));
             float maxDim = Mathf.Max(size.x, Mathf.Max(size.y, size.z));
@@ -99,7 +94,6 @@ namespace DeadCoreEditor
         {
             if (go == null) return false;
 
-            // Engine-level LODGroup inspection (skips LOD4 so it is kept)
             try
             {
                 LODGroup lodGroup = go.GetComponentInParent<LODGroup>();
@@ -113,7 +107,7 @@ namespace DeadCoreEditor
                         {
                             for (int l = 1; l < lods.Length; l++)
                             {
-                                if (l == 4) continue; // Keep LOD4!
+                                if (l == 4) continue; // Keep LOD4
 
                                 var rends = lods[l].renderers;
                                 if (rends != null)
@@ -130,7 +124,6 @@ namespace DeadCoreEditor
             }
             catch { }
 
-            // Hierarchy name inspection up to 4 parent levels
             Transform curr = go.transform;
             int depth = 0;
             while (curr != null && depth < 4)
@@ -151,7 +144,6 @@ namespace DeadCoreEditor
             return false;
         }
 
-        // Min: 1.2m, Max: 24.0m
         public static bool IsValidHarvestSize(Bounds bounds, Transform contextTransform = null, float minSize = 1.2f, float maxSize = 24.0f)
         {
             Vector3 s = bounds.size;
@@ -210,19 +202,16 @@ namespace DeadCoreEditor
                     : goName.Replace("_", " ").Trim();
             }
 
-            // Strip prefix tags
             if (baseName.StartsWith("SM ", StringComparison.OrdinalIgnoreCase)) baseName = baseName.Substring(3);
             if (baseName.StartsWith("m ", StringComparison.OrdinalIgnoreCase)) baseName = baseName.Substring(2);
             if (baseName.StartsWith("geo ", StringComparison.OrdinalIgnoreCase)) baseName = baseName.Substring(4);
 
-            // Strip LOD markers (except LOD4 label note if present)
             int lodIdx = baseName.IndexOf("LOD", StringComparison.OrdinalIgnoreCase);
             if (lodIdx > 0 && !baseName.Contains("LOD4") && !baseName.Contains("LOD 4"))
             {
                 baseName = baseName.Substring(0, lodIdx).Trim();
             }
 
-            // Translate native tags
             baseName = baseName.Replace("plateforme", "Platform")
                                .Replace("tourelle", "Turret Base")
                                .Replace("anneau", "Ring")
@@ -254,6 +243,11 @@ namespace DeadCoreEditor
         private static readonly List<Material> _proceduralMaterials = new List<Material>();
         private static readonly List<GameObject> _proceduralTemplates = new List<GameObject>();
         private static GameObject _harvesterVault = null;
+
+        // Persistent tracking sets across background tasks
+        private static readonly HashSet<int> _seenMeshInstanceIDs = new HashSet<int>();
+        private static readonly Dictionary<string, int> _displayNameCounts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        private static readonly Dictionary<int, Material[]> _meshToOriginalMaterials = new Dictionary<int, Material[]>();
 
         public static void CleanupProceduralResources()
         {
@@ -370,6 +364,10 @@ namespace DeadCoreEditor
             EditorSessionManager.AllAssets.Clear();
             CleanupProceduralResources();
 
+            _seenMeshInstanceIDs.Clear();
+            _displayNameCounts.Clear();
+            _meshToOriginalMaterials.Clear();
+
             if (_harvesterVault == null)
             {
                 _harvesterVault = new GameObject("Studio_Harvester_Vault");
@@ -377,12 +375,9 @@ namespace DeadCoreEditor
                 _harvesterVault.SetActive(false);
             }
 
-            HashSet<int> seenMeshInstanceIDs = new HashSet<int>();
             HashSet<Material> seenMaterials = new HashSet<Material>();
-            Dictionary<int, Material[]> meshToOriginalMaterials = new Dictionary<int, Material[]>();
-            Dictionary<string, int> displayNameCounts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
 
-            // 1. Cache all materials & mapping across both MeshRenderer and SkinnedMeshRenderer
+            // 1. Cache all materials & mapping across active renderers
             MeshRenderer[] renderers = Resources.FindObjectsOfTypeAll<MeshRenderer>();
             for (int i = 0; i < renderers.Length; i++)
             {
@@ -407,9 +402,9 @@ namespace DeadCoreEditor
                 if (rmf != null && rmf.sharedMesh != null && mats != null && mats.Length > 0)
                 {
                     int mId = rmf.sharedMesh.GetInstanceID();
-                    if (!meshToOriginalMaterials.ContainsKey(mId))
+                    if (!_meshToOriginalMaterials.ContainsKey(mId))
                     {
-                        meshToOriginalMaterials[mId] = mats;
+                        _meshToOriginalMaterials[mId] = mats;
                     }
                 }
             }
@@ -431,9 +426,9 @@ namespace DeadCoreEditor
                 }
 
                 int mId = smr.sharedMesh.GetInstanceID();
-                if (!meshToOriginalMaterials.ContainsKey(mId) && mats != null && mats.Length > 0)
+                if (!_meshToOriginalMaterials.ContainsKey(mId) && mats != null && mats.Length > 0)
                 {
-                    meshToOriginalMaterials[mId] = mats;
+                    _meshToOriginalMaterials[mId] = mats;
                 }
             }
 
@@ -441,38 +436,33 @@ namespace DeadCoreEditor
             HarvestNativeGameplayEntities();
             HarvestProceduralHazardsAndLights();
 
-            // 3. TARGETED HARVEST: Level Design roots (_LD, L_D, LevelDesign)
-            HarvestTargetedRoots(new string[] { "_ld", "l_d", "ld", "leveldesign", "level_design" }, "Level Design", seenMeshInstanceIDs, displayNameCounts, meshToOriginalMaterials);
+            // 3. Sweep Level Design & Level Art roots from active scene
+            HarvestTargetedRoots(new string[] { "_ld", "l_d", "ld", "leveldesign", "level_design" }, "Level Design", _seenMeshInstanceIDs, _displayNameCounts, _meshToOriginalMaterials);
+            HarvestTargetedRoots(new string[] { "_la", "l_a", "la", "levelatmosphere", "atmosphere", "art", "props", "decor", "env", "world" }, "Level Art / Atmosphere", _seenMeshInstanceIDs, _displayNameCounts, _meshToOriginalMaterials);
 
-            // 4. TARGETED HARVEST: Level Art & Atmosphere roots (_LA, L_A, Atmosphere, Art, Props)
-            HarvestTargetedRoots(new string[] { "_la", "l_a", "la", "levelatmosphere", "level_atmosphere", "levelart", "level_art", "atmosphere", "art", "props", "decor", "environment", "env", "world" }, "Level Art / Atmosphere", seenMeshInstanceIDs, displayNameCounts, meshToOriginalMaterials);
+            // 4. Sweep all remaining loaded scene hierarchies
+            HarvestAllLoadedScenesArchitecture(_seenMeshInstanceIDs, _displayNameCounts, _meshToOriginalMaterials);
 
-            // 5. Sweep all remaining loaded scene hierarchies
-            HarvestAllLoadedScenesArchitecture(seenMeshInstanceIDs, displayNameCounts, meshToOriginalMaterials);
+            // 5. Deep scan loaded AssetBundles AND crawl unmounted disk archives
+            HarvestLoadedAndDiskAssetBundles(_seenMeshInstanceIDs, _displayNameCounts, _meshToOriginalMaterials);
 
-            // 6. FEATURE A: AssetBundle Deep Excavation (Reflection-based, zero compile dependencies)
-            HarvestLoadedAssetBundles(seenMeshInstanceIDs, displayNameCounts, meshToOriginalMaterials);
+            // 6. Deep search through memory components and resources
+            HarvestLoadedComponentsFromMemory(_seenMeshInstanceIDs, _displayNameCounts, _meshToOriginalMaterials);
+            HarvestResidualMeshesFromMemory(_seenMeshInstanceIDs, _displayNameCounts, _meshToOriginalMaterials);
 
-            // 7. FEATURE F: Cross-Level / Multi-Tower Additive Harvesting
-            HarvestCrossLevelTowers(seenMeshInstanceIDs, displayNameCounts, meshToOriginalMaterials);
-
-            // 8. Deep search through remaining loaded components in memory
-            HarvestLoadedComponentsFromMemory(seenMeshInstanceIDs, displayNameCounts, meshToOriginalMaterials);
-
-            // 9. Cache lighting
             DebugDumpSceneLighting();
 
-            // 10. Residual mesh memory sweep
-            HarvestResidualMeshesFromMemory(seenMeshInstanceIDs, displayNameCounts, meshToOriginalMaterials);
+            MelonLogger.Msg($">> [Harvest] Base scene catalog ready ({EditorSessionManager.AllAssets.Count} assets). Starting cross-level sweep...");
 
-            MelonLogger.Msg($">> [Harvest] Complete! Catalog populated with {EditorSessionManager.AllAssets.Count} unique assets (1.2m - 24.0m, LOD4 kept).");
+            // 7. Asynchronous, race-condition-free cross-tower crawler
+            MelonCoroutines.Start(HarvestCrossLevelTowersCoroutine());
         }
 
         // =========================================================================
-        // FEATURE A: ASSETBUNDLE DEEP EXCAVATION (Decoupled Reflection)
+        // FIX 1: LOADED + ON-DISK ASSETBUNDLE HARVESTER (ALL FORMATS)
         // =========================================================================
 
-        public static void HarvestLoadedAssetBundles(HashSet<int> seenMeshIDs, Dictionary<string, int> displayNameCounts, Dictionary<int, Material[]> meshToOriginalMaterials)
+        public static void HarvestLoadedAndDiskAssetBundles(HashSet<int> seenMeshIDs, Dictionary<string, int> displayNameCounts, Dictionary<int, Material[]> meshToOriginalMaterials)
         {
             try
             {
@@ -487,137 +477,226 @@ namespace DeadCoreEditor
                 if (assetBundleType == null) return;
 
                 MethodInfo getAllMethod = assetBundleType.GetMethod("GetAllLoadedAssetBundles", BindingFlags.Public | BindingFlags.Static);
-                if (getAllMethod == null) return;
-
-                IEnumerable rawBundles = getAllMethod.Invoke(null, null) as IEnumerable;
-                if (rawBundles == null) return;
-
+                MethodInfo loadFromFileMethod = assetBundleType.GetMethod("LoadFromFile", new Type[] { typeof(string) });
                 MethodInfo loadAllMethod = assetBundleType.GetMethod("LoadAllAssets", new Type[] { typeof(Type) });
+                MethodInfo unloadMethod = assetBundleType.GetMethod("Unload", new Type[] { typeof(bool) });
+
                 if (loadAllMethod == null) return;
 
-                int bundleHarvested = 0;
+                HashSet<string> loadedBundleNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
-                foreach (object bundle in rawBundles)
+                // A. Harvest already-loaded bundles in memory
+                if (getAllMethod != null)
                 {
-                    if (bundle == null) continue;
-
-                    // 1. Inspect all GameObjects stored in the bundle
-                    Il2CppSystem.Object[] rawGos = loadAllMethod.Invoke(bundle, new object[] { typeof(GameObject) }) as Il2CppSystem.Object[];
-                    if (rawGos != null)
+                    IEnumerable rawBundles = getAllMethod.Invoke(null, null) as IEnumerable;
+                    if (rawBundles != null)
                     {
-                        for (int i = 0; i < rawGos.Length; i++)
+                        foreach (object bundle in rawBundles)
                         {
-                            if (rawGos[i] == null) continue;
-                            GameObject go = rawGos[i].TryCast<GameObject>();
-                            if (go == null) continue;
+                            if (bundle == null) continue;
+                            string bName = bundle.GetType().GetProperty("name")?.GetValue(bundle, null)?.ToString() ?? "";
+                            if (!string.IsNullOrEmpty(bName)) loadedBundleNames.Add(bName);
 
-                            MeshFilter[] mfs = go.GetComponentsInChildren<MeshFilter>(true);
-                            for (int f = 0; f < mfs.Length; f++)
-                            {
-                                MeshFilter mf = mfs[f];
-                                if (mf == null || mf.sharedMesh == null) continue;
-
-                                Renderer r = mf.GetComponent<Renderer>();
-                                if (TryHarvestMesh(mf.sharedMesh, mf.gameObject.name, mf.sharedMesh.name, mf.gameObject, r, seenMeshIDs, displayNameCounts, meshToOriginalMaterials))
-                                {
-                                    bundleHarvested++;
-                                }
-                            }
-
-                            SkinnedMeshRenderer[] smrs = go.GetComponentsInChildren<SkinnedMeshRenderer>(true);
-                            for (int s = 0; s < smrs.Length; s++)
-                            {
-                                SkinnedMeshRenderer smr = smrs[s];
-                                if (smr == null || smr.sharedMesh == null) continue;
-
-                                if (TryHarvestMesh(smr.sharedMesh, smr.gameObject.name, smr.sharedMesh.name, smr.gameObject, smr, seenMeshIDs, displayNameCounts, meshToOriginalMaterials))
-                                {
-                                    bundleHarvested++;
-                                }
-                            }
-                        }
-                    }
-
-                    // 2. Direct Meshes stored in the bundle
-                    Il2CppSystem.Object[] rawMeshes = loadAllMethod.Invoke(bundle, new object[] { typeof(Mesh) }) as Il2CppSystem.Object[];
-                    if (rawMeshes != null)
-                    {
-                        for (int m = 0; m < rawMeshes.Length; m++)
-                        {
-                            if (rawMeshes[m] == null) continue;
-                            Mesh mesh = rawMeshes[m].TryCast<Mesh>();
-                            if (mesh == null) continue;
-
-                            if (TryHarvestMesh(mesh, mesh.name, mesh.name, null, null, seenMeshIDs, displayNameCounts, meshToOriginalMaterials))
-                            {
-                                bundleHarvested++;
-                            }
+                            ExtractAssetsFromBundleObject(bundle, loadAllMethod, seenMeshIDs, displayNameCounts, meshToOriginalMaterials);
                         }
                     }
                 }
 
-                if (bundleHarvested > 0)
+                // B. Crawl disk folders for unmounted AssetBundles (supports UnityFS, UnityRaw, UnityWeb, UnityArchive)
+                if (loadFromFileMethod != null)
                 {
-                    MelonLogger.Msg($">> [Harvest-AssetBundles] Extracted {bundleHarvested} assets from loaded AssetBundles.");
+                    List<string> candidateDirs = new List<string>
+                    {
+                        Application.streamingAssetsPath,
+                        Path.Combine(Application.dataPath, "StreamingAssets"),
+                        Path.Combine(Application.dataPath, "AssetBundles"),
+                        Path.Combine(Application.dataPath, "Bundles"),
+                        Path.Combine(Directory.GetCurrentDirectory(), "AssetBundles")
+                    };
+
+                    int diskBundlesHarvested = 0;
+
+                    for (int d = 0; d < candidateDirs.Count; d++)
+                    {
+                        string dir = candidateDirs[d];
+                        if (string.IsNullOrEmpty(dir) || !Directory.Exists(dir)) continue;
+
+                        string[] files;
+                        try { files = Directory.GetFiles(dir, "*", SearchOption.AllDirectories); }
+                        catch { continue; }
+
+                        for (int f = 0; f < files.Length; f++)
+                        {
+                            string file = files[f];
+                            if (!IsAnyUnityAssetBundle(file)) continue;
+
+                            string fileName = Path.GetFileName(file);
+                            if (loadedBundleNames.Contains(fileName)) continue;
+
+                            try
+                            {
+                                object diskBundle = loadFromFileMethod.Invoke(null, new object[] { file });
+                                if (diskBundle == null) continue;
+
+                                int before = seenMeshIDs.Count;
+                                ExtractAssetsFromBundleObject(diskBundle, loadAllMethod, seenMeshIDs, displayNameCounts, meshToOriginalMaterials);
+                                int added = seenMeshIDs.Count - before;
+                                if (added > 0) diskBundlesHarvested += added;
+
+                                if (unloadMethod != null)
+                                {
+                                    unloadMethod.Invoke(diskBundle, new object[] { false });
+                                }
+                            }
+                            catch { }
+                        }
+                    }
+
+                    if (diskBundlesHarvested > 0)
+                    {
+                        MelonLogger.Msg($">> [Harvest-DiskBundles] Extracted {diskBundlesHarvested} additional assets from unmounted disk archives.");
+                    }
                 }
             }
             catch (Exception ex)
             {
-                MelonLogger.Warning($"[Harvest-AssetBundles] Note: {ex.Message}");
+                MelonLogger.Warning($"[Harvest-AssetBundles] {ex.Message}");
+            }
+        }
+
+        private static bool IsAnyUnityAssetBundle(string filePath)
+        {
+            try
+            {
+                if (!File.Exists(filePath)) return false;
+                using (var fs = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+                {
+                    if (fs.Length < 16) return false;
+                    byte[] header = new byte[8];
+                    if (fs.Read(header, 0, 8) < 8) return false;
+                    string sig = Encoding.ASCII.GetString(header);
+                    return sig.StartsWith("UnityFS") || sig.StartsWith("UnityRaw") || sig.StartsWith("UnityWeb") || sig.StartsWith("UnityA");
+                }
+            }
+            catch { return false; }
+        }
+
+        private static void ExtractAssetsFromBundleObject(object bundle, MethodInfo loadAllMethod, HashSet<int> seenMeshIDs, Dictionary<string, int> displayNameCounts, Dictionary<int, Material[]> meshToOriginalMaterials)
+        {
+            // 1. Inspect bundled GameObjects
+            Il2CppSystem.Object[] rawGos = loadAllMethod.Invoke(bundle, new object[] { typeof(GameObject) }) as Il2CppSystem.Object[];
+            if (rawGos != null)
+            {
+                for (int i = 0; i < rawGos.Length; i++)
+                {
+                    if (rawGos[i] == null) continue;
+                    GameObject go = rawGos[i].TryCast<GameObject>();
+                    if (go == null) continue;
+
+                    MeshFilter[] mfs = go.GetComponentsInChildren<MeshFilter>(true);
+                    for (int f = 0; f < mfs.Length; f++)
+                    {
+                        MeshFilter mf = mfs[f];
+                        if (mf == null || mf.sharedMesh == null) continue;
+                        TryHarvestMesh(mf.sharedMesh, mf.gameObject.name, mf.sharedMesh.name, mf.gameObject, mf.GetComponent<Renderer>(), seenMeshIDs, displayNameCounts, meshToOriginalMaterials);
+                    }
+
+                    SkinnedMeshRenderer[] smrs = go.GetComponentsInChildren<SkinnedMeshRenderer>(true);
+                    for (int s = 0; s < smrs.Length; s++)
+                    {
+                        SkinnedMeshRenderer smr = smrs[s];
+                        if (smr == null || smr.sharedMesh == null) continue;
+                        TryHarvestMesh(smr.sharedMesh, smr.gameObject.name, smr.sharedMesh.name, smr.gameObject, smr, seenMeshIDs, displayNameCounts, meshToOriginalMaterials);
+                    }
+                }
+            }
+
+            // 2. Direct Meshes
+            Il2CppSystem.Object[] rawMeshes = loadAllMethod.Invoke(bundle, new object[] { typeof(Mesh) }) as Il2CppSystem.Object[];
+            if (rawMeshes != null)
+            {
+                for (int m = 0; m < rawMeshes.Length; m++)
+                {
+                    if (rawMeshes[m] == null) continue;
+                    Mesh mesh = rawMeshes[m].TryCast<Mesh>();
+                    if (mesh != null)
+                    {
+                        TryHarvestMesh(mesh, mesh.name, mesh.name, null, null, seenMeshIDs, displayNameCounts, meshToOriginalMaterials);
+                    }
+                }
             }
         }
 
         // =========================================================================
-        // FEATURE F: CROSS-LEVEL / MULTI-TOWER ADDITIVE HARVESTING
+        // FIX 2: ASYNC CROSS-LEVEL SWEEPER (COROUTINE-DRIVEN)
         // =========================================================================
 
-        public static void HarvestCrossLevelTowers(HashSet<int> seenMeshIDs, Dictionary<string, int> displayNameCounts, Dictionary<int, Material[]> meshToOriginalMaterials)
+        private static IEnumerator HarvestCrossLevelTowersCoroutine()
         {
             IsHarvestingAdditive = true;
-            try
+
+            List<string> levelPaths = GetDiscoveredLevelScenePaths();
+            string activeScenePath = SceneManager.GetActiveScene().path;
+            int totalCrossHarvested = 0;
+
+            for (int i = 0; i < levelPaths.Count; i++)
             {
-                List<string> levelPaths = GetDiscoveredLevelScenePaths();
-                string activeScenePath = SceneManager.GetActiveScene().path;
+                string scenePath = levelPaths[i];
+                if (string.IsNullOrWhiteSpace(scenePath) || string.Equals(scenePath, activeScenePath, StringComparison.OrdinalIgnoreCase))
+                    continue;
 
-                for (int i = 0; i < levelPaths.Count; i++)
+                string sName = Path.GetFileNameWithoutExtension(scenePath);
+
+                // 1. Begin additive load asynchronously
+                AsyncOperation loadOp = null;
+                try
                 {
-                    string scenePath = levelPaths[i];
-                    if (string.IsNullOrWhiteSpace(scenePath)) continue;
+                    loadOp = SceneManager.LoadSceneAsync(scenePath, LoadSceneMode.Additive);
+                }
+                catch (Exception ex)
+                {
+                    MelonLogger.Warning($"[Harvest-CrossLevel] Skipped '{sName}': {ex.Message}");
+                    continue;
+                }
 
-                    // Skip active scene (already scanned)
-                    if (string.Equals(scenePath, activeScenePath, StringComparison.OrdinalIgnoreCase)) continue;
+                if (loadOp != null)
+                {
+                    while (!loadOp.isDone) yield return null;
+                }
 
-                    string sName = System.IO.Path.GetFileNameWithoutExtension(scenePath);
-                    try
+                yield return null; // Allow frame for Awake / hierarchy initialization
+
+                Scene loadedScene = SceneManager.GetSceneByName(sName);
+                if (!loadedScene.IsValid())
+                    loadedScene = SceneManager.GetSceneByPath(scenePath);
+                if (!loadedScene.IsValid() && SceneManager.sceneCount > 1)
+                    loadedScene = SceneManager.GetSceneAt(SceneManager.sceneCount - 1);
+
+                if (loadedScene.IsValid() && loadedScene.isLoaded)
+                {
+                    int before = _seenMeshInstanceIDs.Count;
+                    HarvestSceneRoots(loadedScene, _seenMeshInstanceIDs, _displayNameCounts, _meshToOriginalMaterials);
+                    int added = _seenMeshInstanceIDs.Count - before;
+                    totalCrossHarvested += added;
+
+                    // 2. Unload asynchronously and wait until fully unloaded before touching the next scene
+                    AsyncOperation unloadOp = SceneManager.UnloadSceneAsync(loadedScene);
+                    if (unloadOp != null)
                     {
-                        SceneManager.LoadScene(scenePath, LoadSceneMode.Additive);
-                        Scene loadedScene = SceneManager.GetSceneByPath(scenePath);
-
-                        // Fixed: IsValid() is a method on the Scene struct
-                        if (!loadedScene.IsValid())
-                        {
-                            loadedScene = SceneManager.GetSceneAt(SceneManager.sceneCount - 1);
-                        }
-
-                        if (loadedScene.IsValid() && loadedScene.isLoaded)
-                        {
-                            int prevCount = seenMeshIDs.Count;
-                            HarvestSceneRoots(loadedScene, seenMeshIDs, displayNameCounts, meshToOriginalMaterials);
-                            int added = seenMeshIDs.Count - prevCount;
-                            MelonLogger.Msg($">> [Harvest-CrossLevel] Additively harvested {added} assets from '{sName}'");
-
-                            SceneManager.UnloadSceneAsync(loadedScene);
-                        }
+                        while (!unloadOp.isDone) yield return null;
                     }
-                    catch (Exception ex)
-                    {
-                        MelonLogger.Warning($"[Harvest-CrossLevel] Skipped '{sName}': {ex.Message}");
-                    }
+
+                    yield return null;
                 }
             }
-            finally
+
+            IsHarvestingAdditive = false;
+
+            if (totalCrossHarvested > 0)
             {
-                IsHarvestingAdditive = false;
+                MelonLogger.Msg($">> [Harvest-Complete] Discovered {totalCrossHarvested} new campaign assets! Total: {EditorSessionManager.AllAssets.Count}");
+                StudioUIManager.RebuildCategoryDockButtons();
+                StudioUIManager.RefreshAssetBrowser();
             }
         }
 
@@ -631,9 +710,9 @@ namespace DeadCoreEditor
                 if (string.IsNullOrEmpty(path)) continue;
                 string pLow = path.ToLowerInvariant();
 
-                // Harvest actual world levels/towers, ignoring menus, boots, and loaders
-                if ((pLow.Contains("level") || pLow.Contains("spark") || pLow.Contains("tower") || pLow.Contains("stage")) &&
-                    !pLow.Contains("menu") && !pLow.Contains("boot") && !pLow.Contains("init") && !pLow.Contains("title") && !pLow.Contains("load"))
+                // Harvest any non-menu playable scenes (eliminates arbitrary keyword gating)
+                if (!pLow.Contains("menu") && !pLow.Contains("boot") && !pLow.Contains("init") &&
+                    !pLow.Contains("title") && !pLow.Contains("load") && !pLow.Contains("logo"))
                 {
                     list.Add(path);
                 }
@@ -671,10 +750,6 @@ namespace DeadCoreEditor
                 }
             }
         }
-
-        // =========================================================================
-        // TARGETED & GENERAL SWEEPS
-        // =========================================================================
 
         private static void HarvestTargetedRoots(string[] targetKeywords, string groupLabel, HashSet<int> seenMeshIDs, Dictionary<string, int> displayNameCounts, Dictionary<int, Material[]> meshToOriginalMaterials)
         {
@@ -967,7 +1042,6 @@ namespace DeadCoreEditor
 
         private static void HarvestNativeGameplayEntities()
         {
-            // 1. Launch Jumper
             try
             {
                 EditorSessionManager.PrefabJumper = GameObject.FindObjectOfType<Jumper>();
@@ -1003,7 +1077,6 @@ namespace DeadCoreEditor
                 EditorSessionManager.AllAssets.Add(jAsset);
             }
 
-            // 2. Checkpoint & Gates
             try
             {
                 EditorSessionManager.PrefabCheckPoint = GameObject.FindObjectOfType<CheckPointScript>();
@@ -1069,7 +1142,6 @@ namespace DeadCoreEditor
                 EditorSessionManager.AllAssets.Add(goalAsset);
             }
 
-            // 3. Defense Turret
             try
             {
                 TurretScript nativeTurret = GameObject.FindObjectOfType<TurretScript>();
@@ -1103,7 +1175,6 @@ namespace DeadCoreEditor
                 EditorSessionManager.AllAssets.Add(turretAsset);
             }
 
-            // 4. Helix Turbine Fan
             try
             {
                 Helix nativeHelix = GameObject.FindObjectOfType<Helix>();
@@ -1130,7 +1201,6 @@ namespace DeadCoreEditor
                 EditorSessionManager.AllAssets.Add(helixAsset);
             }
 
-            // 5. Interuptor / Switch
             try
             {
                 Interuptor nativeInteruptor = GameObject.FindObjectOfType<Interuptor>();
@@ -1172,7 +1242,6 @@ namespace DeadCoreEditor
 
         private static void HarvestProceduralHazardsAndLights()
         {
-            // 1. Tech Spotlight
             GameObject spotTemplate = new GameObject("Template_Spotlight");
             Light spotLight = spotTemplate.AddComponent<Light>();
             spotLight.type = LightType.Spot;
@@ -1217,7 +1286,6 @@ namespace DeadCoreEditor
             spotAsset.ComputeSizeMetrics();
             EditorSessionManager.AllAssets.Add(spotAsset);
 
-            // 2. Global Sunlight
             GameObject sunTemplate = new GameObject("Template_Sunlight");
             Light sunLight = sunTemplate.AddComponent<Light>();
             sunLight.type = LightType.Directional;
@@ -1255,7 +1323,6 @@ namespace DeadCoreEditor
             sunAsset.ComputeSizeMetrics();
             EditorSessionManager.AllAssets.Add(sunAsset);
 
-            // 3. Skybox Controller
             GameObject skyTemplate = new GameObject("Template_Skybox_Controller");
             StudioGizmoController.SkyboxWidgetBuilder.CreateWidget(skyTemplate.transform);
             BoxCollider skyCol = skyTemplate.AddComponent<BoxCollider>();
@@ -1275,7 +1342,6 @@ namespace DeadCoreEditor
             skyAsset.ComputeSizeMetrics();
             EditorSessionManager.AllAssets.Add(skyAsset);
 
-            // 4. Laser Materials & Barriers
             Material laserMat = GameObject.FindObjectOfType<LaserManager>()?._sharedMaterial;
             if (laserMat != null)
             {
@@ -1292,7 +1358,6 @@ namespace DeadCoreEditor
             RegisterLaserBarrier("Laser Barrier Medium (8m)", 8f, 4f, laserMat, AssetTrait.Laser);
             RegisterLaserBarrier("Laser Barrier Long (22m)", 22f, 4f, laserMat, AssetTrait.Laser);
 
-            // 5. Rotating Laser
             GameObject rotLaserRoot = new GameObject("Template_Rotating_Laser");
             GameObject centerHub = GameObject.CreatePrimitive(PrimitiveType.Cube);
             centerHub.name = "CenterHub";
@@ -1360,7 +1425,6 @@ namespace DeadCoreEditor
             string sName = activeScene.name.ToLower();
             if (sName.Contains("menu")) return;
 
-            // 1. Rescue core runtime objects
             GameObject player = EditorSessionManager.FindPlayerEntity();
             if (player != null)
             {
@@ -1392,7 +1456,6 @@ namespace DeadCoreEditor
                 if (sim != null) sim.enabled = true;
             }
 
-            // 2. Hide vanilla level design roots, preserving level atmosphere (_LA)
             GameObject[] rootObjects = activeScene.GetRootGameObjects();
             for (int i = 0; i < rootObjects.Length; i++)
             {
@@ -1538,7 +1601,6 @@ namespace DeadCoreEditor
         [HarmonyPostfix]
         public static void Postfix()
         {
-            // Do not initialize custom level if an additive background scan is running
             if (SceneHarvestingService.IsHarvestingAdditive) return;
 
             string currentScene = SceneManager.GetActiveScene().name.ToLower();

@@ -932,7 +932,7 @@ namespace DeadCoreEditor
             }
         }
 
-        private static void CleanHighlightPool()
+        public static void CleanHighlightPool()
         {
             for (int i = 0; i < _highlightBoxes.Count; i++)
             {
@@ -994,6 +994,7 @@ namespace DeadCoreEditor
             {
                 CapturePlaytestSnapshots();
                 SwitchService.ResetAllSwitchesForPlaytest(enteringPlaytest: true);
+                ForceRefreshAllTurbines();
 
                 IsLevelCompleted = false;
 
@@ -1188,7 +1189,11 @@ namespace DeadCoreEditor
             if (_lightRefreshTimer > 0f)
             {
                 _lightRefreshTimer -= Time.deltaTime;
-                if (_lightRefreshTimer <= 0f) ForceRefreshAllLights();
+                if (_lightRefreshTimer <= 0f)
+                {
+                    ForceRefreshAllTurbines();
+                    ForceRefreshAllLights();
+                }
             }
 
             if (SelectedObject != null && PlacedObjectTypes.TryGetValue(SelectedObject, out var selType) && selType == PlacedObjectType.Sunlight)
@@ -1309,7 +1314,10 @@ namespace DeadCoreEditor
             ProceduralCableService.UpdateEnergyFlowTick(Time.deltaTime);
 
             if (Input.GetKeyDown(KeyCode.F1)) ToggleEditMode();
-            if (Input.GetKeyDown(KeyCode.F4)) SceneHarvestingService.DebugDumpSceneLighting();
+            if (Input.GetKeyDown(KeyCode.F4))
+            {
+                ThumbnailCaptureService.CaptureViewportSnapshot(MapBrowserService.SelectedMapPath);
+            }
             if (Input.GetKeyDown(KeyCode.F5)) LevelPersistenceService.SaveLevel(MapBrowserService.SelectedMapName);
         }
 
@@ -2091,27 +2099,91 @@ namespace DeadCoreEditor
             if (turbineObj == null) return;
             TurbineSpeeds[turbineObj] = speed;
 
-            HelixPushingZone zone = turbineObj.GetComponentInChildren<HelixPushingZone>(true);
-            if (zone != null)
+            // Keep EntityRegistry synchronized
+            if (EntityRegistry.TryGetValue(turbineObj, out var data))
             {
-                zone._maxForce = speed;
-                zone._maxVelocity = speed * 2.0f;
+                var tc = data.GetOrCreate<TurbineConfig>();
+                tc.Speed = speed;
             }
 
-            Helix h = turbineObj.GetComponentInChildren<Helix>(true);
-            if (h != null)
+            // 1. Update native DeadCore HelixPushingZone triggers
+            HelixPushingZone[] zones = turbineObj.GetComponentsInChildren<HelixPushingZone>(true);
+            for (int z = 0; z < zones.Length; z++)
             {
+                HelixPushingZone zone = zones[z];
+                if (zone != null)
+                {
+                    zone._maxForce = speed;
+                    zone._maxVelocity = speed * 2.0f;
+                }
+            }
+
+            // 2. Update native DeadCore Helix visual rotor and physics joint
+            Helix[] helices = turbineObj.GetComponentsInChildren<Helix>(true);
+            for (int hIdx = 0; hIdx < helices.Length; hIdx++)
+            {
+                Helix h = helices[hIdx];
+                if (h == null) continue;
+
                 h._maximumVelocity = speed * 20f;
                 CachedHelixScripts[turbineObj] = h;
 
+                // Auto-resolve HingeJoint if not yet assigned by native script
+                if (h._hingeJoint == null)
+                {
+                    h._hingeJoint = h.GetComponent<HingeJoint>()
+                                 ?? h.GetComponentInChildren<HingeJoint>(true)
+                                 ?? turbineObj.GetComponentInChildren<HingeJoint>(true);
+                }
+
                 if (h._hingeJoint != null)
                 {
+                    h._hingeJoint.useMotor = true;
                     JointMotor m = h._hingeJoint.motor;
                     m.targetVelocity = speed * 20f;
-                    m.force = 1000f;
-                    m.freeSpin = false; // MUST be false so it brakes when targetVelocity is set to 0
+                    m.force = 3000f; // High torque ensures it reaches target speed immediately
+                    m.freeSpin = false;
                     h._hingeJoint.motor = m;
                 }
+            }
+
+            // 3. Fallback: Catch any standalone HingeJoints on child objects
+            HingeJoint[] allJoints = turbineObj.GetComponentsInChildren<HingeJoint>(true);
+            for (int j = 0; j < allJoints.Length; j++)
+            {
+                HingeJoint hj = allJoints[j];
+                if (hj != null)
+                {
+                    hj.useMotor = true;
+                    JointMotor m = hj.motor;
+                    m.targetVelocity = speed * 20f;
+                    m.force = 3000f;
+                    m.freeSpin = false;
+                    hj.motor = m;
+                }
+            }
+        }
+
+        public static void ForceRefreshAllTurbines()
+        {
+            if (PlacedTurbines == null || PlacedTurbines.Count == 0) return;
+
+            for (int i = 0; i < PlacedTurbines.Count; i++)
+            {
+                GameObject obj = PlacedTurbines[i];
+                if (obj == null || !obj.activeInHierarchy) continue;
+
+                float speed = ActiveTurbineSpeed;
+                if (TurbineSpeeds.TryGetValue(obj, out float s))
+                {
+                    speed = s;
+                }
+                else if (EntityRegistry.TryGetValue(obj, out var data) && data.TryGetComponent<TurbineConfig>(out var tc))
+                {
+                    speed = tc.Speed;
+                }
+
+                ApplyTurbineSpeed(obj, speed);
             }
         }
 
@@ -2199,7 +2271,7 @@ namespace DeadCoreEditor
             for (int i = 0; i < rends.Length; i++)
             {
                 if (rends[i] == null) continue;
-                Material m = rends[i].material;
+                Material m = rends[i].sharedMaterial;
                 if (m == null) continue;
 
                 float volVal = Mathf.Clamp(cfg.VolumetricIntensity, 0f, 16f);
@@ -2686,7 +2758,7 @@ namespace DeadCoreEditor
             WaypointLines.Clear();
         }
 
-        private static void HideAllWaypointMarkers()
+        public static void HideAllWaypointMarkers()
         {
             foreach (var kvp in WaypointMarkersA) if (kvp.Value != null) kvp.Value.SetActive(false);
             foreach (var kvp in WaypointMarkersB) if (kvp.Value != null) kvp.Value.SetActive(false);
@@ -2901,7 +2973,6 @@ namespace DeadCoreEditor
                     CheckHelixWindPushing(player, cc);
                     CheckLaserBarriers(player, cc);
                     CheckGoalTriggerArrival(player);
-
                     SkyboxControllerService.UpdateTick(dt);
 
                     // Robust Checkpoint Detection directly matching Class1.cs
@@ -2986,10 +3057,10 @@ namespace DeadCoreEditor
                     if (finSwitch != null && finSwitch._isOn)
                         continue;
 
-                    // 4. Check if the joint motor is off or has slowed down to a halt
+                    // 4. Only skip if the joint explicitly has its motor turned off (e.g. deactivated by a switch)
                     if (helixScript != null && helixScript._hingeJoint != null)
                     {
-                        if (!helixScript._hingeJoint.useMotor || Mathf.Abs(helixScript._hingeJoint.velocity) < 10f)
+                        if (!helixScript._hingeJoint.useMotor)
                             continue;
                     }
 
@@ -3141,6 +3212,8 @@ namespace DeadCoreEditor
             SwitchService.ResetAllSwitchesForPlaytest(enteringPlaytest: true);
 
             UnfreezePlayerControls();
+            ForceRefreshAllTurbines();
+
             MelonLogger.Msg(">> [Restart] Restarted run cleanly from Entry Gate!");
         }
 
@@ -3170,6 +3243,7 @@ namespace DeadCoreEditor
             }
 
             if (cc != null) cc.enabled = true;
+            ForceRefreshAllTurbines();
             UnfreezePlayerControls();
         }
 
@@ -3486,8 +3560,7 @@ namespace DeadCoreEditor
                 GUI.color = new Color(0.2f, 0.85f, 0.4f, 1f);
                 if (GUI.Button(new Rect(x + 30, y + 150, 125, 42), "Restart")) RestartRun();
 
-                GUI.color = new Color(0.2f, 0.7f, 1f, 1f);
-                if (GUI.Button(new Rect(x + 165, y + 150, 130, 42), "Edit (F1)")) ToggleEditMode();
+                GUI.color = new Color(0.2f, 0.7f, 1f, 1f);                if (GUI.Button(new Rect(x + 165, y + 150, 130, 42), "Edit (F1)")) ToggleEditMode();
 
                 GUI.color = new Color(0.85f, 0.3f, 0.3f, 1f);
                 if (GUI.Button(new Rect(x + 305, y + 150, 125, 42), "Main Menu"))

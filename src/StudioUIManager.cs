@@ -540,6 +540,9 @@ namespace DeadCoreEditor
         private static GameObject _canvasRoot = null;
         private static Canvas _canvas = null;
 
+        private static float _browserScrollTarget = 1.0f;
+        private static bool _isBrowserTargetInitialized = false;
+
         // Top Toolbar & Navigation
         private static GameObject _toolbarPanel = null;
         private static GameObject _activeDropdownMenu = null;
@@ -651,8 +654,15 @@ namespace DeadCoreEditor
             UpdateRebindingTick();
 
             // Direct mouse-wheel scroll listener for Asset Browser
+            // Smooth, controlled mouse-wheel listener for Asset Browser
             if (_assetBrowserScrollRect != null && _assetBrowserPanel != null && _assetBrowserPanel.activeInHierarchy)
             {
+                if (!_isBrowserTargetInitialized)
+                {
+                    _browserScrollTarget = _assetBrowserScrollRect.verticalNormalizedPosition;
+                    _isBrowserTargetInitialized = true;
+                }
+
                 Vector2 mousePos = Input.mousePosition;
                 RectTransform abrt = _assetBrowserPanel.GetComponent<RectTransform>();
                 if (abrt != null && RectTransformUtility.RectangleContainsScreenPoint(abrt, mousePos))
@@ -662,11 +672,22 @@ namespace DeadCoreEditor
                     {
                         float contentH = _browserContent != null ? _browserContent.rect.height : 1000f;
                         float viewH = (_assetBrowserScrollRect.viewport != null) ? _assetBrowserScrollRect.viewport.rect.height : 220f;
-                        float scrollableH = Mathf.Max(1f, contentH - viewH);
+                        float scrollableH = Mathf.Max(100f, contentH - viewH);
 
-                        float step = (90f / scrollableH) * (scrollWheel > 0 ? 1f : -1f);
-                        _assetBrowserScrollRect.verticalNormalizedPosition = Mathf.Clamp01(_assetBrowserScrollRect.verticalNormalizedPosition + step);
+                        // Calm, fixed-pixel step (approx. 1 row per notch)
+                        float step = (48f / scrollableH) * (scrollWheel > 0f ? 1f : -1f);
+                        _browserScrollTarget = Mathf.Clamp01(_browserScrollTarget + step);
                     }
+                }
+
+                // Smoothly interpolate position so cards never jump or disappear
+                if (Mathf.Abs(_assetBrowserScrollRect.verticalNormalizedPosition - _browserScrollTarget) > 0.0005f)
+                {
+                    _assetBrowserScrollRect.verticalNormalizedPosition = Mathf.Lerp(
+                        _assetBrowserScrollRect.verticalNormalizedPosition,
+                        _browserScrollTarget,
+                        Time.deltaTime * 14f
+                    );
                 }
             }
 
@@ -901,7 +922,9 @@ namespace DeadCoreEditor
                         CommunityLevelService.PublishCurrentLevel(MapBrowserService.SelectedMapPath);
                     }, new Color(0.3f, 0.95f, 0.5f)),
                     new DropdownItem("Load Level (F6)", () => LevelPersistenceService.LoadLevel(MapBrowserService.SelectedMapName)),
-                    new DropdownItem("Capture Snapshot (F4)", () => ThumbnailCaptureService.CaptureLevelThumbnail(MapBrowserService.SelectedMapPath, EditorSessionManager.PlacedObjects, EditorSessionManager.LevelSpawnPosition)),
+                    new DropdownItem("Capture Snapshot (F4)", () =>
+                        ThumbnailCaptureService.CaptureViewportSnapshot(MapBrowserService.SelectedMapPath)
+                    ),
                     new DropdownItem("Reset Level", () => EditorSessionManager.ClearAllPlacedObjects(), new Color(0.9f, 0.3f, 0.3f)),
                     new DropdownItem("Select All (Ctrl+A)", () => EditorSessionManager.SelectAllPlacedObjects()),
                     new DropdownItem("Deselect All (Esc)", () => EditorSessionManager.SelectObject(null)),
@@ -1444,6 +1467,7 @@ namespace DeadCoreEditor
             if (_browserContent == null) return;
             CloseContextMenu();
             CloseAllDropdowns();
+            _isBrowserTargetInitialized = false;
 
             for (int i = 0; i < _browserCards.Count; i++)
             {
@@ -1548,15 +1572,6 @@ namespace DeadCoreEditor
                     }
                 }));
                 trigger.triggers.Add(clickEntry);
-
-                // FORWARD SCROLL TO SCROLLRECT
-                var scrollEntry = new EventTrigger.Entry { eventID = EventTriggerType.Scroll };
-                scrollEntry.callback.AddListener((Action<BaseEventData>)((e) =>
-                {
-                    if (_assetBrowserScrollRect != null)
-                        _assetBrowserScrollRect.OnScroll(e.Cast<PointerEventData>());
-                }));
-                trigger.triggers.Add(scrollEntry);
 
                 // FORWARD DRAG TO SCROLLRECT
                 var dragEntry = new EventTrigger.Entry { eventID = EventTriggerType.Drag };
@@ -2575,7 +2590,7 @@ namespace DeadCoreEditor
             {
                 var card = CreateModularSection(_inspectorContent, "Jumper", "Jumper Launch Pad");
                 var jc = data.GetOrCreate<JumperConfig>();
-                AddSliderRow(card.transform, "Launch Force", 5f, 85f, jc.Force, "{0:F1}", (v) =>
+                AddSliderRow(card.transform, "Launch Force", 5f, 400f, jc.Force, "{0:F1}", (v) =>
                 {
                     jc.Force = v;
                     var targets = GetSelectionTargets(obj);

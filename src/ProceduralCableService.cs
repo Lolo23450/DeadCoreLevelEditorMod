@@ -254,7 +254,7 @@ namespace DeadCoreEditor
                 }
             }
 
-            // Triangulate cylindrical body segments
+            // Triangulate cylindrical body segments (Clean, single-pass, outward-facing winding)
             for (int ring = 0; ring < subdivisions; ring++)
             {
                 for (int side = 0; side < RadialSides; side++)
@@ -263,31 +263,19 @@ namespace DeadCoreEditor
                     int next = current + ringVertexCount;
 
                     bool isNeonSpine = (style == CableStyle.NeonStriped) && (side == 0);
+                    List<int> targetTris = (style == CableStyle.FullNeon || isNeonSpine) ? neonTris : bodyTris;
 
-                    if (style == CableStyle.FullNeon || isNeonSpine)
-                    {
-                        neonTris.Add(current);
-                        neonTris.Add(next);
-                        neonTris.Add(current + 1);
+                    targetTris.Add(current);
+                    targetTris.Add(current + 1);
+                    targetTris.Add(next);
 
-                        neonTris.Add(current + 1);
-                        neonTris.Add(next);
-                        neonTris.Add(next + 1);
-                    }
-                    else
-                    {
-                        bodyTris.Add(current);
-                        bodyTris.Add(next);
-                        bodyTris.Add(current + 1);
-
-                        bodyTris.Add(current + 1);
-                        bodyTris.Add(next);
-                        bodyTris.Add(next + 1);
-                    }
+                    targetTris.Add(current + 1);
+                    targetTris.Add(next + 1);
+                    targetTris.Add(next);
                 }
             }
 
-            // Closed end-caps to prevent visible hollow backfaces
+            // Closed end-caps
             BuildCap(curvePoints[0], -tangents[0], radius, verts, norms, uvs, bodyTris, true);
             BuildCap(curvePoints[subdivisions], tangents[subdivisions], radius, verts, norms, uvs, bodyTris, false);
         }
@@ -319,14 +307,14 @@ namespace DeadCoreEditor
                 if (reverse)
                 {
                     tris.Add(centerIdx);
-                    tris.Add(ringStart + next);
                     tris.Add(ringStart + i);
+                    tris.Add(ringStart + next);
                 }
                 else
                 {
                     tris.Add(centerIdx);
-                    tris.Add(ringStart + i);
                     tris.Add(ringStart + next);
+                    tris.Add(ringStart + i);
                 }
             }
         }
@@ -364,12 +352,12 @@ namespace DeadCoreEditor
                 int b2 = f2 + 1;
 
                 tris.Add(f1);
-                tris.Add(b1);
                 tris.Add(f2);
+                tris.Add(b1);
 
                 tris.Add(f2);
-                tris.Add(b1);
                 tris.Add(b2);
+                tris.Add(b1);
             }
         }
     }
@@ -392,7 +380,10 @@ namespace DeadCoreEditor
         {
             if (_cachedJacketMaterial == null)
             {
-                Shader lit = Shader.Find("HDRP/Lit") ?? Shader.Find("Standard");
+                Shader lit = Shader.Find("HDRP/Lit")
+                    ?? (EditorSessionManager.CachedSceneMaterial != null ? EditorSessionManager.CachedSceneMaterial.shader : null)
+                    ?? Shader.Find("Standard");
+
                 _cachedJacketMaterial = new Material(lit)
                 {
                     name = "Mat_Cable_Jacket_Body",
@@ -405,7 +396,10 @@ namespace DeadCoreEditor
 
             if (_cachedNeonMaterial == null)
             {
-                Shader unlit = Shader.Find("HDRP/Unlit") ?? Shader.Find("Unlit/Color");
+                Shader unlit = Shader.Find("HDRP/Unlit")
+                    ?? Shader.Find("Unlit/Color")
+                    ?? _cachedJacketMaterial.shader;
+
                 _cachedNeonMaterial = new Material(unlit)
                 {
                     name = "Mat_Cable_Neon_Strip",
@@ -444,7 +438,6 @@ namespace DeadCoreEditor
             ApplyCableConfig(cableObj, cfg);
             EditorSessionManager.RegisterPlacedObject(cableObj);
 
-            // Only show handles if we are currently in Edit Mode
             if (EditorSessionManager.IsEditModeActive)
                 UpdateCableVisualHandles(cableObj);
             else
@@ -462,12 +455,18 @@ namespace DeadCoreEditor
             MeshFilter mf = cableObj.GetComponent<MeshFilter>() ?? cableObj.AddComponent<MeshFilter>();
             MeshRenderer mr = cableObj.GetComponent<MeshRenderer>() ?? cableObj.AddComponent<MeshRenderer>();
 
-            // Generate procedural mesh
+            // Safely clean up old procedural mesh to prevent unmanaged memory leaks
+            if (mf.sharedMesh != null && mf.sharedMesh.name.StartsWith("Procedural_"))
+            {
+                GameObject.DestroyImmediate(mf.sharedMesh);
+            }
+
+            // Generate fresh procedural mesh
             Mesh cableMesh = ProceduralCableMeshBuilder.BuildExtrudedCableMesh(
                 cfg.LocalPointA, cfg.LocalPointB, cfg.Radius, cfg.SagAmount, cfg.Style, cfg.Bundle, cfg.HasMountSockets);
             mf.sharedMesh = cableMesh;
 
-            // Generate dedicated neon emissive material instance
+            // Dedicated emissive material instance
             Material neonInst = new Material(_cachedNeonMaterial);
             Color finalGlow = cfg.NeonColor * cfg.GlowIntensity;
             neonInst.color = cfg.NeonColor;
@@ -479,18 +478,18 @@ namespace DeadCoreEditor
 
             if (cfg.Style == CableStyle.NeonStriped)
             {
-                mr.materials = new Material[] { _cachedJacketMaterial, neonInst };
+                mr.sharedMaterials = new Material[] { _cachedJacketMaterial, neonInst };
             }
             else if (cfg.Style == CableStyle.FullNeon)
             {
-                mr.materials = new Material[] { neonInst };
+                mr.sharedMaterials = new Material[] { neonInst };
             }
             else
             {
-                mr.materials = new Material[] { _cachedJacketMaterial };
+                mr.sharedMaterials = new Material[] { _cachedJacketMaterial };
             }
 
-            // Expanded trigger collider to ensure effortless 3D selection even from afar
+            // Expanded trigger collider for effortless 3D selection in editor
             BoxCollider bc = cableObj.GetComponent<BoxCollider>() ?? cableObj.AddComponent<BoxCollider>();
             bc.isTrigger = true;
             bc.center = (cfg.LocalPointA + cfg.LocalPointB) * 0.5f + Vector3.down * (cfg.SagAmount * 0.5f);
@@ -682,12 +681,13 @@ namespace DeadCoreEditor
                 if (cable == null || !cable.activeSelf || cfg == null) continue;
                 if (cfg.Style == CableStyle.IndustrialSolid || Mathf.Abs(cfg.EnergyFlowSpeed) < 0.01f) continue;
 
-                Renderer rend = cable.GetComponent<Renderer>();
+                MeshRenderer rend = cable.GetComponent<MeshRenderer>();
                 if (rend == null) continue;
 
-                Material[] mats = rend.materials;
+                // Use sharedMaterials to avoid instantiating new arrays and materials every frame
+                Material[] mats = rend.sharedMaterials;
                 int neonMatIdx = (cfg.Style == CableStyle.NeonStriped) ? 1 : 0;
-                if (neonMatIdx < mats.Length && mats[neonMatIdx] != null)
+                if (mats != null && neonMatIdx < mats.Length && mats[neonMatIdx] != null)
                 {
                     Vector2 curOffset = mats[neonMatIdx].mainTextureOffset;
                     curOffset.y -= cfg.EnergyFlowSpeed * dt;

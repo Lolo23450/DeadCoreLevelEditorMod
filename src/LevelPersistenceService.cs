@@ -784,14 +784,8 @@ namespace DeadCoreEditor
             AvailableStagingScenes.Clear();
             AvailableStagingScenes.Add("level01_Spark01");
             AvailableStagingScenes.Add("level01_Spark02");
-            AvailableStagingScenes.Add("level02_Spark_01");
-            AvailableStagingScenes.Add("level02_Spark_02");
-            AvailableStagingScenes.Add("level03_Spark_01");
-            AvailableStagingScenes.Add("level03_Spark_02");
-            AvailableStagingScenes.Add("level04_Spark_01");
-            AvailableStagingScenes.Add("level04_Spark_02");
-            AvailableStagingScenes.Add("level05_Spark_01");
-            AvailableStagingScenes.Add("level05_Spark_02");
+            AvailableStagingScenes.Add("level02");
+            AvailableStagingScenes.Add("level04");
         }
 
         public static void EnsureDirectories()

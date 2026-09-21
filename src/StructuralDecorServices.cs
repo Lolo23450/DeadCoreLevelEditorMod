@@ -358,6 +358,11 @@ namespace DeadCoreEditor
             MeshFilter mf = trussObj.GetComponent<MeshFilter>() ?? trussObj.AddComponent<MeshFilter>();
             MeshRenderer mr = trussObj.GetComponent<MeshRenderer>() ?? trussObj.AddComponent<MeshRenderer>();
 
+            if (mf.sharedMesh != null && mf.sharedMesh.name.StartsWith("Procedural_"))
+            {
+                UnityEngine.Object.Destroy(mf.sharedMesh);
+            }
+
             Mesh trussMesh = ProceduralTrussMeshBuilder.BuildTrussMesh(
                 cfg.LocalPointA, cfg.LocalPointB, cfg.Width, cfg.BayLength, cfg.StrutThickness, cfg.Style);
             mf.sharedMesh = trussMesh;

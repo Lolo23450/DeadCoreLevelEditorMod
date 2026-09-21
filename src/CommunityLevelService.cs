@@ -46,7 +46,11 @@ namespace DeadCoreEditor
             IsFetching = true;
             StatusMessage = "Fetching community levels...";
 
-            UnityWebRequest req = UnityWebRequest.Get($"{BaseApiUrl}/api/levels?page=1");
+            // Cache-buster parameter (_t) forces Unity & OS to bypass local cache
+            long timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+            UnityWebRequest req = UnityWebRequest.Get($"{BaseApiUrl}/api/levels?page=1&_t={timestamp}");
+            req.SetRequestHeader("Cache-Control", "no-cache");
+
             try
             {
                 yield return req.SendWebRequest();
@@ -59,6 +63,7 @@ namespace DeadCoreEditor
                 else
                 {
                     string json = req.downloadHandler.text;
+                    CachedCommunityLevels.Clear(); // Clear stale entries first!
                     CachedCommunityLevels = ParseLevelsJson(json);
                     StatusMessage = $"Loaded {CachedCommunityLevels.Count} levels.";
                 }
@@ -70,6 +75,41 @@ namespace DeadCoreEditor
 
             IsFetching = false;
             onComplete?.Invoke();
+        }
+
+        public static void DeleteRemoteLevel(string levelId, Action<bool> onDone = null)
+        {
+            MelonCoroutines.Start(DeleteLevelCoroutine(levelId, onDone));
+        }
+
+        private static IEnumerator DeleteLevelCoroutine(string levelId, Action<bool> onDone)
+        {
+            EditorSessionManager.ShowNotification("Deleting level from server...");
+
+            string steamTicket = GetSteamAuthSessionTicket();
+            UnityWebRequest req = UnityWebRequest.Delete($"{BaseApiUrl}/api/levels/{levelId}");
+            req.SetRequestHeader("X-Steam-Auth-Ticket", steamTicket);
+            req.downloadHandler = new DownloadHandlerBuffer();
+
+            yield return req.SendWebRequest();
+
+            bool success = string.IsNullOrEmpty(req.error) && req.responseCode == 200;
+
+            if (!success)
+            {
+                EditorSessionManager.ShowNotification($"Delete Failed ({req.responseCode}): {req.downloadHandler.text}");
+                MelonLogger.Error($"[Community Delete Error] {req.responseCode}: {req.downloadHandler.text}");
+            }
+            else
+            {
+                EditorSessionManager.ShowNotification("Level deleted from Community!");
+                // Remove from local in-memory cache immediately
+                CachedCommunityLevels.RemoveAll(x => x.id == levelId);
+                FetchCommunityLevels();
+            }
+
+            req.Dispose();
+            onDone?.Invoke(success);
         }
 
         public static void DownloadLevel(RemoteLevelItem item, Action<bool> onDone = null)
