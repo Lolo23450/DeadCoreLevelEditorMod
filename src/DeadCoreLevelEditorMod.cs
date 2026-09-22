@@ -5,7 +5,6 @@ using UnityEngine.SceneManagement;
 using Il2Cpp;
 using Il2CppDeadCore.UI;
 
-// Explicit alias to resolve ambiguity with Il2Cpp.SceneManager
 using SceneManager = UnityEngine.SceneManagement.SceneManager;
 
 namespace DeadCoreEditor
@@ -120,13 +119,10 @@ namespace DeadCoreEditor
                 return;
             }
 
-            // Interactive Shortcut Rebinder Listening Tick
-            StudioUIManager.UpdateRebindingTick();
-
-            // Run UI ticks, scrolling & click-outside detectors
+            // Run UI ticks, auto-save timer, scrolling & click-outside detectors
             StudioUIManager.UpdateUI();
 
-            // Configurable Keyboard Shortcuts Routing
+            // Unified, customizable shortcut dispatching
             if (GUIUtility.keyboardControl == 0)
             {
                 bool isCtrl = Input.GetKey(KeyCode.LeftControl) || Input.GetKey(KeyCode.RightControl);
@@ -134,7 +130,7 @@ namespace DeadCoreEditor
                 if (EditorConfigService.IsShortcutTriggered("SelectAll") || (isCtrl && Input.GetKeyDown(KeyCode.A)))
                     EditorSessionManager.SelectAllPlacedObjects();
 
-                if (EditorConfigService.IsCustomShortcutTriggered("TogglePlaytest", "F1"))
+                if (EditorConfigService.IsShortcutTriggered("TogglePlaytest") || Input.GetKeyDown(KeyCode.F1))
                     EditorSessionManager.ToggleEditMode();
 
                 if (EditorSessionManager.IsEditModeActive)
@@ -142,21 +138,21 @@ namespace DeadCoreEditor
                     if (isCtrl && Input.GetKeyDown(KeyCode.G))
                         EditorSessionManager.ParentSelectedObjects();
 
-                    if (EditorConfigService.IsCustomShortcutTriggered("SaveLevel", "F5"))
+                    if (EditorConfigService.IsShortcutTriggered("SaveLevel"))
                         LevelPersistenceService.SaveLevel(MapBrowserService.SelectedMapName);
-                    else if (EditorConfigService.IsCustomShortcutTriggered("LoadLevel", "F6"))
+                    else if (EditorConfigService.IsShortcutTriggered("LoadLevel"))
                         LevelPersistenceService.LoadLevel(MapBrowserService.SelectedMapName);
-                    else if (EditorConfigService.IsCustomShortcutTriggered("Undo", "Ctrl+Z"))
+                    else if (EditorConfigService.IsShortcutTriggered("Undo"))
                         EditorSessionManager.PerformUndo();
-                    else if (EditorConfigService.IsCustomShortcutTriggered("Redo", "Ctrl+Y"))
+                    else if (EditorConfigService.IsShortcutTriggered("Redo"))
                         EditorSessionManager.PerformRedo();
-                    else if (EditorConfigService.IsCustomShortcutTriggered("Duplicate", "Ctrl+D"))
+                    else if (EditorConfigService.IsShortcutTriggered("Duplicate"))
                         EditorSessionManager.DuplicateSelectedObjects();
-                    else if (EditorConfigService.IsCustomShortcutTriggered("Parent", "Ctrl+P"))
+                    else if (EditorConfigService.IsShortcutTriggered("Parent"))
                         EditorSessionManager.ParentSelectedObjects();
-                    else if (EditorConfigService.IsCustomShortcutTriggered("Unparent", "Alt+P"))
+                    else if (EditorConfigService.IsShortcutTriggered("Unparent"))
                         EditorSessionManager.UnparentSelectedObjects();
-                    else if (EditorConfigService.IsCustomShortcutTriggered("Delete", "Delete") && !StudioUIManager.IsPointerOverUI())
+                    else if (EditorConfigService.IsShortcutTriggered("Delete") && !StudioUIManager.IsPointerOverUI())
                         EditorSessionManager.DeleteSelectedObjects();
 
                     if (EditorConfigService.IsShortcutTriggered("CreatePrefab"))
@@ -188,7 +184,7 @@ namespace DeadCoreEditor
             if (ActiveTab == tabIndex && _lastTransformedLogsMenu == menu && NativeLogsMenuHijacker.SpawnedRowCount > 0) return;
             ActiveTab = tabIndex;
 
-            if (tabIndex == 1) // Community Tab
+            if (tabIndex == 1)
             {
                 CommunityLevelService.FetchCommunityLevels(() =>
                 {

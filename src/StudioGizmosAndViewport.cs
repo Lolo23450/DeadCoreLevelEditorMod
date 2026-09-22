@@ -10,10 +10,6 @@ namespace DeadCoreEditor
 
     public static class GizmoConfig
     {
-        public const float DefaultCameraSpeed = 24f;
-        public const float FastCameraMultiplier = 3.5f;
-        public const float SlowCameraMultiplier = 0.25f;
-
         public const float ArrowShaftLength = 0.9f;
         public const float ArrowTotalLength = 1.85f;
         public const float RotationRingRadius = 2.2f;
@@ -77,8 +73,9 @@ namespace DeadCoreEditor
     }
 
     // =========================================================================
-    // SECTION 2: STUDIO 3D VIEWPORT FLYCAM CONTROLLER
+    // SECTION 2: STUDIO 3D VIEWPORT FLYCAM CONTROLLER (CAMERA-SAFE)
     // =========================================================================
+
     public static class EditorViewportCamera
     {
         public static Camera ViewportCamera => EditorSessionManager.PlayerCameraInstance ?? Camera.main;
@@ -90,6 +87,10 @@ namespace DeadCoreEditor
         private static float _pitch = 0f;
         private static bool _isCameraDetached = false;
         private static bool _isFlying = false;
+
+        // Kinematic smoothing states
+        private static Vector3 _targetPosition = Vector3.zero;
+        private static Quaternion _targetRotation = Quaternion.identity;
         private static readonly List<MonoBehaviour> _disabledCameraScripts = new List<MonoBehaviour>();
 
         public static void InitializeCamera(Camera sourceCam)
@@ -103,6 +104,7 @@ namespace DeadCoreEditor
             cam.useOcclusionCulling = false;
             cam.layerCullDistances = new float[32];
             cam.cullingMask = ~0;
+            cam.fieldOfView = EditorConfigService.Config.EditorFov;
 
             if (!_isCameraDetached)
             {
@@ -114,6 +116,9 @@ namespace DeadCoreEditor
                 if (rawPitch > 180f) rawPitch -= 360f;
                 _pitch = Mathf.Clamp(rawPitch, -89f, 89f);
                 _yaw = cam.transform.eulerAngles.y;
+
+                _targetPosition = cam.transform.position;
+                _targetRotation = cam.transform.rotation;
 
                 cam.transform.SetParent(null, true);
 
@@ -150,8 +155,12 @@ namespace DeadCoreEditor
             Bounds b = StudioGizmoController.GetObjectWorldBounds(target);
             float radius = Mathf.Max(b.extents.x, b.extents.y, b.extents.z, 2.5f);
 
-            cam.transform.position = center - cam.transform.forward * (radius * 2.2f) + Vector3.up * (radius * 0.6f);
+            Vector3 desiredPos = center - cam.transform.forward * (radius * 2.2f) + Vector3.up * (radius * 0.6f);
+            cam.transform.position = desiredPos;
             cam.transform.LookAt(center);
+
+            _targetPosition = cam.transform.position;
+            _targetRotation = cam.transform.rotation;
 
             float rawPitch = cam.transform.eulerAngles.x;
             if (rawPitch > 180f) rawPitch -= 360f;
@@ -159,44 +168,42 @@ namespace DeadCoreEditor
             _yaw = cam.transform.eulerAngles.y;
         }
 
-        public static void EnsureCameraConfiguration()
-        {
-            Camera cam = ViewportCamera;
-            if (cam != null)
-            {
-                cam.enabled = true;
-                cam.useOcclusionCulling = false;
-            }
-        }
-
         public static void UpdateCamera()
         {
             Camera cam = ViewportCamera;
             if (cam == null || !_isCameraDetached) return;
 
+            bool isPointerOverUI = StudioUIManager.IsPointerOverUI();
+            var cfg = EditorConfigService.Config;
+
+            // 1. Flight State Engagement
             if (Input.GetMouseButtonDown(1))
             {
-                _isFlying = !StudioUIManager.IsPointerOverUI();
+                _isFlying = !isPointerOverUI;
             }
             if (Input.GetMouseButtonUp(1))
             {
                 _isFlying = false;
             }
 
+            // 2. Mouse Look (with sensitivity and Y-inversion)
             if (_isFlying)
             {
                 GUIUtility.keyboardControl = 0;
                 Cursor.lockState = CursorLockMode.Locked;
                 Cursor.visible = false;
 
-                float mouseX = Input.GetAxis("Mouse X");
-                float mouseY = Input.GetAxis("Mouse Y");
+                float sens = cfg.MouseSensitivity;
+                float mouseX = Input.GetAxis("Mouse X") * sens;
+                float mouseY = Input.GetAxis("Mouse Y") * sens;
 
-                _yaw += mouseX * 2.5f;
-                _pitch -= mouseY * 2.5f;
+                if (cfg.InvertLookY) mouseY = -mouseY;
+
+                _yaw += mouseX;
+                _pitch -= mouseY;
                 _pitch = Mathf.Clamp(_pitch, -89f, 89f);
 
-                cam.transform.rotation = Quaternion.Euler(_pitch, _yaw, 0f);
+                _targetRotation = Quaternion.Euler(_pitch, _yaw, 0f);
             }
             else
             {
@@ -207,42 +214,74 @@ namespace DeadCoreEditor
                 }
             }
 
-            float speed = GizmoConfig.DefaultCameraSpeed;
+            // 3. Speed Calculation
+            float speed = cfg.FlycamSpeed;
             if (Input.GetKey(KeyCode.LeftShift) || Input.GetKey(KeyCode.RightShift))
             {
-                speed *= GizmoConfig.FastCameraMultiplier;
+                speed *= cfg.FastCamMultiplier;
             }
             else if (Input.GetKey(KeyCode.LeftControl) || Input.GetKey(KeyCode.RightControl))
             {
-                speed *= GizmoConfig.SlowCameraMultiplier;
+                speed *= cfg.SlowCamMultiplier;
+            }
+
+            // 4. Keyboard Navigation (Respects RequireRmbForFlight to protect W, A, S, D, Q, E)
+            bool allowKeyboardFlight = _isFlying;
+            if (!cfg.RequireRmbForFlight && !isPointerOverUI && GUIUtility.keyboardControl == 0)
+            {
+                allowKeyboardFlight = true;
             }
 
             Vector3 moveDir = Vector3.zero;
-            bool allowMove = _isFlying || (!StudioUIManager.IsPointerOverUI() && GUIUtility.keyboardControl == 0);
-
-            if (allowMove)
+            if (allowKeyboardFlight)
             {
-                if (Input.GetKey(KeyCode.W)) moveDir += cam.transform.forward;
-                if (Input.GetKey(KeyCode.S)) moveDir -= cam.transform.forward;
-                if (Input.GetKey(KeyCode.D)) moveDir += cam.transform.right;
-                if (Input.GetKey(KeyCode.A)) moveDir -= cam.transform.right;
+                if (Input.GetKey(KeyCode.W)) moveDir += _targetRotation * Vector3.forward;
+                if (Input.GetKey(KeyCode.S)) moveDir -= _targetRotation * Vector3.forward;
+                if (Input.GetKey(KeyCode.D)) moveDir += _targetRotation * Vector3.right;
+                if (Input.GetKey(KeyCode.A)) moveDir -= _targetRotation * Vector3.right;
                 if (Input.GetKey(KeyCode.Space) || (Input.GetKey(KeyCode.E) && _isFlying)) moveDir += Vector3.up;
                 if (Input.GetKey(KeyCode.Q) && _isFlying) moveDir -= Vector3.up;
             }
 
-            if (EditorSessionManager.InteractionMode == EditorInteractionMode.SelectMode && !StudioUIManager.IsPointerOverUI())
+            if (moveDir.sqrMagnitude > 0.001f)
+            {
+                _targetPosition += moveDir.normalized * (speed * Time.deltaTime);
+            }
+
+            // 5. Anti-Teleport Zoom (Strictly blocked if hovering any UI; clamped before obstacle collision)
+            if (!isPointerOverUI && EditorSessionManager.InteractionMode == EditorInteractionMode.SelectMode && !_isFlying)
             {
                 float scroll = Input.GetAxis("Mouse ScrollWheel");
                 if (Mathf.Abs(scroll) > 0.01f)
                 {
-                    float zoomSpeed = (Input.GetKey(KeyCode.LeftShift) || Input.GetKey(KeyCode.RightShift)) ? 35f : 15f;
-                    cam.transform.position += cam.transform.forward * (scroll * zoomSpeed);
+                    float zoomDist = (Input.GetKey(KeyCode.LeftShift) || Input.GetKey(KeyCode.RightShift)) ? 30f : 12f;
+                    Vector3 zoomDelta = cam.transform.forward * (scroll * zoomDist);
+
+                    // Forward obstacle safety brake
+                    if (scroll > 0f)
+                    {
+                        if (Physics.Raycast(cam.transform.position, cam.transform.forward, out RaycastHit hit, zoomDist + 1.2f, ~LayerMask.GetMask("Ignore Raycast")))
+                        {
+                            float safeDistance = Mathf.Max(0f, hit.distance - 1.2f);
+                            zoomDelta = cam.transform.forward * Mathf.Min(zoomDelta.magnitude, safeDistance);
+                        }
+                    }
+
+                    _targetPosition += zoomDelta;
                 }
             }
 
-            if (moveDir.sqrMagnitude > 0.001f)
+            // 6. Smooth Damping or Direct Snap
+            if (cfg.SmoothFlycam)
             {
-                cam.transform.position += moveDir.normalized * (speed * Time.deltaTime);
+                float t = 1.0f - Mathf.Exp(-cfg.FlycamSmoothing * Time.deltaTime);
+                cam.transform.position = Vector3.Lerp(cam.transform.position, _targetPosition, t);
+                cam.transform.rotation = Quaternion.Slerp(cam.transform.rotation, _targetRotation, t);
+            }
+            else
+            {
+                cam.transform.position = _targetPosition;
+                cam.transform.rotation = _targetRotation;
             }
         }
 
@@ -543,6 +582,9 @@ namespace DeadCoreEditor
                 return;
             }
 
+            // CRITICAL: Shield all UI from placement wheel leaks
+            if (StudioUIManager.IsPointerOverUI()) return;
+
             float scaleStep = (Input.GetKey(KeyCode.LeftShift) || Input.GetKey(KeyCode.RightShift)) ? 0.5f : 0.1f;
             if (Input.GetKeyDown(KeyCode.KeypadPlus) || Input.GetKeyDown(KeyCode.Equals))
             {
@@ -568,8 +610,6 @@ namespace DeadCoreEditor
                     }
                 }
             }
-
-            if (StudioUIManager.IsPointerOverUI()) return;
 
             Ray ray = Input.GetMouseButton(1)
                 ? EditorViewportCamera.ViewportCamera.ViewportPointToRay(new Vector3(0.5f, 0.5f, 0f))
@@ -717,11 +757,9 @@ namespace DeadCoreEditor
         private static GameObject _groupRotate = null;
         private static GameObject _groupScale = null;
 
-        private static int _activeDragAxis = -1; // 0=X, 1=Y, 2=Z, 3=Center
+        private static int _activeDragAxis = -1;
         public static bool IsDraggingGizmo => _activeDragAxis != -1;
         public static bool IsHoveringHandle = false;
-
-        public static float GizmoScaleMultiplier = 1.0f;
 
         private static Vector3 _dragStartCenterPos = Vector3.zero;
         private static Vector2 _dragStartMousePos = Vector2.zero;
@@ -797,13 +835,8 @@ namespace DeadCoreEditor
             return obj.transform.TransformPoint(b.center);
         }
 
-        public static void InvalidateCachedCenter(GameObject obj)
-        {
-        }
-
-        public static void ClearAllCachedCentroids()
-        {
-        }
+        public static void InvalidateCachedCenter(GameObject obj) { }
+        public static void ClearAllCachedCentroids() { }
 
         private static void StripCollider(GameObject go)
         {
@@ -819,7 +852,6 @@ namespace DeadCoreEditor
             _gizmoRoot = new GameObject("Studio_3D_Gizmo_Root");
             _gizmoRoot.layer = 0;
 
-            // 1. TRANSLATE
             _groupTranslate = new GameObject("Group_Translate");
             _groupTranslate.transform.SetParent(_gizmoRoot.transform, false);
 
@@ -827,7 +859,6 @@ namespace DeadCoreEditor
             Create3DArrow(_groupTranslate.transform, "Arrow_Y", Vector3.up, GizmoMaterialCache.Green);
             Create3DArrow(_groupTranslate.transform, "Arrow_Z", Vector3.forward, GizmoMaterialCache.Blue);
 
-            // 2. ROTATE
             _groupRotate = new GameObject("Group_Rotate");
             _groupRotate.transform.SetParent(_gizmoRoot.transform, false);
 
@@ -840,7 +871,6 @@ namespace DeadCoreEditor
             CreatePrimitiveObj(PrimitiveType.Sphere, _groupRotate.transform, "RotHandle_Y", new Vector3(r, 0f, 0f), Vector3.one * 0.55f, GizmoMaterialCache.Green);
             CreatePrimitiveObj(PrimitiveType.Sphere, _groupRotate.transform, "RotHandle_Z", new Vector3(0f, r, 0f), Vector3.one * 0.55f, GizmoMaterialCache.Blue);
 
-            // 3. SCALE
             _groupScale = new GameObject("Group_Scale");
             _groupScale.transform.SetParent(_gizmoRoot.transform, false);
 
@@ -961,7 +991,7 @@ namespace DeadCoreEditor
             float clearanceFade = Mathf.Clamp01(1.0f - (dist / 40f));
             float extentClearance = Mathf.Clamp(maxObjExtent * 0.12f, 0f, 6f) * clearanceFade;
 
-            float finalScale = (baseScreenScale + extentClearance) * GizmoScaleMultiplier;
+            float finalScale = (baseScreenScale + extentClearance) * EditorConfigService.Config.GizmoScaleMultiplier;
             return Mathf.Clamp(finalScale, 0.2f, 18f);
         }
 
@@ -976,13 +1006,15 @@ namespace DeadCoreEditor
 
             if (Input.GetKeyDown(KeyCode.LeftArrow) && !Input.GetKey(KeyCode.LeftShift))
             {
-                GizmoScaleMultiplier = Mathf.Max(0.4f, GizmoScaleMultiplier - 0.15f);
-                EditorSessionManager.ShowNotification($"Gizmo Scale: {GizmoScaleMultiplier:F2}x");
+                EditorConfigService.Config.GizmoScaleMultiplier = Mathf.Max(0.4f, EditorConfigService.Config.GizmoScaleMultiplier - 0.15f);
+                EditorConfigService.SaveConfig();
+                EditorSessionManager.ShowNotification($"Gizmo Scale: {EditorConfigService.Config.GizmoScaleMultiplier:F2}x");
             }
             else if (Input.GetKeyDown(KeyCode.RightArrow) && !Input.GetKey(KeyCode.LeftShift))
             {
-                GizmoScaleMultiplier = Mathf.Min(3.5f, GizmoScaleMultiplier + 0.15f);
-                EditorSessionManager.ShowNotification($"Gizmo Scale: {GizmoScaleMultiplier:F2}x");
+                EditorConfigService.Config.GizmoScaleMultiplier = Mathf.Min(3.5f, EditorConfigService.Config.GizmoScaleMultiplier + 0.15f);
+                EditorConfigService.SaveConfig();
+                EditorSessionManager.ShowNotification($"Gizmo Scale: {EditorConfigService.Config.GizmoScaleMultiplier:F2}x");
             }
 
             List<GameObject> activeList = new List<GameObject>();
@@ -1135,7 +1167,6 @@ namespace DeadCoreEditor
                 {
                     bool isShift = Input.GetKey(KeyCode.LeftShift) || Input.GetKey(KeyCode.RightShift);
 
-                    // SHIFT + DRAG TO CLONE IN-PLACE
                     if (isShift && mode == EditorGizmoMode.Translate && hovered >= 0 && hovered <= 2)
                     {
                         List<Vector3> origPositions = new List<Vector3>();

@@ -25,18 +25,32 @@ namespace DeadCoreEditor
 
     public class EditorConfigData
     {
+        // Viewport & Camera
         public float MinAssetSize = 1.4f;
         public float FlycamSpeed = 24.0f;
         public float FastCamMultiplier = 3.5f;
         public float SlowCamMultiplier = 0.25f;
         public float MouseSensitivity = 2.5f;
         public bool InvertLookY = false;
+        public bool RequireRmbForFlight = true;
+        public bool SmoothFlycam = true;
+        public float FlycamSmoothing = 12.0f;
         public float EditorFov = 75.0f;
+
+        // Gizmo & Snapping Matrix
         public float GizmoScaleMultiplier = 1.0f;
         public float DefaultGridSnap = 1.0f;
-        public bool ShowSizeBadges = true;
         public bool SnappingProxiesVisible = false;
 
+        // UI & Display
+        public bool ShowSizeBadges = true;
+        public float NotificationDuration = 2.5f;
+
+        // Auto-Save & Level Safety
+        public int AutoSaveIntervalMinutes = 5; // 0 = Disabled
+        public bool AutoSaveOnPlaytest = true;
+
+        // Dictionaries
         public Dictionary<string, List<string>> CustomCategories = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
         public Dictionary<string, string> Keybindings = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 
@@ -62,12 +76,43 @@ namespace DeadCoreEditor
             Keybindings["Unparent"] = "Alt+P";
             Keybindings["SelectAll"] = "Ctrl+A";
         }
+
+        public void ResetAll()
+        {
+            MinAssetSize = 1.4f;
+            FlycamSpeed = 24.0f;
+            FastCamMultiplier = 3.5f;
+            SlowCamMultiplier = 0.25f;
+            MouseSensitivity = 2.5f;
+            InvertLookY = false;
+            RequireRmbForFlight = true;
+            SmoothFlycam = true;
+            FlycamSmoothing = 12.0f;
+            EditorFov = 75.0f;
+
+            GizmoScaleMultiplier = 1.0f;
+            DefaultGridSnap = 1.0f;
+            SnappingProxiesVisible = false;
+
+            ShowSizeBadges = true;
+            NotificationDuration = 2.5f;
+
+            AutoSaveIntervalMinutes = 5;
+            AutoSaveOnPlaytest = true;
+
+            SetDefaultKeybindings();
+        }
     }
 
     public static class EditorConfigService
     {
         public static EditorConfigData Config = new EditorConfigData();
         public static string ConfigPath => Path.Combine(Directory.GetCurrentDirectory(), "UserData", "EditorConfig.json");
+
+        private static readonly HashSet<KeyCode> CameraFlyKeys = new HashSet<KeyCode>
+        {
+            KeyCode.W, KeyCode.A, KeyCode.S, KeyCode.D, KeyCode.Q, KeyCode.E, KeyCode.Space
+        };
 
         public static void LoadConfig()
         {
@@ -109,6 +154,48 @@ namespace DeadCoreEditor
             {
                 MelonLogger.Error($"[Config] Failed saving json: {ex.Message}");
             }
+        }
+
+        public static void ResetToDefaults()
+        {
+            Config.ResetAll();
+            SaveConfig();
+        }
+
+        public static bool IsCameraKeyConflict(string keyCombo, out string conflictReason)
+        {
+            conflictReason = null;
+            if (string.IsNullOrWhiteSpace(keyCombo) || keyCombo == "None") return false;
+
+            string[] tokens = keyCombo.Split('+');
+            bool hasModifier = false;
+            string rawKey = "";
+
+            for (int i = 0; i < tokens.Length; i++)
+            {
+                string t = tokens[i].Trim();
+                if (t.Equals("Ctrl", StringComparison.OrdinalIgnoreCase) ||
+                    t.Equals("Alt", StringComparison.OrdinalIgnoreCase) ||
+                    t.Equals("Shift", StringComparison.OrdinalIgnoreCase))
+                {
+                    hasModifier = true;
+                }
+                else
+                {
+                    rawKey = t;
+                }
+            }
+
+            if (!hasModifier && Enum.TryParse<KeyCode>(rawKey, true, out KeyCode kc))
+            {
+                if (CameraFlyKeys.Contains(kc))
+                {
+                    conflictReason = $"'{kc}' is reserved for Viewport Camera flight. Add a modifier (e.g. Ctrl+{kc} or Alt+{kc}).";
+                    return true;
+                }
+            }
+
+            return false;
         }
 
         public static void AssignAssetToCategory(string categoryName, string assetDisplayName)
@@ -241,11 +328,17 @@ namespace DeadCoreEditor
             sb.AppendLine($"  \"SlowCamMultiplier\": {data.SlowCamMultiplier.ToString("F2", Inv)},");
             sb.AppendLine($"  \"MouseSensitivity\": {data.MouseSensitivity.ToString("F2", Inv)},");
             sb.AppendLine($"  \"InvertLookY\": {(data.InvertLookY ? "true" : "false")},");
+            sb.AppendLine($"  \"RequireRmbForFlight\": {(data.RequireRmbForFlight ? "true" : "false")},");
+            sb.AppendLine($"  \"SmoothFlycam\": {(data.SmoothFlycam ? "true" : "false")},");
+            sb.AppendLine($"  \"FlycamSmoothing\": {data.FlycamSmoothing.ToString("F1", Inv)},");
             sb.AppendLine($"  \"EditorFov\": {data.EditorFov.ToString("F1", Inv)},");
             sb.AppendLine($"  \"GizmoScaleMultiplier\": {data.GizmoScaleMultiplier.ToString("F2", Inv)},");
             sb.AppendLine($"  \"DefaultGridSnap\": {data.DefaultGridSnap.ToString("F2", Inv)},");
             sb.AppendLine($"  \"ShowSizeBadges\": {(data.ShowSizeBadges ? "true" : "false")},");
             sb.AppendLine($"  \"SnappingProxiesVisible\": {(data.SnappingProxiesVisible ? "true" : "false")},");
+            sb.AppendLine($"  \"NotificationDuration\": {data.NotificationDuration.ToString("F2", Inv)},");
+            sb.AppendLine($"  \"AutoSaveIntervalMinutes\": {data.AutoSaveIntervalMinutes},");
+            sb.AppendLine($"  \"AutoSaveOnPlaytest\": {(data.AutoSaveOnPlaytest ? "true" : "false")},");
 
             sb.AppendLine("  \"Keybindings\": {");
             int kbCount = 0;
@@ -290,11 +383,17 @@ namespace DeadCoreEditor
             data.SlowCamMultiplier = ExtractFloat(json, "SlowCamMultiplier", 0.25f);
             data.MouseSensitivity = ExtractFloat(json, "MouseSensitivity", 2.5f);
             data.InvertLookY = ExtractBool(json, "InvertLookY", false);
+            data.RequireRmbForFlight = ExtractBool(json, "RequireRmbForFlight", true);
+            data.SmoothFlycam = ExtractBool(json, "SmoothFlycam", true);
+            data.FlycamSmoothing = ExtractFloat(json, "FlycamSmoothing", 12f);
             data.EditorFov = ExtractFloat(json, "EditorFov", 75f);
             data.GizmoScaleMultiplier = ExtractFloat(json, "GizmoScaleMultiplier", 1.0f);
             data.DefaultGridSnap = ExtractFloat(json, "DefaultGridSnap", 1.0f);
             data.ShowSizeBadges = ExtractBool(json, "ShowSizeBadges", true);
             data.SnappingProxiesVisible = ExtractBool(json, "SnappingProxiesVisible", false);
+            data.NotificationDuration = ExtractFloat(json, "NotificationDuration", 2.5f);
+            data.AutoSaveIntervalMinutes = ExtractInt(json, "AutoSaveIntervalMinutes", 5);
+            data.AutoSaveOnPlaytest = ExtractBool(json, "AutoSaveOnPlaytest", true);
 
             ExtractDictionary(json, "Keybindings", data.Keybindings);
             ExtractStringListDictionary(json, "CustomCategories", data.CustomCategories);
@@ -314,6 +413,21 @@ namespace DeadCoreEditor
 
             string raw = json.Substring(start, end - start).Trim();
             if (float.TryParse(raw, NumberStyles.Float, Inv, out float res)) return res;
+            return fallback;
+        }
+
+        private static int ExtractInt(string json, string key, int fallback)
+        {
+            string marker = $"\"{key}\":";
+            int idx = json.IndexOf(marker, StringComparison.OrdinalIgnoreCase);
+            if (idx == -1) return fallback;
+
+            int start = idx + marker.Length;
+            int end = json.IndexOfAny(new char[] { ',', '}', '\r', '\n' }, start);
+            if (end == -1) end = json.Length;
+
+            string raw = json.Substring(start, end - start).Trim();
+            if (int.TryParse(raw, NumberStyles.Integer, Inv, out int res)) return res;
             return fallback;
         }
 
@@ -415,7 +529,7 @@ namespace DeadCoreEditor
     }
 
     // =========================================================================
-    // FLOATING WINDOW BASE CONTAINER
+    // FLOATING WINDOW BASE CONTAINER (WITH SCROLL & RAYCAST SHIELD)
     // =========================================================================
 
     public class StudioFloatingWindow
@@ -439,9 +553,12 @@ namespace DeadCoreEditor
             win.RootRt.anchoredPosition = defaultPos;
             win.RootRt.pivot = new Vector2(0.5f, 0.5f);
 
+            // Raycast-blocking background image: absorbs clicks and scroll gestures
             Image bg = win.WindowRoot.AddComponent<Image>();
             bg.color = new Color(0.10f, 0.12f, 0.16f, 0.98f);
+            bg.raycastTarget = true;
 
+            // Header Bar
             GameObject titleBar = new GameObject("TitleBar", Il2CppType.Of<RectTransform>());
             titleBar.transform.SetParent(win.WindowRoot.transform, false);
 
@@ -449,11 +566,12 @@ namespace DeadCoreEditor
             tbrt.anchorMin = new Vector2(0f, 1f);
             tbrt.anchorMax = new Vector2(1f, 1f);
             tbrt.pivot = new Vector2(0.5f, 1f);
-            tbrt.sizeDelta = new Vector2(0f, 30f);
+            tbrt.sizeDelta = new Vector2(0f, 32f);
             tbrt.anchoredPosition = Vector2.zero;
 
             Image tbBg = titleBar.AddComponent<Image>();
             tbBg.color = new Color(0.15f, 0.18f, 0.25f, 0.98f);
+            tbBg.raycastTarget = true;
 
             EventTrigger trigger = titleBar.AddComponent<EventTrigger>();
 
@@ -498,7 +616,7 @@ namespace DeadCoreEditor
             win.ContentRt.anchorMin = Vector2.zero;
             win.ContentRt.anchorMax = Vector2.one;
             win.ContentRt.offsetMin = new Vector2(8f, 8f);
-            win.ContentRt.offsetMax = new Vector2(-8f, -34f);
+            win.ContentRt.offsetMax = new Vector2(-8f, -36f);
 
             win.WindowRoot.SetActive(false);
             return win;
@@ -537,6 +655,14 @@ namespace DeadCoreEditor
         internal static TMP_Text _surfaceAlignBtnText = null;
         internal static TMP_Text _gridSnapBtnText = null;
 
+        // Toast Notification System
+        private static GameObject _notificationBanner = null;
+        private static TMP_Text _notificationText = null;
+        private static float _notificationTimer = 0f;
+
+        // Auto-Save System
+        private static float _autoSaveTimer = 0f;
+
         // Snap Settings Matrix
         public static float SnapTranslate = 1.0f;
         public static float SnapRotate = 15f;
@@ -547,7 +673,6 @@ namespace DeadCoreEditor
         internal static readonly Dictionary<string, Button> _categoryDockButtons = new Dictionary<string, Button>();
         internal static TMP_Text _assetCountBadgeText = null;
 
-        // Common Selection Target Utility
         internal static List<GameObject> GetSelectionTargets(GameObject primary)
         {
             if (EditorSessionManager.SelectedObjects != null && EditorSessionManager.SelectedObjects.Count > 1)
@@ -559,7 +684,60 @@ namespace DeadCoreEditor
 
         public static void SetNotificationText(string text)
         {
-            if (!string.IsNullOrEmpty(text)) MelonLogger.Msg($"[Studio] {text}");
+            if (string.IsNullOrEmpty(text)) return;
+            MelonLogger.Msg($"[Studio] {text}");
+
+            if (_notificationBanner != null && _notificationText != null)
+            {
+                _notificationText.text = text;
+                _notificationTimer = Mathf.Max(1.0f, EditorConfigService.Config.NotificationDuration);
+                _notificationBanner.SetActive(true);
+            }
+        }
+
+        public static void UpdateAutoSaveTick(float dt)
+        {
+            if (!EditorSessionManager.IsCustomSessionActive || EditorSessionManager.IsEditModeActive == false) return;
+
+            int minutes = EditorConfigService.Config.AutoSaveIntervalMinutes;
+            if (minutes <= 0) return;
+
+            _autoSaveTimer += dt;
+            if (_autoSaveTimer >= minutes * 60f)
+            {
+                _autoSaveTimer = 0f;
+                PerformAutoSaveBackup();
+            }
+        }
+
+        public static void PerformAutoSaveBackup()
+        {
+            try
+            {
+                string baseName = string.IsNullOrWhiteSpace(MapBrowserService.SelectedMapName) ? "Level" : MapBrowserService.SelectedMapName;
+                string backupDir = Path.Combine(MapBrowserService.MyLevelsDir, "Backups");
+                if (!Directory.Exists(backupDir)) Directory.CreateDirectory(backupDir);
+
+                string backupPath = Path.Combine(backupDir, $"{baseName}_AutoSave.txt");
+                LevelPersistenceService.SaveLevel(backupPath);
+                SetNotificationText($"[Auto-Save] Backup created at {DateTime.Now:HH:mm:ss}");
+            }
+            catch (Exception ex)
+            {
+                MelonLogger.Warning($"[Auto-Save] Failed: {ex.Message}");
+            }
+        }
+
+        public static void UpdateNotificationBannerTick(float dt)
+        {
+            if (_notificationTimer > 0f)
+            {
+                _notificationTimer -= dt;
+                if (_notificationTimer <= 0f && _notificationBanner != null)
+                {
+                    _notificationBanner.SetActive(false);
+                }
+            }
         }
 
         public static void SetUIVisible(bool visible)
@@ -599,6 +777,7 @@ namespace DeadCoreEditor
 
             try { BuildTopToolbar(); } catch (Exception ex) { MelonLogger.Error($"[UI] TopToolbar: {ex}"); }
             try { BuildModePill(); } catch (Exception ex) { MelonLogger.Error($"[UI] ModePill: {ex}"); }
+            try { BuildNotificationBanner(); } catch (Exception ex) { MelonLogger.Error($"[UI] NotificationBanner: {ex}"); }
             try { BuildHierarchyPanel(); } catch (Exception ex) { MelonLogger.Error($"[UI] HierarchyPanel: {ex}"); }
             try { BuildInspectorPanel(); } catch (Exception ex) { MelonLogger.Error($"[UI] InspectorPanel: {ex}"); }
             try { BuildFloatingCategoryDock(); } catch (Exception ex) { MelonLogger.Error($"[UI] CategoryDock: {ex}"); }
@@ -617,6 +796,28 @@ namespace DeadCoreEditor
             RefreshAssetBrowser();
             RefreshModeDisplay();
             NotifyObjectSelected(EditorSessionManager.SelectedObject);
+        }
+
+        private static void BuildNotificationBanner()
+        {
+            _notificationBanner = new GameObject("Notification_Banner", Il2CppType.Of<RectTransform>());
+            _notificationBanner.transform.SetParent(_canvasRoot.transform, false);
+
+            RectTransform nbrt = _notificationBanner.GetComponent<RectTransform>();
+            nbrt.anchorMin = new Vector2(0.5f, 0f);
+            nbrt.anchorMax = new Vector2(0.5f, 0f);
+            nbrt.pivot = new Vector2(0.5f, 0f);
+            nbrt.anchoredPosition = new Vector2(0f, 305f);
+            nbrt.sizeDelta = new Vector2(450f, 30f);
+
+            Image img = _notificationBanner.AddComponent<Image>();
+            img.color = new Color(0.08f, 0.12f, 0.18f, 0.95f);
+            img.raycastTarget = false;
+
+            _notificationText = CreateTextPrimitive(_notificationBanner.transform, "", Vector2.zero, Vector2.one, Vector2.zero, Vector2.zero, 11f, FontStyles.Bold, new Color(0.2f, 0.85f, 1f), TextAlignmentOptions.Center);
+            _notificationText.raycastTarget = false;
+
+            _notificationBanner.SetActive(false);
         }
 
         public static void DestroyUI()
@@ -708,7 +909,7 @@ namespace DeadCoreEditor
             {
                 OpenDropdownMenu(anchor, new List<DropdownItem>
                 {
-                    new DropdownItem("Preferences & Shortcuts", () => _preferencesWin?.Toggle()),
+                    new DropdownItem("Preferences & Settings", () => _preferencesWin?.Toggle()),
                     new DropdownItem("Save Level", () => LevelPersistenceService.SaveLevel(MapBrowserService.SelectedMapName), null, GetShortcutHint("SaveLevel")),
                     new DropdownItem("Publish to Community", () =>
                     {
@@ -757,7 +958,7 @@ namespace DeadCoreEditor
                 });
             });
 
-            // Edit Dropdown (Supports Visual Undo History & Hotkey Badges)
+            // Edit Dropdown
             CreateDropdownMenuButton(_toolbarPanel.transform, "Edit", 70f, (anchor) =>
             {
                 var editItems = new List<DropdownItem>
@@ -772,7 +973,6 @@ namespace DeadCoreEditor
                     new DropdownItem("Unparent Selected", () => EditorSessionManager.UnparentSelectedObjects(), null, GetShortcutHint("Unparent"))
                 };
 
-                // Show top recent undo actions
                 if (EditorSessionManager.UndoHistory != null && EditorSessionManager.UndoHistory.Count > 0)
                 {
                     editItems.Add(new DropdownItem("--- Recent Actions ---", null, Color.gray));
@@ -1146,7 +1346,6 @@ namespace DeadCoreEditor
                     }));
                 }
 
-                // Left Label (Leaves room for shortcut on the right)
                 TMP_Text itemTxt = CreateTextPrimitive(entry.transform, item.Label,
                     Vector2.zero, Vector2.one,
                     Vector2.zero, Vector2.zero,
@@ -1157,7 +1356,6 @@ namespace DeadCoreEditor
                 itRt.offsetMax = new Vector2(-75f, 0f);
                 itemTxt.raycastTarget = false;
 
-                // Right Shortcut Hint (Cleanly anchored to the right margin with zero bleed)
                 if (!string.IsNullOrEmpty(item.Shortcut))
                 {
                     TMP_Text scTxt = CreateTextPrimitive(entry.transform, item.Shortcut,
@@ -1225,7 +1423,6 @@ namespace DeadCoreEditor
             }
             _categoryDockButtons.Clear();
 
-            // "All" Tab
             Button allBtn = CreateButtonPrimitive(_floatingCategoryDock.transform, "TabDock_All", "All", 75f, () =>
             {
                 _activeBrowserCategory = "All";
@@ -1234,7 +1431,6 @@ namespace DeadCoreEditor
             }, new Color(0.14f, 0.16f, 0.20f, 0.90f));
             _categoryDockButtons["All"] = allBtn;
 
-            // User-created tabs
             foreach (var customCat in EditorConfigService.Config.CustomCategories.Keys)
             {
                 string catName = customCat;
@@ -1248,7 +1444,6 @@ namespace DeadCoreEditor
                     RefreshAssetBrowser();
                 }, new Color(0.14f, 0.16f, 0.20f, 0.90f));
 
-                // Right click on tab for quick management
                 EventTrigger trigger = customBtn.gameObject.AddComponent<EventTrigger>();
                 var clickEntry = new EventTrigger.Entry { eventID = EventTriggerType.PointerClick };
                 clickEntry.callback.AddListener((Action<BaseEventData>)((e) =>
@@ -1283,20 +1478,17 @@ namespace DeadCoreEditor
                 _categoryDockButtons[catName] = customBtn;
             }
 
-            // [+ Tab] Button
             CreateButtonPrimitive(_floatingCategoryDock.transform, "Btn_AddNewTabDock", "+ Tab", 60f, () =>
             {
                 _assignTargetAsset = null;
                 OpenAssignCategoryWindow(null);
             }, new Color(0.18f, 0.55f, 0.35f, 0.95f));
 
-            // Flexible spacer
             GameObject spacer = new GameObject("DockSpacer", Il2CppType.Of<RectTransform>());
             spacer.transform.SetParent(_floatingCategoryDock.transform, false);
             LayoutElement sle = spacer.AddComponent<LayoutElement>();
             sle.flexibleWidth = 1f;
 
-            // Props Count Badge
             GameObject badgeObj = new GameObject("AssetCountBadge", Il2CppType.Of<RectTransform>());
             badgeObj.transform.SetParent(_floatingCategoryDock.transform, false);
             LayoutElement ble = badgeObj.AddComponent<LayoutElement>();

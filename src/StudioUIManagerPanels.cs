@@ -69,7 +69,7 @@ namespace DeadCoreEditor
         private static string _activeBrowserCategory = "All";
         private static CatalogAsset _assignTargetAsset = null;
         private static AssetSizeTier _activeSizeFilter = AssetSizeTier.All;
-        private static int _browserSortMode = 0; // 0=Size Asc, 1=Size Desc, 2=Alpha A-Z, 3=Tri Count
+        private static int _browserSortMode = 0;
         private static TMP_Text _sortSizeBtnText = null;
         private static bool _includeTinyProps = false;
         private static TMP_Text _toggleTinyPropsText = null;
@@ -87,6 +87,13 @@ namespace DeadCoreEditor
         private static StudioFloatingWindow _batchRenamerWin = null;
         private static StudioFloatingWindow _distributeSpacingWin = null;
 
+        // Preferences Tabs
+        private static int _activePrefTab = 0;
+        private static readonly List<Button> _prefTabButtons = new List<Button>();
+        private static readonly List<GameObject> _prefTabPages = new List<GameObject>();
+        private static TMP_InputField _prefShortcutSearchInput = null;
+        private static string _prefShortcutSearchFilter = "";
+
         // Occurrences
         private static RectTransform _occurrencesContent = null;
         private static TMP_Text _occurrencesTitleHeader = null;
@@ -96,14 +103,11 @@ namespace DeadCoreEditor
         // Scaler
         private static float _uniformScaleValue = 1.0f;
         private static bool _scaleCentroidPivot = true;
-        private static bool _lockAspectRatios = false;
 
         // Matrix Cloner / Spacing
         private static int _arrayCountX = 3;
-        private static int _arrayCountY = 1;
         private static int _arrayCountZ = 3;
         private static float _arraySpacingX = 4.0f;
-        private static float _arraySpacingY = 0.0f;
         private static float _arraySpacingZ = 4.0f;
 
         // Category Assign
@@ -128,13 +132,16 @@ namespace DeadCoreEditor
 
         public static void UpdateUI()
         {
+            float dt = Time.unscaledDeltaTime;
             UpdateRebindingTick();
+            UpdateNotificationBannerTick(dt);
+            UpdateAutoSaveTick(dt);
 
             if (_assetBrowserScrollRect != null && _assetBrowserPanel != null && _assetBrowserPanel.activeInHierarchy)
             {
                 if (!_isBrowserTargetInitialized)
                 {
-                    _browserScrollTarget = _assetBrowserScrollRect.verticalNormalizedPosition;
+                    _browserScrollTarget = Mathf.Clamp01(_assetBrowserScrollRect.verticalNormalizedPosition);
                     _isBrowserTargetInitialized = true;
                 }
 
@@ -147,9 +154,9 @@ namespace DeadCoreEditor
                     {
                         float contentH = _browserContent != null ? _browserContent.rect.height : 1000f;
                         float viewH = (_assetBrowserScrollRect.viewport != null) ? _assetBrowserScrollRect.viewport.rect.height : 220f;
-                        float scrollableH = Mathf.Max(100f, contentH - viewH);
+                        float scrollableH = Mathf.Max(120f, contentH - viewH);
 
-                        float step = (48f / scrollableH) * (scrollWheel > 0f ? 1f : -1f);
+                        float step = (65f / scrollableH) * (scrollWheel > 0f ? 1f : -1f);
                         _browserScrollTarget = Mathf.Clamp01(_browserScrollTarget + step);
                     }
                 }
@@ -159,7 +166,7 @@ namespace DeadCoreEditor
                     _assetBrowserScrollRect.verticalNormalizedPosition = Mathf.Lerp(
                         _assetBrowserScrollRect.verticalNormalizedPosition,
                         _browserScrollTarget,
-                        Time.deltaTime * 14f
+                        dt * 16f
                     );
                 }
             }
@@ -245,6 +252,468 @@ namespace DeadCoreEditor
         }
 
         // =========================================================================
+        // UPGRADED TABBED PREFERENCES WINDOW (1.8X LARGER, STRICT LAYOUT)
+        // =========================================================================
+
+        private static void BuildPreferencesWindow()
+        {
+            if (_preferencesWin != null && _preferencesWin.WindowRoot != null)
+            {
+                GameObject.DestroyImmediate(_preferencesWin.WindowRoot);
+                _preferencesWin = null;
+            }
+
+            // Window increased by ~1.8x to 940 x 680
+            _preferencesWin = StudioFloatingWindow.Create(_canvasRoot.transform, "Win_Preferences", "Preferences & Configuration", new Vector2(940f, 680f), Vector2.zero);
+
+            // 1. Top Sub-Tabs Navigation Bar (Pinned to the top)
+            GameObject tabNav = new GameObject("Pref_TabBar", Il2CppType.Of<RectTransform>());
+            tabNav.transform.SetParent(_preferencesWin.ContentRt, false);
+
+            RectTransform tnRt = tabNav.GetComponent<RectTransform>();
+            tnRt.anchorMin = new Vector2(0f, 1f);
+            tnRt.anchorMax = new Vector2(1f, 1f);
+            tnRt.pivot = new Vector2(0.5f, 1f);
+            tnRt.anchoredPosition = new Vector2(0f, 0f);
+            tnRt.sizeDelta = new Vector2(0f, 36f);
+
+            HorizontalLayoutGroup tnhlg = tabNav.AddComponent<HorizontalLayoutGroup>();
+            tnhlg.padding = new RectOffset(2, 2, 2, 2);
+            tnhlg.spacing = 6f;
+            tnhlg.childControlWidth = true;
+            tnhlg.childControlHeight = true;
+            tnhlg.childForceExpandWidth = true;
+            tnhlg.childForceExpandHeight = true;
+
+            _prefTabButtons.Clear();
+            _prefTabPages.Clear();
+
+            string[] tabNames = new string[] { "Viewport & Camera", "Snapping & Gizmos", "Keyboard Hotkeys", "Auto-Save & Safety" };
+            for (int i = 0; i < tabNames.Length; i++)
+            {
+                int captureIdx = i;
+                Button tb = CreateButtonPrimitive(tabNav.transform, "BtnPrefTab_" + i, tabNames[i], 180f, () => SwitchPreferencesTab(captureIdx), new Color(0.14f, 0.17f, 0.22f));
+                _prefTabButtons.Add(tb);
+            }
+
+            // 2. Viewport & Cam Page (Tab 0)
+            GameObject pageCam = CreatePreferencesPage("Page_Cam", out RectTransform contentCam);
+            BuildPreferencesPageCamera(contentCam);
+            _prefTabPages.Add(pageCam);
+
+            // 3. Snapping & Gizmos Page (Tab 1)
+            GameObject pageGizmo = CreatePreferencesPage("Page_Gizmo", out RectTransform contentGizmo);
+            BuildPreferencesPageGizmo(contentGizmo);
+            _prefTabPages.Add(pageGizmo);
+
+            // 4. Hotkeys Page (Tab 2)
+            GameObject pageKeys = CreatePreferencesPage("Page_Keys", out RectTransform contentKeys);
+            BuildPreferencesPageHotkeys(contentKeys);
+            _prefTabPages.Add(pageKeys);
+
+            // 5. Auto-Save & Safety Page (Tab 3)
+            GameObject pageSave = CreatePreferencesPage("Page_Save", out RectTransform contentSave);
+            BuildPreferencesPageSafety(contentSave);
+            _prefTabPages.Add(pageSave);
+
+            // 6. Bottom Master Actions Bar (Pinned to the bottom)
+            GameObject bottomBar = new GameObject("Pref_BottomActions", Il2CppType.Of<RectTransform>());
+            bottomBar.transform.SetParent(_preferencesWin.ContentRt, false);
+
+            RectTransform bbRt = bottomBar.GetComponent<RectTransform>();
+            bbRt.anchorMin = new Vector2(0f, 0f);
+            bbRt.anchorMax = new Vector2(1f, 0f);
+            bbRt.pivot = new Vector2(0.5f, 0f);
+            bbRt.anchoredPosition = new Vector2(0f, 0f);
+            bbRt.sizeDelta = new Vector2(0f, 38f);
+
+            HorizontalLayoutGroup bbhlg = bottomBar.AddComponent<HorizontalLayoutGroup>();
+            bbhlg.padding = new RectOffset(4, 4, 2, 2);
+            bbhlg.spacing = 10f;
+            bbhlg.childControlWidth = false;
+            bbhlg.childControlHeight = true;
+            bbhlg.childForceExpandWidth = false;
+            bbhlg.childForceExpandHeight = true;
+
+            CreateButtonPrimitive(bottomBar.transform, "Btn_ResetAllPrefs", "Reset All Preferences to Vanilla Defaults", 320f, () =>
+            {
+                EditorConfigService.ResetToDefaults();
+                SetNotificationText("All preferences restored to vanilla defaults.");
+                _preferencesWin.Hide();
+                BuildPreferencesWindow();
+                _preferencesWin.Show();
+                RefreshAssetBrowser();
+            }, new Color(0.65f, 0.2f, 0.2f, 1f));
+
+            GameObject spacer = new GameObject("Spacer", Il2CppType.Of<RectTransform>());
+            spacer.transform.SetParent(bottomBar.transform, false);
+            spacer.AddComponent<LayoutElement>().flexibleWidth = 1f;
+
+            CreateButtonPrimitive(bottomBar.transform, "Btn_SaveClosePrefs", "Save & Close", 180f, () =>
+            {
+                EditorConfigService.SaveConfig();
+                _preferencesWin.Hide();
+                SetNotificationText("Preferences saved.");
+            }, new Color(0.18f, 0.65f, 0.35f, 1f));
+
+            SwitchPreferencesTab(0);
+        }
+
+        private static GameObject CreatePreferencesPage(string name, out RectTransform contentRt)
+        {
+            GameObject pageObj = new GameObject(name, Il2CppType.Of<RectTransform>());
+            pageObj.transform.SetParent(_preferencesWin.ContentRt, false);
+
+            RectTransform prt = pageObj.GetComponent<RectTransform>();
+            prt.anchorMin = Vector2.zero;
+            prt.anchorMax = Vector2.one;
+            // Offsets cleanly preserve 42px for the top tabs and 46px for the bottom buttons
+            prt.offsetMin = new Vector2(2f, 46f);
+            prt.offsetMax = new Vector2(-2f, -42f);
+
+            CreateScrollViewPrimitive(pageObj.transform, "Scroll",
+                Vector2.zero, Vector2.one,
+                Vector2.zero, Vector2.zero,
+                out contentRt);
+
+            return pageObj;
+        }
+
+        private static void SwitchPreferencesTab(int tabIndex)
+        {
+            _activePrefTab = tabIndex;
+
+            for (int i = 0; i < _prefTabPages.Count; i++)
+            {
+                bool isActive = (i == tabIndex);
+                if (_prefTabPages[i] != null)
+                {
+                    _prefTabPages[i].SetActive(isActive);
+                }
+
+                if (i < _prefTabButtons.Count && _prefTabButtons[i] != null)
+                {
+                    // Safe direct Image lookup prevents IL2CPP NullReferenceException
+                    Image btnImg = _prefTabButtons[i].GetComponent<Image>();
+                    if (btnImg != null)
+                    {
+                        btnImg.color = isActive ? new Color(0.18f, 0.52f, 0.92f, 0.98f) : new Color(0.14f, 0.17f, 0.22f, 0.90f);
+                    }
+
+                    TMP_Text txt = _prefTabButtons[i].GetComponentInChildren<TMP_Text>();
+                    if (txt != null)
+                    {
+                        txt.color = isActive ? Color.white : new Color(0.75f, 0.80f, 0.88f);
+                        txt.fontStyle = isActive ? FontStyles.Bold : FontStyles.Normal;
+                    }
+                }
+            }
+        }
+
+        private static void BuildPreferencesPageCamera(RectTransform content)
+        {
+            var cfg = EditorConfigService.Config;
+
+            var flyCard = CreateModularSection(content, "Flycam", "Viewport Camera & Flight Controls");
+
+            AddToggleRow(flyCard.transform, "Require Right-Click to Fly (Protects W, A, S, D, Q, E)", cfg.RequireRmbForFlight, (val) =>
+            {
+                cfg.RequireRmbForFlight = val;
+                EditorConfigService.SaveConfig();
+            });
+
+            AddToggleRow(flyCard.transform, "Smooth Damped Flycam", cfg.SmoothFlycam, (val) =>
+            {
+                cfg.SmoothFlycam = val;
+                EditorConfigService.SaveConfig();
+            });
+
+            AddSliderRow(flyCard.transform, "Flycam Damping Smoothing", 4f, 25f, cfg.FlycamSmoothing, "{0:F0}", (val) =>
+            {
+                cfg.FlycamSmoothing = val;
+                EditorConfigService.SaveConfig();
+            });
+
+            AddSliderRow(flyCard.transform, "Base Flycam Speed (m/s)", 6f, 80f, cfg.FlycamSpeed, "{0:F0} m/s", (val) =>
+            {
+                cfg.FlycamSpeed = val;
+                EditorConfigService.SaveConfig();
+            });
+
+            AddSliderRow(flyCard.transform, "Shift Fast Boost Multiplier", 1.5f, 8.0f, cfg.FastCamMultiplier, "{0:F1}x", (val) =>
+            {
+                cfg.FastCamMultiplier = val;
+                EditorConfigService.SaveConfig();
+            });
+
+            AddSliderRow(flyCard.transform, "Ctrl Slow Precision Multiplier", 0.05f, 0.5f, cfg.SlowCamMultiplier, "{0:F2}x", (val) =>
+            {
+                cfg.SlowCamMultiplier = val;
+                EditorConfigService.SaveConfig();
+            });
+
+            AddSliderRow(flyCard.transform, "Mouse Look Sensitivity", 0.5f, 6.0f, cfg.MouseSensitivity, "{0:F1}x", (val) =>
+            {
+                cfg.MouseSensitivity = val;
+                EditorConfigService.SaveConfig();
+            });
+
+            AddToggleRow(flyCard.transform, "Invert Look Y-Axis", cfg.InvertLookY, (val) =>
+            {
+                cfg.InvertLookY = val;
+                EditorConfigService.SaveConfig();
+            });
+
+            AddSliderRow(flyCard.transform, "Viewport FOV", 45f, 105f, cfg.EditorFov, "{0:F0} deg", (val) =>
+            {
+                cfg.EditorFov = val;
+                if (EditorViewportCamera.ViewportCamera != null) EditorViewportCamera.ViewportCamera.fieldOfView = val;
+                EditorConfigService.SaveConfig();
+            });
+
+            var displayCard = CreateModularSection(content, "Display", "Catalog Palette Display");
+
+            AddSliderRow(displayCard.transform, "Min Asset Filter Cutoff (m)", 0.2f, 4.0f, cfg.MinAssetSize, "{0:F1}m", (val) =>
+            {
+                cfg.MinAssetSize = (float)Math.Round(val, 1);
+                EditorConfigService.SaveConfig();
+                RefreshAssetBrowser();
+            });
+
+            AddToggleRow(displayCard.transform, "Show Size Badges on Browser Cards", cfg.ShowSizeBadges, (val) =>
+            {
+                cfg.ShowSizeBadges = val;
+                EditorConfigService.SaveConfig();
+                RefreshAssetBrowser();
+            });
+        }
+
+        private static void BuildPreferencesPageGizmo(RectTransform content)
+        {
+            var cfg = EditorConfigService.Config;
+
+            var gizmoCard = CreateModularSection(content, "Gizmos", "3D Transformation Gizmos");
+
+            AddSliderRow(gizmoCard.transform, "Gizmo Base Scale Multiplier", 0.4f, 3.0f, cfg.GizmoScaleMultiplier, "{0:F2}x", (val) =>
+            {
+                cfg.GizmoScaleMultiplier = val;
+                EditorConfigService.SaveConfig();
+            });
+
+            AddToggleRow(gizmoCard.transform, "Show Snapping Proxy Colliders in Scene", cfg.SnappingProxiesVisible, (val) =>
+            {
+                cfg.SnappingProxiesVisible = val;
+                EditorSessionManager.SetSnappingProxiesActive(val);
+                EditorConfigService.SaveConfig();
+            });
+
+            var snapCard = CreateModularSection(content, "Snapping", "Default Grid Snapping Matrix");
+
+            AddSliderRow(snapCard.transform, "Default Grid Translation Snap (m)", 0.0f, 4.0f, cfg.DefaultGridSnap, "{0:F2}m", (val) =>
+            {
+                cfg.DefaultGridSnap = val;
+                SetSnapTranslate(val);
+                EditorConfigService.SaveConfig();
+            });
+
+            AddSliderRow(snapCard.transform, "Default Rotation Snap Angle", 5f, 90f, SnapRotate, "{0:F0} deg", (val) =>
+            {
+                SnapRotate = val;
+            });
+
+            AddSliderRow(snapCard.transform, "Default Scale Increment Snap", 0.02f, 0.5f, SnapScale, "{0:F2}", (val) =>
+            {
+                SnapScale = val;
+            });
+        }
+
+        private static void BuildPreferencesPageHotkeys(RectTransform content)
+        {
+            var headerCard = CreateModularSection(content, "KeybindsHeader", "Shortcut Configuration & Remapping");
+            CreateTextPrimitive(headerCard.transform, "Click any button to rebind. Press Esc to cancel or Del to unbind.\n<color=#FFD54F>Note: W, A, S, D, Q, E, Space cannot be bound without Ctrl or Alt to prevent camera flight collision.</color>",
+                Vector2.zero, Vector2.one, Vector2.zero, Vector2.zero, 10.5f, FontStyles.Normal, Color.white, TextAlignmentOptions.MidlineLeft);
+
+            _prefShortcutSearchInput = CreateInputFieldPrimitive(headerCard.transform, "ShortcutSearch", Vector2.zero, Vector2.one, Vector2.zero, new Vector2(0f, 26f), "Filter keybinds...", (val) =>
+            {
+                _prefShortcutSearchFilter = val.Trim().ToLowerInvariant();
+                RebuildPreferencesHotkeyList(content);
+            });
+
+            RebuildPreferencesHotkeyList(content);
+        }
+
+        private static void RebuildPreferencesHotkeyList(RectTransform content)
+        {
+            Transform oldList = content.Find("Card_HotkeyList");
+            if (oldList != null) GameObject.DestroyImmediate(oldList.gameObject);
+
+            var listCard = CreateModularSection(content, "HotkeyList", "Assigned Bindings");
+
+            _shortcutDisplayLabels.Clear();
+            var defaults = new EditorConfigData();
+
+            foreach (var kvp in EditorConfigService.Config.Keybindings)
+            {
+                string actionKey = kvp.Key;
+                if (!string.IsNullOrEmpty(_prefShortcutSearchFilter) &&
+                    !actionKey.ToLowerInvariant().Contains(_prefShortcutSearchFilter) &&
+                    !kvp.Value.ToLowerInvariant().Contains(_prefShortcutSearchFilter))
+                {
+                    continue;
+                }
+
+                GameObject row = CreateRowContainerPrimitive(listCard.transform, "Row_Shortcut_" + actionKey, 30f);
+
+                CreateTextPrimitive(row.transform, actionKey, new Vector2(0f, 0f), new Vector2(0.55f, 1f), new Vector2(6f, 0f), Vector2.zero, 11f, FontStyles.Normal, Color.white, TextAlignmentOptions.MidlineLeft);
+
+                Button rebindBtn = CreateButtonPrimitive(row.transform, "Btn_Rebind_" + actionKey, kvp.Value, 160f, null, new Color(0.18f, 0.22f, 0.30f));
+                RectTransform rbrt = rebindBtn.GetComponent<RectTransform>();
+                rbrt.anchorMin = new Vector2(1f, 0.5f);
+                rbrt.anchorMax = new Vector2(1f, 0.5f);
+                rbrt.pivot = new Vector2(1f, 0.5f);
+                rbrt.anchoredPosition = new Vector2(-44f, 0f);
+                rbrt.sizeDelta = new Vector2(160f, 24f);
+
+                TMP_Text label = rebindBtn.GetComponentInChildren<TMP_Text>();
+                _shortcutDisplayLabels[actionKey] = label;
+
+                rebindBtn.onClick.AddListener((Action)(() =>
+                {
+                    StartRebindingKey(actionKey, label);
+                }));
+
+                string defCombo = defaults.Keybindings.TryGetValue(actionKey, out string d) ? d : "None";
+                Button resetBtn = CreateButtonPrimitive(row.transform, "Btn_Reset_" + actionKey, "↺", 30f, () =>
+                {
+                    EditorConfigService.Config.Keybindings[actionKey] = defCombo;
+                    label.text = defCombo;
+                    label.color = Color.white;
+                    EditorConfigService.SaveConfig();
+                    SetNotificationText($"Reset '{actionKey}' to '{defCombo}'");
+                }, new Color(0.24f, 0.28f, 0.36f));
+
+                RectTransform rrst = resetBtn.GetComponent<RectTransform>();
+                rrst.anchorMin = new Vector2(1f, 0.5f);
+                rrst.anchorMax = new Vector2(1f, 0.5f);
+                rrst.pivot = new Vector2(1f, 0.5f);
+                rrst.anchoredPosition = new Vector2(-6f, 0f);
+                rrst.sizeDelta = new Vector2(32f, 24f);
+            }
+
+            LayoutRebuilder.ForceRebuildLayoutImmediate(content);
+        }
+
+        private static void BuildPreferencesPageSafety(RectTransform content)
+        {
+            var cfg = EditorConfigService.Config;
+
+            var safetyCard = CreateModularSection(content, "AutoSave", "Auto-Save Backups & Crash Prevention");
+
+            AddSliderRow(safetyCard.transform, "Auto-Save Interval (Minutes, 0=Off)", 0f, 15f, cfg.AutoSaveIntervalMinutes, "{0:F0} min", (val) =>
+            {
+                cfg.AutoSaveIntervalMinutes = Mathf.RoundToInt(val);
+                EditorConfigService.SaveConfig();
+            });
+
+            AddToggleRow(safetyCard.transform, "Auto-Save Backup Before Playtesting (F1)", cfg.AutoSaveOnPlaytest, (val) =>
+            {
+                cfg.AutoSaveOnPlaytest = val;
+                EditorConfigService.SaveConfig();
+            });
+
+            CreateButtonPrimitive(safetyCard.transform, "Btn_ForceBackupNow", "Force Auto-Save Backup Now", 360f, () =>
+            {
+                PerformAutoSaveBackup();
+            }, new Color(0.18f, 0.52f, 0.88f, 1f));
+
+            var toastCard = CreateModularSection(content, "Toast", "User Interface Alerts");
+
+            AddSliderRow(toastCard.transform, "Notification Display Time", 1.0f, 6.0f, cfg.NotificationDuration, "{0:F1}s", (val) =>
+            {
+                cfg.NotificationDuration = val;
+                EditorConfigService.SaveConfig();
+            });
+        }
+
+        private static void StartRebindingKey(string actionKey, TMP_Text label)
+        {
+            _activeRebindingActionKey = actionKey;
+            _activeRebindLabel = label;
+            label.text = "<Press Key...>";
+            label.color = Color.yellow;
+            GUIUtility.keyboardControl = 9999;
+        }
+
+        public static void UpdateRebindingTick()
+        {
+            if (string.IsNullOrEmpty(_activeRebindingActionKey) || _activeRebindLabel == null) return;
+
+            GUIUtility.keyboardControl = 9999;
+
+            if (Input.GetKeyDown(KeyCode.Escape))
+            {
+                _activeRebindLabel.text = EditorConfigService.Config.Keybindings[_activeRebindingActionKey];
+                _activeRebindLabel.color = Color.white;
+                _activeRebindingActionKey = null;
+                _activeRebindLabel = null;
+                GUIUtility.keyboardControl = 0;
+                return;
+            }
+
+            if (Input.GetKeyDown(KeyCode.Delete) || Input.GetKeyDown(KeyCode.Backspace))
+            {
+                EditorConfigService.Config.Keybindings[_activeRebindingActionKey] = "None";
+                _activeRebindLabel.text = "None";
+                _activeRebindLabel.color = Color.gray;
+                EditorConfigService.SaveConfig();
+                _activeRebindingActionKey = null;
+                _activeRebindLabel = null;
+                GUIUtility.keyboardControl = 0;
+                return;
+            }
+
+            foreach (KeyCode kc in Enum.GetValues(typeof(KeyCode)))
+            {
+                if (kc == KeyCode.LeftControl || kc == KeyCode.RightControl ||
+                    kc == KeyCode.LeftAlt || kc == KeyCode.RightAlt ||
+                    kc == KeyCode.LeftShift || kc == KeyCode.RightShift ||
+                    kc == KeyCode.None || kc == KeyCode.Escape)
+                    continue;
+
+                if (Input.GetKeyDown(kc))
+                {
+                    bool ctrl = Input.GetKey(KeyCode.LeftControl) || Input.GetKey(KeyCode.RightControl);
+                    bool alt = Input.GetKey(KeyCode.LeftAlt) || Input.GetKey(KeyCode.RightAlt);
+                    bool shift = Input.GetKey(KeyCode.LeftShift) || Input.GetKey(KeyCode.RightShift);
+
+                    string combo = "";
+                    if (ctrl) combo += "Ctrl+";
+                    if (alt) combo += "Alt+";
+                    if (shift) combo += "Shift+";
+                    combo += kc.ToString();
+
+                    if (EditorConfigService.IsCameraKeyConflict(combo, out string conflictReason))
+                    {
+                        SetNotificationText(conflictReason);
+                        _activeRebindLabel.text = "<Conflict! Add Ctrl/Alt>";
+                        _activeRebindLabel.color = new Color(1f, 0.3f, 0.3f);
+                        return;
+                    }
+
+                    EditorConfigService.Config.Keybindings[_activeRebindingActionKey] = combo;
+                    _activeRebindLabel.text = combo;
+                    _activeRebindLabel.color = Color.white;
+                    EditorConfigService.SaveConfig();
+
+                    _activeRebindingActionKey = null;
+                    _activeRebindLabel = null;
+                    GUIUtility.keyboardControl = 0;
+                    break;
+                }
+            }
+        }
+
+        // =========================================================================
         // ASSET BROWSER PANEL & ADVANCED SORTING / SEARCH
         // =========================================================================
 
@@ -323,7 +792,7 @@ namespace DeadCoreEditor
                 if (_assetBrowserScrollRect != null)
                 {
                     _assetBrowserScrollRect.movementType = ScrollRect.MovementType.Clamped;
-                    _assetBrowserScrollRect.scrollSensitivity = 35f;
+                    _assetBrowserScrollRect.scrollSensitivity = 40f;
                 }
 
                 Transform vp = scrollObj.transform.Find("Viewport");
@@ -400,7 +869,6 @@ namespace DeadCoreEditor
                 if (_activeSizeFilter != AssetSizeTier.All && asset.SizeTier != _activeSizeFilter)
                     continue;
 
-                // Syntax-based token matching (e.g. type:hazard, size:>5)
                 if (searchTokens != null && searchTokens.Length > 0)
                 {
                     string dName = asset.DisplayName.ToLowerInvariant();
@@ -437,7 +905,6 @@ namespace DeadCoreEditor
                 matchedAssets.Add(asset);
             }
 
-            // Multi-criteria sort
             matchedAssets.Sort((a, b) =>
             {
                 switch (_browserSortMode)
@@ -500,7 +967,6 @@ namespace DeadCoreEditor
                 }));
                 trigger.triggers.Add(dragEntry);
 
-                // Thumbnail Container
                 GameObject preview = new GameObject("Thumbnail", Il2CppType.Of<RectTransform>());
                 preview.transform.SetParent(card.transform, false);
 
@@ -517,7 +983,6 @@ namespace DeadCoreEditor
 
                 AssetThumbnailRenderer.RequestThumbnail(asset, pImg);
 
-                // Trait Ribbons / Corner Pip
                 Color pipColor = Color.clear;
                 if (asset.IsJumper) pipColor = new Color(1f, 0.8f, 0.2f);
                 else if (asset.IsHelix) pipColor = new Color(0.2f, 0.9f, 0.4f);
@@ -537,7 +1002,6 @@ namespace DeadCoreEditor
                     pip.AddComponent<Image>().color = pipColor;
                 }
 
-                // Size Badge
                 if (EditorConfigService.Config.ShowSizeBadges)
                 {
                     GameObject badgeObj = new GameObject("SizeBadge", Il2CppType.Of<RectTransform>());
@@ -557,7 +1021,6 @@ namespace DeadCoreEditor
                     CreateTextPrimitive(badgeObj.transform, asset.GetSizeBadgeText(), Vector2.zero, Vector2.one, Vector2.zero, Vector2.zero, 8.5f, FontStyles.Bold, Color.white, TextAlignmentOptions.Center);
                 }
 
-                // Context dots
                 GameObject dotsObj = new GameObject("Btn_Dots", Il2CppType.Of<RectTransform>());
                 dotsObj.transform.SetParent(card.transform, false);
                 RectTransform drt = dotsObj.GetComponent<RectTransform>();
@@ -572,7 +1035,6 @@ namespace DeadCoreEditor
                 CreateTextPrimitive(dotsObj.transform, "...", Vector2.zero, Vector2.one, Vector2.zero, Vector2.zero, 11f, FontStyles.Bold, Color.white, TextAlignmentOptions.Center);
                 dotsBtn.onClick.AddListener((Action)(() => ShowContextMenuForAsset(capturedAsset, Input.mousePosition)));
 
-                // Label
                 GameObject labelObj = new GameObject("Label", Il2CppType.Of<RectTransform>());
                 labelObj.transform.SetParent(card.transform, false);
 
@@ -721,7 +1183,6 @@ namespace DeadCoreEditor
                 new Vector2(130f, -18f), new Vector2(260f, -36f),
                 new Color(0.10f, 0.11f, 0.13f, 0.98f));
 
-            // Header with Prop Count Gauge
             GameObject header = CreatePanelPrimitive(_hierarchyPanel.transform, "Hierarchy_Header",
                 new Vector2(0f, 1f), new Vector2(1f, 1f),
                 new Vector2(0f, -16f), new Vector2(0f, 32f),
@@ -742,7 +1203,6 @@ namespace DeadCoreEditor
             bgRt.sizeDelta = new Vector2(100f, 30f);
             bgRt.anchoredPosition = new Vector2(-10f, 0f);
 
-            // Filter Strip (ALL, HAZARD, LIGHT, GRAVITY)
             GameObject filterStrip = CreatePanelPrimitive(_hierarchyPanel.transform, "Hierarchy_FilterStrip",
                 new Vector2(0f, 1f), new Vector2(1f, 1f),
                 new Vector2(0f, -40f), new Vector2(0f, 20f),
@@ -759,7 +1219,6 @@ namespace DeadCoreEditor
             CreateHierarchyTypeFilterBtn(filterStrip.transform, "LIGHT");
             CreateHierarchyTypeFilterBtn(filterStrip.transform, "GRAV");
 
-            // Search row
             GameObject searchRow = CreatePanelPrimitive(_hierarchyPanel.transform, "Hierarchy_SearchRow",
                 new Vector2(0f, 1f), new Vector2(1f, 1f),
                 new Vector2(0f, -62f), new Vector2(0f, 24f),
@@ -770,7 +1229,6 @@ namespace DeadCoreEditor
                 new Vector2(6f, 2f), new Vector2(-6f, -2f),
                 "Search scene nodes...", (val) => RefreshHierarchy());
 
-            // Scroll View
             GameObject scrollObj = CreateScrollViewPrimitive(_hierarchyPanel.transform, "Hierarchy_Scroll",
                 Vector2.zero, Vector2.one,
                 Vector2.zero, Vector2.zero,
@@ -789,7 +1247,6 @@ namespace DeadCoreEditor
                     _hierarchyScrollRect.movementType = ScrollRect.MovementType.Clamped;
             }
 
-            // Bottom Actions Bar with Group Container
             GameObject bottomBar = CreatePanelPrimitive(_hierarchyPanel.transform, "Hierarchy_BottomBar",
                 new Vector2(0f, 0f), new Vector2(1f, 0f),
                 new Vector2(0f, 18f), new Vector2(0f, 36f),
@@ -903,7 +1360,6 @@ namespace DeadCoreEditor
                 {
                     if (obj.transform == null || !obj.activeSelf) continue;
 
-                    // Apply type filter
                     if (_hierarchyFilterType != "ALL")
                     {
                         EditorSessionManager.PlacedObjectTypes.TryGetValue(obj, out var pt);
@@ -1047,7 +1503,6 @@ namespace DeadCoreEditor
 
             float leftPadding = 6f + (depth * 14f);
 
-            // Subtle vertical indentation guide
             if (depth > 0)
             {
                 GameObject guide = new GameObject("GuideLine", Il2CppType.Of<RectTransform>());
@@ -1130,7 +1585,6 @@ namespace DeadCoreEditor
                 rowText.overflowMode = TextOverflowModes.Ellipsis;
             }
 
-            // Lock / Freeze Button (Prevents accidental transform movement)
             GameObject lockBtnObj = new GameObject("Btn_Lock", Il2CppType.Of<RectTransform>());
             lockBtnObj.transform.SetParent(row.transform, false);
             RectTransform lkrt = lockBtnObj.GetComponent<RectTransform>();
@@ -1163,7 +1617,6 @@ namespace DeadCoreEditor
                 }
             }));
 
-            // Visibility Toggle
             GameObject eyeBtnObj = new GameObject("Btn_Eye", Il2CppType.Of<RectTransform>());
             eyeBtnObj.transform.SetParent(row.transform, false);
             RectTransform eyert = eyeBtnObj.GetComponent<RectTransform>();
@@ -1194,7 +1647,6 @@ namespace DeadCoreEditor
                 catch { }
             }));
 
-            // Focus Button
             GameObject focusBtnObj = new GameObject("Btn_Focus", Il2CppType.Of<RectTransform>());
             focusBtnObj.transform.SetParent(row.transform, false);
             RectTransform fcrt = focusBtnObj.GetComponent<RectTransform>();
@@ -1213,7 +1665,6 @@ namespace DeadCoreEditor
                 EditorViewportCamera.FocusOnObject(captured);
             }));
 
-            // Delete Button
             GameObject delBtnObj = new GameObject("Btn_Del", Il2CppType.Of<RectTransform>());
             delBtnObj.transform.SetParent(row.transform, false);
             RectTransform drt = delBtnObj.GetComponent<RectTransform>();
@@ -1510,7 +1961,6 @@ namespace DeadCoreEditor
 
             var transCard = CreateModularSection(_inspectorContent, "Transform", "Transform & Alignment");
 
-            // Local vs World coordinates toggle
             GameObject coordToggleRow = CreateRowContainerPrimitive(transCard.transform, "Row_CoordSpace", 22f);
             Button cBtn = CreateButtonPrimitive(coordToggleRow.transform, "Btn_CoordSpace", "Space: LOCAL", 130f, () =>
             {
@@ -2313,142 +2763,8 @@ namespace DeadCoreEditor
         }
 
         // =========================================================================
-        // FLOATING WINDOWS (PREFERENCES, OCCURRENCES, SCALER, RENAMER, ASSIGN)
+        // OCCURRENCES, SCALER, DISTRIBUTE & RENAMER WINDOWS
         // =========================================================================
-
-        private static void BuildPreferencesWindow()
-        {
-            _preferencesWin = StudioFloatingWindow.Create(_canvasRoot.transform, "Win_Preferences", "Preferences & Shortcuts", new Vector2(480f, 440f), Vector2.zero);
-
-            CreateScrollViewPrimitive(_preferencesWin.ContentRt, "Prefs_Scroll", Vector2.zero, Vector2.one, Vector2.zero, Vector2.zero, out RectTransform content);
-
-            var generalCard = CreateModularSection(content, "General", "General & Viewport Tuning");
-
-            AddSliderRow(generalCard.transform, "Min Asset Cutoff (m)", 0.2f, 5.0f, EditorConfigService.Config.MinAssetSize, "{0:F1}m", (val) =>
-            {
-                EditorConfigService.Config.MinAssetSize = (float)Math.Round(val, 1);
-                EditorConfigService.SaveConfig();
-                RefreshAssetBrowser();
-            });
-
-            AddSliderRow(generalCard.transform, "Flycam Speed", 6f, 80f, EditorConfigService.Config.FlycamSpeed, "{0:F0}", (val) =>
-            {
-                EditorConfigService.Config.FlycamSpeed = val;
-                EditorConfigService.SaveConfig();
-            });
-
-            AddSliderRow(generalCard.transform, "Viewport FOV", 45f, 100f, EditorConfigService.Config.EditorFov, "{0:F0} deg", (val) =>
-            {
-                EditorConfigService.Config.EditorFov = val;
-                if (EditorViewportCamera.ViewportCamera != null) EditorViewportCamera.ViewportCamera.fieldOfView = val;
-                EditorConfigService.SaveConfig();
-            });
-
-            AddToggleRow(generalCard.transform, "Invert Look Y-Axis", EditorConfigService.Config.InvertLookY, (toggled) =>
-            {
-                EditorConfigService.Config.InvertLookY = toggled;
-                EditorConfigService.SaveConfig();
-            });
-
-            AddToggleRow(generalCard.transform, "Show Size Badges on Browser Cards", EditorConfigService.Config.ShowSizeBadges, (toggled) =>
-            {
-                EditorConfigService.Config.ShowSizeBadges = toggled;
-                EditorConfigService.SaveConfig();
-                RefreshAssetBrowser();
-            });
-
-            var shortcutCard = CreateModularSection(content, "Shortcuts", "Keyboard Shortcuts & Keybinds");
-            CreateTextPrimitive(shortcutCard.transform, "Click any button to rebind. Press Esc to cancel or Del to unbind.", Vector2.zero, Vector2.one, Vector2.zero, Vector2.zero, 9.5f, FontStyles.Normal, Color.gray, TextAlignmentOptions.MidlineLeft);
-
-            _shortcutDisplayLabels.Clear();
-            foreach (var kvp in EditorConfigService.Config.Keybindings)
-            {
-                string actionKey = kvp.Key;
-                GameObject row = CreateRowContainerPrimitive(shortcutCard.transform, "Row_Shortcut_" + actionKey, 24f);
-
-                CreateTextPrimitive(row.transform, actionKey, new Vector2(0f, 0f), new Vector2(0.5f, 1f), new Vector2(4f, 0f), Vector2.zero, 9.5f, FontStyles.Normal, Color.white, TextAlignmentOptions.MidlineLeft);
-
-                Button rebindBtn = CreateButtonPrimitive(row.transform, "Btn_Rebind", kvp.Value, 100f, null, new Color(0.18f, 0.22f, 0.30f));
-                RectTransform rbrt = rebindBtn.GetComponent<RectTransform>();
-                rbrt.anchorMin = new Vector2(1f, 0.5f);
-                rbrt.anchorMax = new Vector2(1f, 0.5f);
-                rbrt.pivot = new Vector2(1f, 0.5f);
-                rbrt.anchoredPosition = new Vector2(-4f, 0f);
-                rbrt.sizeDelta = new Vector2(110f, 20f);
-
-                TMP_Text label = rebindBtn.GetComponentInChildren<TMP_Text>();
-                _shortcutDisplayLabels[actionKey] = label;
-
-                rebindBtn.onClick.AddListener((Action)(() =>
-                {
-                    StartRebindingKey(actionKey, label);
-                }));
-            }
-        }
-
-        private static void StartRebindingKey(string actionKey, TMP_Text label)
-        {
-            _activeRebindingActionKey = actionKey;
-            _activeRebindLabel = label;
-            label.text = "<Press Key...>";
-            label.color = Color.yellow;
-        }
-
-        public static void UpdateRebindingTick()
-        {
-            if (string.IsNullOrEmpty(_activeRebindingActionKey) || _activeRebindLabel == null) return;
-
-            if (Input.GetKeyDown(KeyCode.Escape))
-            {
-                _activeRebindLabel.text = EditorConfigService.Config.Keybindings[_activeRebindingActionKey];
-                _activeRebindLabel.color = Color.white;
-                _activeRebindingActionKey = null;
-                _activeRebindLabel = null;
-                return;
-            }
-
-            if (Input.GetKeyDown(KeyCode.Delete) || Input.GetKeyDown(KeyCode.Backspace))
-            {
-                EditorConfigService.Config.Keybindings[_activeRebindingActionKey] = "None";
-                _activeRebindLabel.text = "None";
-                _activeRebindLabel.color = Color.gray;
-                EditorConfigService.SaveConfig();
-                _activeRebindingActionKey = null;
-                _activeRebindLabel = null;
-                return;
-            }
-
-            foreach (KeyCode kc in Enum.GetValues(typeof(KeyCode)))
-            {
-                if (kc == KeyCode.LeftControl || kc == KeyCode.RightControl ||
-                    kc == KeyCode.LeftAlt || kc == KeyCode.RightAlt ||
-                    kc == KeyCode.LeftShift || kc == KeyCode.RightShift ||
-                    kc == KeyCode.None || kc == KeyCode.Escape)
-                    continue;
-
-                if (Input.GetKeyDown(kc))
-                {
-                    bool ctrl = Input.GetKey(KeyCode.LeftControl) || Input.GetKey(KeyCode.RightControl);
-                    bool alt = Input.GetKey(KeyCode.LeftAlt) || Input.GetKey(KeyCode.RightAlt);
-                    bool shift = Input.GetKey(KeyCode.LeftShift) || Input.GetKey(KeyCode.RightShift);
-
-                    string combo = "";
-                    if (ctrl) combo += "Ctrl+";
-                    if (alt) combo += "Alt+";
-                    if (shift) combo += "Shift+";
-                    combo += kc.ToString();
-
-                    EditorConfigService.Config.Keybindings[_activeRebindingActionKey] = combo;
-                    _activeRebindLabel.text = combo;
-                    _activeRebindLabel.color = Color.white;
-                    EditorConfigService.SaveConfig();
-
-                    _activeRebindingActionKey = null;
-                    _activeRebindLabel = null;
-                    break;
-                }
-            }
-        }
 
         private static void BuildOccurrencesWindow()
         {

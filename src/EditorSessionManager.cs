@@ -159,7 +159,6 @@ namespace DeadCoreEditor
         {
             if (obj == null || data == null) return;
 
-            // 1. Jumper Pads
             if (JumperForces.TryGetValue(obj, out float jf))
             {
                 var jc = data.GetOrCreate<JumperConfig>();
@@ -167,21 +166,18 @@ namespace DeadCoreEditor
                 if (JumperActiveStates.TryGetValue(obj, out bool ja)) jc.IsActive = ja;
             }
 
-            // 2. Turbines / Helix
             if (TurbineSpeeds.TryGetValue(obj, out float ts))
             {
                 var tc = data.GetOrCreate<TurbineConfig>();
                 tc.Speed = ts;
             }
 
-            // 3. Defense Turrets
             if (TurretFireDelays.TryGetValue(obj, out float fd))
             {
                 var tc = data.GetOrCreate<TurretConfig>();
                 tc.FireDelay = fd;
             }
 
-            // 4. Laser Hazards
             if (LaserRotationSpeeds.TryGetValue(obj, out float lrs))
             {
                 var lc = data.GetOrCreate<LaserConfig>();
@@ -189,13 +185,11 @@ namespace DeadCoreEditor
                 lc.IsRotating = Mathf.Abs(lrs) > 0.01f;
             }
 
-            // 5. Lights (Spot, Point, Sun)
             if (PlacedLights.TryGetValue(obj, out var lcCfg))
             {
                 data.Set(lcCfg.Clone());
             }
 
-            // 6. Kinematic Motion Paths
             if (MotionPaths.TryGetValue(obj, out var mp))
             {
                 data.Set(mp.Clone());
@@ -205,31 +199,26 @@ namespace DeadCoreEditor
                 data.Remove<ObjectMotionPath>();
             }
 
-            // 7. Interactive Switches
             if (SwitchService.PlacedSwitches.TryGetValue(obj, out var swCfg))
             {
                 data.Set(swCfg.Clone());
             }
 
-            // 8. Glowing Neon Accents & Glitch Profiles
             if (PlacedNeonConfigs.TryGetValue(obj, out var neonCfg))
             {
                 data.Set(neonCfg.Clone());
             }
 
-            // 9. Procedural Cables & Wires
             if (ProceduralCableService.PlacedCables.TryGetValue(obj, out var cableCfg))
             {
                 data.Set(cableCfg.Clone());
             }
 
-            // 10. Procedural Trusses & Girders
             if (StructuralTrussService.PlacedTrusses.TryGetValue(obj, out var trussCfg))
             {
                 data.Set(trussCfg.Clone());
             }
 
-            // 11. Gravity Areas & Gravity Receivers
             if (GravityAreaService.PlacedGravityConfigs.TryGetValue(obj, out var gravCfg))
             {
                 data.Set(gravCfg.Clone());
@@ -258,7 +247,6 @@ namespace DeadCoreEditor
                 }
             }
 
-            // 12. Object Types (Gates, Checkpoints, Skybox, Gravity)
             if (PlacedObjectTypes.TryGetValue(obj, out var pType))
             {
                 if (pType == PlacedObjectType.SpawnGate || pType == PlacedObjectType.GoalGate || pType == PlacedObjectType.Checkpoint)
@@ -448,11 +436,9 @@ namespace DeadCoreEditor
                     else if (obj.transform.parent == null)
                     {
                         if (snap.Position != Vector3.zero || obj.transform.position == Vector3.zero)
-                        {
                             obj.transform.position = snap.Position;
-                            obj.transform.rotation = snap.Rotation;
-                            obj.transform.localScale = snap.LocalScale;
-                        }
+                        obj.transform.rotation = snap.Rotation;
+                        obj.transform.localScale = snap.LocalScale;
                     }
 
                     if (rb != null)
@@ -780,7 +766,6 @@ namespace DeadCoreEditor
                 GameObject target = toDelete[i];
                 if (target == null) continue;
 
-                // Resolve handles to parent entities
                 if (ProceduralCableService.IsCableHandle(target, out GameObject cOwner, out _))
                 {
                     target = cOwner;
@@ -827,7 +812,6 @@ namespace DeadCoreEditor
             }
             else
             {
-                // Do NOT clear SelectedObjects here so swapping with equipped props works!
                 if (CurrentAsset != null)
                 {
                     IsBlockSelected = true;
@@ -892,6 +876,7 @@ namespace DeadCoreEditor
             StudioUIManager.RefreshHierarchy();
             ShowNotification($"Selected all {SelectedObjects.Count} object(s) [Ctrl+A]");
         }
+
         public static void EquipAsset(CatalogAsset asset)
         {
             if (asset == null) return;
@@ -1018,7 +1003,7 @@ namespace DeadCoreEditor
         }
 
         // =========================================================================
-        // SECTION 6: SIMULATION & MODE LIFECYCLE
+        // SECTION 6: SIMULATION & MODE LIFECYCLE (WITH AUTO-SAVE BACKUP)
         // =========================================================================
 
         public static void ToggleEditMode()
@@ -1028,7 +1013,7 @@ namespace DeadCoreEditor
 
             GameObject player = FindPlayerEntity();
             SetSimulationActive(!IsEditModeActive);
-            SetSnappingProxiesActive(IsEditModeActive);
+            SetSnappingProxiesActive(IsEditModeActive ? EditorConfigService.Config.SnappingProxiesVisible : false);
             SetJumperSimulationActive(!IsEditModeActive);
 
             if (IsEditModeActive)
@@ -1057,12 +1042,17 @@ namespace DeadCoreEditor
 
                 SetInteractionMode(EditorInteractionMode.SelectMode);
 
-                // Show all handles upon entering Edit Mode
                 ProceduralCableService.UpdateAllCableHandles();
                 StructuralTrussService.UpdateAllTrussHandles();
             }
             else
             {
+                // CRASH PREVENTION: Auto-save backup before entering playtest!
+                if (EditorConfigService.Config.AutoSaveOnPlaytest)
+                {
+                    StudioUIManager.PerformAutoSaveBackup();
+                }
+
                 CapturePlaytestSnapshots();
                 SwitchService.ResetAllSwitchesForPlaytest(enteringPlaytest: true);
                 ForceRefreshAllTurbines();
@@ -1075,7 +1065,6 @@ namespace DeadCoreEditor
                 CleanHighlightPool();
                 HideAllWaypointMarkers();
 
-                // Hide handles when playtesting
                 ProceduralCableService.HideAllCableHandles();
                 StructuralTrussService.HideAllTrussHandles();
 
@@ -1276,7 +1265,6 @@ namespace DeadCoreEditor
                 }
             }
 
-            // Use GravityAreaService.PlacedGravityAreas
             if (GravityAreaService.PlacedGravityAreas.Count > 0)
             {
                 GravityAreaService.UpdateAllGravityRotations();
@@ -1287,9 +1275,6 @@ namespace DeadCoreEditor
 
             UpdateObjectMotionPaths(player, cc);
 
-            // =========================================================================
-            // TICK DYNAMIC LIGHT WAVEFORMS & NEON ANIMATIONS
-            // =========================================================================
             GlowAnimationService.UpdateTick(Time.deltaTime);
 
             if (!IsEditModeActive)
@@ -1322,80 +1307,25 @@ namespace DeadCoreEditor
                         }
                     }
                 }
-
-                bool isDeleteKey = Input.GetKeyDown(KeyCode.Delete) || Input.GetKeyDown(KeyCode.Backspace);
-                if (isDeleteKey && GUIUtility.keyboardControl == 0 && !StudioUIManager.IsPointerOverUI())
-                {
-                    DeleteSelectedObjects();
-                }
-
-                bool isShift = Input.GetKey(KeyCode.LeftShift) || Input.GetKey(KeyCode.RightShift);
-                bool isAlt = Input.GetKey(KeyCode.LeftAlt) || Input.GetKey(KeyCode.RightAlt);
-
-                if (isCtrl && GUIUtility.keyboardControl == 0)
-                {
-                    if (Input.GetKeyDown(KeyCode.P))
-                    {
-                        if (isShift) UnparentSelectedObjects();
-                        else ParentSelectedObjects();
-                    }
-                    else if (Input.GetKeyDown(KeyCode.D))
-                    {
-                        DuplicateSelectedObjects();
-                    }
-                    else if (Input.GetKeyDown(KeyCode.C))
-                    {
-                        CopySelectedObjects();
-                    }
-                    else if (Input.GetKeyDown(KeyCode.V))
-                    {
-                        PasteClipboardObjects();
-                    }
-                    else if (Input.GetKeyDown(KeyCode.Z))
-                    {
-                        if (isShift) PerformRedo();
-                        else PerformUndo();
-                    }
-                    else if (Input.GetKeyDown(KeyCode.Y))
-                    {
-                        PerformRedo();
-                    }
-                }
-
-                if (isAlt && Input.GetKeyDown(KeyCode.P) && GUIUtility.keyboardControl == 0)
-                {
-                    UnparentSelectedObjects();
-                }
             }
 
-            // Update procedural handles only when in Edit Mode
             if (IsEditModeActive)
             {
-                // If dragging a cable endpoint handle
                 if (SelectedObject != null && ProceduralCableService.IsCableHandle(SelectedObject, out GameObject draggedCable, out bool isCableEndB))
                 {
                     ProceduralCableService.OnHandleDragged(draggedCable, isCableEndB, SelectedObject.transform.position);
                 }
 
-                // If dragging a truss joint handle
                 if (SelectedObject != null && StructuralTrussService.IsTrussHandle(SelectedObject, out GameObject draggedTruss, out bool isTrussEndB))
                 {
                     StructuralTrussService.OnHandleDragged(draggedTruss, isTrussEndB, SelectedObject.transform.position);
                 }
 
-                // Keep all handles refreshed and visible at the cable/truss ends in Edit Mode
                 ProceduralCableService.UpdateAllCableHandles();
                 StructuralTrussService.UpdateAllTrussHandles();
             }
 
             ProceduralCableService.UpdateEnergyFlowTick(Time.deltaTime);
-
-            if (Input.GetKeyDown(KeyCode.F1)) ToggleEditMode();
-            if (Input.GetKeyDown(KeyCode.F4))
-            {
-                ThumbnailCaptureService.CaptureViewportSnapshot(MapBrowserService.SelectedMapPath);
-            }
-            if (Input.GetKeyDown(KeyCode.F5)) LevelPersistenceService.SaveLevel(MapBrowserService.SelectedMapName);
         }
 
         // =========================================================================
@@ -1445,7 +1375,7 @@ namespace DeadCoreEditor
                 else if (clean.Contains("skybox") || clean.Contains("sky")) found = AllAssets.Find(a => a.IsSkybox);
                 else if (clean.Contains("helix")) found = AllAssets.Find(a => a.IsHelix);
                 else if (clean.Contains("switch")) found = AllAssets.Find(a => a.IsSwitch);
-                // Intercept procedural cables and wires directly
+
                 if (clean.Contains("cable") || clean.Contains("wire"))
                 {
                     GameObject cable = ProceduralCableService.CreateProceduralCable(
@@ -1511,14 +1441,12 @@ namespace DeadCoreEditor
             obj.transform.localScale = scale;
             obj.isStatic = false;
 
-            // 1. Remove native LODGroups on architecture so they never cull in flycam
             LODGroup[] lods = obj.GetComponentsInChildren<LODGroup>(true);
             for (int l = 0; l < lods.Length; l++)
             {
                 if (lods[l] != null) GameObject.DestroyImmediate(lods[l]);
             }
 
-            // 2. Strip stray rigidbodies and native animations ONLY from static architecture (PRESERVE checkpoints, jumpers, turrets, turbines, gravity areas)
             bool isGravity = asset.IsGravityArea || asset.DisplayName.ToLower().Contains("gravity");
             if (!asset.IsHelix && !asset.IsTurret && !asset.IsJumper && !asset.IsCheckPoint && !asset.IsSpawnGate && !asset.IsGoalGate && !isGravity)
             {
@@ -1541,7 +1469,6 @@ namespace DeadCoreEditor
                 }
             }
 
-            // 3. Ensure all renderers are enabled and on Layer 0
             Renderer[] allRends = obj.GetComponentsInChildren<Renderer>(true);
             for (int r = 0; r < allRends.Length; r++)
             {
@@ -1571,14 +1498,12 @@ namespace DeadCoreEditor
 
                 c.enabled = true;
 
-                // HAZARDS, LIGHTS & GRAVITY VOLUMES MUST ALWAYS BE TRIGGERS (NEVER SOLID)
                 if (isHazard || isLight || isGravity)
                 {
                     c.isTrigger = true;
                 }
                 else if (isGate)
                 {
-                    // For gates: preserve solid frame colliders; checkpoint trigger handled explicitly below
                     if (!c.isTrigger) hasSolidCollider = true;
                 }
                 else if (isHelix)
@@ -1608,7 +1533,6 @@ namespace DeadCoreEditor
                 }
             }
 
-            // Fallback: only add a solid box/mesh collider if it's solid architecture (never for gravity areas, triggers, or hazards!)
             if (!hasSolidCollider && !isHazard && !isGate && !isLight && !isHelix && !isTurret && !isJumper && !isGravity)
             {
                 MeshFilter[] mfs = obj.GetComponentsInChildren<MeshFilter>(true);
@@ -1648,7 +1572,6 @@ namespace DeadCoreEditor
                 ApplyGateVisualTint(obj, new Color(0.1f, 0.65f, 1.0f));
             }
 
-            // Universal Checkpoint Setup for all gates (CLASS1 COMPATIBLE)
             if (asset.IsCheckPoint || asset.IsSpawnGate || asset.IsGoalGate)
             {
                 CheckPointScript cp = obj.GetComponentInChildren<CheckPointScript>();
@@ -1988,7 +1911,6 @@ namespace DeadCoreEditor
         {
             if (target == null) return;
 
-            // Resolve handles to their actual parent entity
             if (ProceduralCableService.IsCableHandle(target, out GameObject resolvedCable, out _))
             {
                 target = resolvedCable;
@@ -2257,14 +2179,12 @@ namespace DeadCoreEditor
             if (turbineObj == null) return;
             TurbineSpeeds[turbineObj] = speed;
 
-            // Keep EntityRegistry synchronized
             if (EntityRegistry.TryGetValue(turbineObj, out var data))
             {
                 var tc = data.GetOrCreate<TurbineConfig>();
                 tc.Speed = speed;
             }
 
-            // 1. Update native DeadCore HelixPushingZone triggers
             HelixPushingZone[] zones = turbineObj.GetComponentsInChildren<HelixPushingZone>(true);
             for (int z = 0; z < zones.Length; z++)
             {
@@ -2276,7 +2196,6 @@ namespace DeadCoreEditor
                 }
             }
 
-            // 2. Update native DeadCore Helix visual rotor and physics joint
             Helix[] helices = turbineObj.GetComponentsInChildren<Helix>(true);
             for (int hIdx = 0; hIdx < helices.Length; hIdx++)
             {
@@ -2304,7 +2223,6 @@ namespace DeadCoreEditor
                 }
             }
 
-            // 3. Fallback: Catch any standalone HingeJoints on child objects
             HingeJoint[] allJoints = turbineObj.GetComponentsInChildren<HingeJoint>(true);
             for (int j = 0; j < allJoints.Length; j++)
             {
@@ -2382,7 +2300,6 @@ namespace DeadCoreEditor
 
             Light l = lightObj.GetComponentInChildren<Light>();
 
-            // 1. DIRECTIONAL SUNLIGHT
             if (cfg.Kind == LightKind.Directional || cfg.IsDirectional)
             {
                 Light targetSun = (SceneHarvestingService.NativeSceneSun != null && SceneHarvestingService.NativeSceneSun.gameObject.activeInHierarchy)
@@ -2407,7 +2324,6 @@ namespace DeadCoreEditor
                 if (l != null && targetSun != l) l.enabled = false;
                 StudioGizmoController.AttachSunVisualWidget(lightObj);
             }
-            // 2. 360° OMNI / POINT LIGHT
             else if (cfg.Kind == LightKind.Point)
             {
                 if (l != null)
@@ -2425,7 +2341,6 @@ namespace DeadCoreEditor
                     ApplyHDRPVolumetricSettings(l.gameObject, cfg.VolumetricIntensity, lumens, cfg.Color);
                 }
             }
-            // 3. CONE SPOTLIGHT
             else
             {
                 if (l != null)
@@ -2444,7 +2359,6 @@ namespace DeadCoreEditor
                 }
             }
 
-            // 4. FIXTURE MESH & EMISSIVE CASING TINTING
             Renderer[] rends = lightObj.GetComponentsInChildren<Renderer>(true);
             for (int i = 0; i < rends.Length; i++)
             {
@@ -2466,15 +2380,10 @@ namespace DeadCoreEditor
             }
         }
 
-
-        private static readonly HashSet<string> _loggedShaderNames = new HashSet<string>();
         private static readonly HashSet<string> _loggedShaderDumps = new HashSet<string>();
-
-        // Caches of property names identified as neon lines so they can be changed repeatedly
         private static readonly Dictionary<int, HashSet<string>> _detectedMaterialNeonProps = new Dictionary<int, HashSet<string>>();
         private static readonly Dictionary<string, HashSet<string>> _detectedShaderNeonProps = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
 
-        // Known shader properties used by DeadCore for glowing animated lines, circuits & trims
         private static readonly string[] DeadCoreNeonProperties = new string[]
         {
             "_LinesColor", "_LineColor", "_ColorLines", "_ColorLine",
@@ -2529,28 +2438,6 @@ namespace DeadCoreEditor
                         _detectedShaderNeonProps[sName] = shaderProps;
                     }
 
-                    if (_loggedShaderDumps.Add(sName))
-                    {
-                        MelonLogger.Msg($"--------------------------------------------------");
-                        MelonLogger.Msg($"[Neon Diagnostic] Prop '{obj.name}' -> Mat '{mat.name}' (Shader: '{sName}')");
-                        try
-                        {
-                            int pCount = shader.GetPropertyCount();
-                            for (int i = 0; i < pCount; i++)
-                            {
-                                string pn = shader.GetPropertyName(i);
-                                var pt = shader.GetPropertyType(i);
-                                string valStr = "";
-                                if (pt == UnityEngine.Rendering.ShaderPropertyType.Color) valStr = mat.GetColor(pn).ToString();
-                                else if (pt == UnityEngine.Rendering.ShaderPropertyType.Float || pt == UnityEngine.Rendering.ShaderPropertyType.Range) valStr = mat.GetFloat(pn).ToString();
-                                MelonLogger.Msg($"   • #{i}: {pn} ({pt}) = {valStr}");
-                            }
-                        }
-                        catch { }
-                        MelonLogger.Msg($"--------------------------------------------------");
-                    }
-
-                    // 1. DYNAMIC PROPERTY SCANNER: Detect and tint any line/emissive/blue-tint property
                     try
                     {
                         int pCount = shader.GetPropertyCount();
@@ -2608,7 +2495,6 @@ namespace DeadCoreEditor
                     }
                     catch { }
 
-                    // 2. DIRECT TARGETING OF KNOWN DEADCORE PROPERTIES
                     for (int k = 0; k < DeadCoreNeonProperties.Length; k++)
                     {
                         string prop = DeadCoreNeonProperties[k];
@@ -2619,7 +2505,6 @@ namespace DeadCoreEditor
                         }
                     }
 
-                    // 3. UNLIT / ADDITIVE SHADERS
                     string sLow = sName.ToLowerInvariant();
                     if (sLow.Contains("unlit") || sLow.Contains("additive") || sLow.Contains("laser") || sLow.Contains("beam"))
                     {
@@ -2639,33 +2524,6 @@ namespace DeadCoreEditor
                 rend.materials = mats;
                 rend.SetPropertyBlock(mpb);
             }
-        }
-        public static bool IsTargetNeonMaterial(Material mat, int totalMatsOnRenderer)
-        {
-            if (mat == null) return false;
-
-            string mName = mat.name.ToLowerInvariant();
-            string sName = (mat.shader != null) ? mat.shader.name.ToLowerInvariant() : "";
-
-            if (mName.Contains("neon") || mName.Contains("line") || mName.Contains("glow") ||
-                mName.Contains("circuit") || mName.Contains("emiss") || mName.Contains("laser") ||
-                mName.Contains("energy") || mName.Contains("pulse") || mName.Contains("core") ||
-                mName.Contains("anneau") || mName.Contains("fx") || mName.Contains("beam") ||
-                mName.Contains("strip") || mName.Contains("band"))
-                return true;
-
-            if (sName.Contains("neon") || sName.Contains("line") || sName.Contains("glow") ||
-                sName.Contains("circuit") || sName.Contains("emiss") || sName.Contains("laser") ||
-                sName.Contains("energy") || sName.Contains("additive") || sName.Contains("pulse"))
-                return true;
-
-            for (int k = 0; k < DeadCoreNeonProperties.Length; k++)
-            {
-                if (mat.HasProperty(DeadCoreNeonProperties[k]))
-                    return true;
-            }
-
-            return totalMatsOnRenderer == 1;
         }
 
         private static void ApplyHDRPVolumetricSettings(GameObject lightGo, float volumetricIntensity, float physicalIntensity, Color lightColor)
@@ -2879,32 +2737,6 @@ namespace DeadCoreEditor
                 {
                     ownerObj = kvp.Key;
                     isPointB = false;
-                    return true;
-                }
-            }
-
-            return false;
-        }
-
-        private static bool IsChildOfAnyWaypoint(GameObject hitGo, out GameObject markerRoot)
-        {
-            markerRoot = null;
-            if (hitGo == null) return false;
-
-            foreach (var kvp in WaypointMarkersB)
-            {
-                if (kvp.Value != null && (hitGo == kvp.Value || hitGo.transform.IsChildOf(kvp.Value.transform)))
-                {
-                    markerRoot = kvp.Value;
-                    return true;
-                }
-            }
-
-            foreach (var kvp in WaypointMarkersA)
-            {
-                if (kvp.Value != null && (hitGo == kvp.Value || hitGo.transform.IsChildOf(kvp.Value.transform)))
-                {
-                    markerRoot = kvp.Value;
                     return true;
                 }
             }
@@ -3132,7 +2964,7 @@ namespace DeadCoreEditor
         }
 
         // =========================================================================
-        // SECTION 11: PLAYTEST SIMULATION ENGINE (CLASS1 LOGIC RESTORED)
+        // SECTION 11: PLAYTEST SIMULATION ENGINE
         // =========================================================================
 
         public static class PlaytestSimulationEngine
@@ -3155,7 +2987,6 @@ namespace DeadCoreEditor
                     CheckGoalTriggerArrival(player);
                     SkyboxControllerService.UpdateTick(dt);
 
-                    // Robust Checkpoint Detection directly matching Class1.cs
                     Vector3 pPos = player.transform.position;
                     for (int i = 0; i < PlacedCheckpoints.Count; i++)
                     {
@@ -3204,6 +3035,7 @@ namespace DeadCoreEditor
                     MelonLogger.Msg($">> [VICTORY] Level completed in {LevelTimer:F2} seconds!");
                 }
             }
+
             private static void CheckHelixWindPushing(GameObject player, CharacterController cc)
             {
                 if (PlacedTurbines.Count == 0 || cc == null) return;
@@ -3265,6 +3097,7 @@ namespace DeadCoreEditor
                     }
                 }
             }
+
             private static void CheckLaserBarriers(GameObject player, CharacterController cc)
             {
                 if (PlacedLaserBarriers.Count == 0 || cc == null) return;
@@ -3325,7 +3158,7 @@ namespace DeadCoreEditor
         }
 
         // =========================================================================
-        // SECTION 12: PLAYER ENTITY & RESPAWNING (CLASS1 RESTORED)
+        // SECTION 12: PLAYER ENTITY & RESPAWNING
         // =========================================================================
 
         public static void ClearLastCheckpoint()
@@ -3594,7 +3427,6 @@ namespace DeadCoreEditor
 
             Array.Sort(hits, (a, b) => a.distance.CompareTo(b.distance));
 
-            // PRIORITY 1: WAYPOINT MARKERS & HANDLES
             for (int h = 0; h < hits.Length; h++)
             {
                 Collider col = hits[h].collider;
@@ -3611,7 +3443,6 @@ namespace DeadCoreEditor
                     return hitGo;
             }
 
-            // PRIORITY 2: PLACED OBJECTS
             for (int h = 0; h < hits.Length; h++)
             {
                 Collider col = hits[h].collider;
@@ -3632,7 +3463,6 @@ namespace DeadCoreEditor
                 {
                     if (curr.gameObject != null && PlacedObjects.Contains(curr.gameObject))
                     {
-                        // Ignore locked nodes so frozen geometry cannot be accidentally selected or dragged
                         if (StudioUIManager.LockedObjects.Contains(curr.gameObject))
                             break;
 
