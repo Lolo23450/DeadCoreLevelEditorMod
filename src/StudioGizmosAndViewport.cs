@@ -58,7 +58,6 @@ namespace DeadCoreEditor
                 m.EnableKeyword("_EMISSION");
             }
 
-            // Keep in standard opaque queue so HDRP forward pass reliably renders it
             m.renderQueue = 2999;
             return m;
         }
@@ -90,7 +89,7 @@ namespace DeadCoreEditor
         private static float _yaw = 0f;
         private static float _pitch = 0f;
         private static bool _isCameraDetached = false;
-        private static bool _isFlying = false; // Tracks flycam state
+        private static bool _isFlying = false;
         private static readonly List<MonoBehaviour> _disabledCameraScripts = new List<MonoBehaviour>();
 
         public static void InitializeCamera(Camera sourceCam)
@@ -101,7 +100,6 @@ namespace DeadCoreEditor
 
             EditorSessionManager.PlayerCameraInstance = cam;
 
-            // 1. Disable DeadCore's native occlusion culling & layer culling.
             cam.useOcclusionCulling = false;
             cam.layerCullDistances = new float[32];
             cam.cullingMask = ~0;
@@ -117,10 +115,8 @@ namespace DeadCoreEditor
                 _pitch = Mathf.Clamp(rawPitch, -89f, 89f);
                 _yaw = cam.transform.eulerAngles.y;
 
-                // 2. Detach camera to fly freely
                 cam.transform.SetParent(null, true);
 
-                // 3. Disable camera-bound scripts (MouseLook, HeadBob, FPSCamera)
                 _disabledCameraScripts.Clear();
                 MonoBehaviour[] camScripts = cam.GetComponents<MonoBehaviour>();
                 for (int i = 0; i < camScripts.Length; i++)
@@ -172,12 +168,12 @@ namespace DeadCoreEditor
                 cam.useOcclusionCulling = false;
             }
         }
+
         public static void UpdateCamera()
         {
             Camera cam = ViewportCamera;
             if (cam == null || !_isCameraDetached) return;
 
-            // Only engage flycam if right-click did NOT start over a UI element
             if (Input.GetMouseButtonDown(1))
             {
                 _isFlying = !StudioUIManager.IsPointerOverUI();
@@ -249,7 +245,6 @@ namespace DeadCoreEditor
                 cam.transform.position += moveDir.normalized * (speed * Time.deltaTime);
             }
         }
-
 
         public static void DestroyCamera()
         {
@@ -421,8 +416,8 @@ namespace DeadCoreEditor
         public static Vector3 TargetPosition => _targetPosition;
         private static Vector3 _currentStableNormal = Vector3.up;
 
-        // Tracks the height of the last solid surface you actually pointed at
         private static float _lastSurfaceHitY = -95f;
+
         public static void SpawnHologram(CatalogAsset asset)
         {
             DestroyPreview();
@@ -610,25 +605,18 @@ namespace DeadCoreEditor
                 rawTargetPos = closestHit.point;
                 hitNormal = closestHit.normal;
                 hitCollider = closestHit.collider;
-
-                // Cache the solid ground height whenever an actual surface is targeted
                 _lastSurfaceHitY = closestHit.point.y;
             }
             else
             {
-                // =========================================================================
-                // STABLE VOID PLACEMENT (No back-and-forth strobing)
-                // =========================================================================
                 Plane groundPlane = new Plane(Vector3.up, new Vector3(0f, _lastSurfaceHitY, 0f));
 
-                // If looking slightly downward toward the last floor level within reasonable range:
                 if (groundPlane.Raycast(ray, out float enter) && enter > 1f && enter < 50f)
                 {
                     rawTargetPos = ray.GetPoint(enter);
                 }
                 else
                 {
-                    // Looking up or into infinite void: smoothly float at a steady 16m distance
                     rawTargetPos = ray.origin + ray.direction * 16.0f;
                 }
 
@@ -811,12 +799,10 @@ namespace DeadCoreEditor
 
         public static void InvalidateCachedCenter(GameObject obj)
         {
-            // Center is evaluated directly from local proxy bounds without stale cache offsets
         }
 
         public static void ClearAllCachedCentroids()
         {
-            // Center is evaluated directly from local proxy bounds without stale cache offsets
         }
 
         private static void StripCollider(GameObject go)
@@ -1149,9 +1135,7 @@ namespace DeadCoreEditor
                 {
                     bool isShift = Input.GetKey(KeyCode.LeftShift) || Input.GetKey(KeyCode.RightShift);
 
-                    // =========================================================================
-                    // SHIFT + DRAG TO CLONE IN-PLACE (Unreal / Blender Style)
-                    // =========================================================================
+                    // SHIFT + DRAG TO CLONE IN-PLACE
                     if (isShift && mode == EditorGizmoMode.Translate && hovered >= 0 && hovered <= 2)
                     {
                         List<Vector3> origPositions = new List<Vector3>();
@@ -1165,10 +1149,8 @@ namespace DeadCoreEditor
                             origScales.Add(targets[i].transform.localScale);
                         }
 
-                        // Duplicate selection
                         EditorSessionManager.DuplicateSelectedObjects();
 
-                        // Snap clones directly in-place (removes the default diagonal offset jump)
                         for (int i = 0; i < EditorSessionManager.SelectedObjects.Count && i < origPositions.Count; i++)
                         {
                             GameObject clone = EditorSessionManager.SelectedObjects[i];
@@ -1181,7 +1163,6 @@ namespace DeadCoreEditor
                             }
                         }
 
-                        // Switch active drag targets to the new clones
                         targets.Clear();
                         targets.AddRange(EditorSessionManager.SelectedObjects);
 
@@ -1212,7 +1193,6 @@ namespace DeadCoreEditor
             if (Input.GetMouseButton(0) && _activeDragAxis != -1)
             {
                 Vector3 axis3D = (_activeDragAxis == 0) ? Vector3.right : (_activeDragAxis == 1 ? Vector3.up : Vector3.forward);
-                float grid = EditorSessionManager.CurrentGridSnap;
 
                 List<GameObject> rootTargets = new List<GameObject>();
                 for (int i = 0; i < targets.Count; i++)
@@ -1247,9 +1227,10 @@ namespace DeadCoreEditor
                         Vector3 startPoint = startRay.GetPoint(startEnter);
                         float proj = Vector3.Dot(curPoint - startPoint, axis3D);
 
-                        if (grid > 0.01f)
+                        float transSnap = StudioUIManager.SnapTranslate > 0.01f ? StudioUIManager.SnapTranslate : EditorSessionManager.CurrentGridSnap;
+                        if (transSnap > 0.01f)
                         {
-                            proj = Mathf.Round(proj / grid) * grid;
+                            proj = Mathf.Round(proj / transSnap) * transSnap;
                         }
 
                         Vector3 deltaPos = axis3D * proj;
@@ -1289,10 +1270,10 @@ namespace DeadCoreEditor
                         Vector3 vCur = (curRay.GetPoint(enter) - _dragStartCenterPos).normalized;
 
                         float angle = Vector3.SignedAngle(vStart, vCur, axis3D);
-                        if (grid > 0.01f)
+                        float rotSnap = StudioUIManager.SnapRotate;
+                        if (rotSnap > 0.01f)
                         {
-                            float step = (grid >= 2.0f) ? 45f : 15f;
-                            angle = Mathf.Round(angle / step) * step;
+                            angle = Mathf.Round(angle / rotSnap) * rotSnap;
                         }
 
                         Quaternion rot = Quaternion.AngleAxis(angle, axis3D);
@@ -1336,7 +1317,11 @@ namespace DeadCoreEditor
                     }
 
                     float factor = 1.0f + deltaMagnitude;
-                    if (grid > 0.01f) factor = Mathf.Round(factor / 0.1f) * 0.1f;
+                    float scaleSnap = StudioUIManager.SnapScale;
+                    if (scaleSnap > 0.001f)
+                    {
+                        factor = Mathf.Round(factor / scaleSnap) * scaleSnap;
+                    }
                     factor = Mathf.Max(0.02f, factor);
 
                     for (int i = 0; i < rootTargets.Count; i++)

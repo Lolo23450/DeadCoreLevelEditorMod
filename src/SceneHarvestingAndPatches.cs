@@ -502,7 +502,7 @@ namespace DeadCoreEditor
                     }
                 }
 
-                // B. Crawl disk folders for unmounted AssetBundles (supports UnityFS, UnityRaw, UnityWeb, UnityArchive)
+                // B. Crawl disk folders for unmounted AssetBundles
                 if (loadFromFileMethod != null)
                 {
                     List<string> candidateDirs = new List<string>
@@ -679,7 +679,7 @@ namespace DeadCoreEditor
                     int added = _seenMeshInstanceIDs.Count - before;
                     totalCrossHarvested += added;
 
-                    // 2. Unload asynchronously and wait until fully unloaded before touching the next scene
+                    // 2. Unload asynchronously and wait until fully unloaded
                     AsyncOperation unloadOp = SceneManager.UnloadSceneAsync(loadedScene);
                     if (unloadOp != null)
                     {
@@ -710,7 +710,6 @@ namespace DeadCoreEditor
                 if (string.IsNullOrEmpty(path)) continue;
                 string pLow = path.ToLowerInvariant();
 
-                // Harvest any non-menu playable scenes (eliminates arbitrary keyword gating)
                 if (!pLow.Contains("menu") && !pLow.Contains("boot") && !pLow.Contains("init") &&
                     !pLow.Contains("title") && !pLow.Contains("load") && !pLow.Contains("logo"))
                 {
@@ -916,7 +915,8 @@ namespace DeadCoreEditor
             {
                 if (sourceGo.GetComponent<Jumper>() != null || sourceGo.GetComponent<TurretScript>() != null ||
                     sourceGo.GetComponent<LaserScript>() != null || sourceGo.GetComponent<Helix>() != null ||
-                    sourceGo.GetComponent<CheckPointScript>() != null)
+                    sourceGo.GetComponent<CheckPointScript>() != null || sourceGo.GetComponent<GravityArea>() != null ||
+                    sourceGo.GetComponent<GravityReceiver>() != null)
                 {
                     return false;
                 }
@@ -1348,7 +1348,6 @@ namespace DeadCoreEditor
             pLight.color = Color.cyan;
             pLight.intensity = 5000f;
 
-            // Create a glowing frosted sphere bulb instead of the cylinder cone housing
             GameObject bulb = GameObject.CreatePrimitive(PrimitiveType.Sphere);
             bulb.name = "Light_Housing";
             bulb.transform.SetParent(pointTemplate.transform, false);
@@ -1572,6 +1571,10 @@ namespace DeadCoreEditor
             if (go == null) return false;
             string n = go.name.ToLower();
 
+            // Do not hide gravity areas
+            if (go.GetComponent<GravityArea>() != null || go.GetComponent<GravityReceiver>() != null || n.Contains("gravity"))
+                return false;
+
             if (n.Contains("spark") && !n.Contains("sky") && !n.Contains("light") && !n.Contains("platform") && !n.Contains("floor"))
                 return true;
 
@@ -1647,6 +1650,8 @@ namespace DeadCoreEditor
                 name.StartsWith("Holographic_") ||
                 name.StartsWith("Waypoint_") ||
                 name.StartsWith("Highlight_") ||
+                name.StartsWith("Volume_Visual_Box") ||         // Protected volume preview mesh
+                name.StartsWith("Gravity_Arrow_Indicator") ||    // Protected orientation arrow
                 name.StartsWith("Card_"))
             {
                 return true;

@@ -241,7 +241,6 @@ namespace DeadCoreEditor
                 {
                     var gCfg = data.GetOrCreate<GravityConfig>();
                     gCfg.GravityForce = ga.gravity.magnitude > 0.01f ? ga.gravity.magnitude : 9.81f;
-                    // Compute what local axis this world gravity was pointing at:
                     Vector3 localDir = Quaternion.Inverse(obj.transform.rotation) * ga.gravity.normalized;
                     gCfg.LocalAxis = localDir.sqrMagnitude > 0.01f ? localDir : Vector3.up;
                     gCfg.AffectOthers = ga.affectOthers;
@@ -281,7 +280,6 @@ namespace DeadCoreEditor
                     {
                         var gCfg = data.GetOrCreate<GravityConfig>();
 
-                        // Convert world gravity to local orientation + magnitude
                         if (ga.gravity.sqrMagnitude > 0.001f)
                         {
                             gCfg.GravityForce = ga.gravity.magnitude;
@@ -1728,13 +1726,11 @@ namespace DeadCoreEditor
             }
             else if (isGravity)
             {
-                // Ensure a trigger box collider exists on the root
                 BoxCollider bc = obj.GetComponent<BoxCollider>();
                 if (bc == null) bc = obj.AddComponent<BoxCollider>();
                 bc.isTrigger = true;
                 bc.enabled = true;
 
-                // Ensure GravityArea native script is ready
                 GravityArea ga = obj.GetComponentInChildren<GravityArea>(true);
                 if (ga != null)
                 {
@@ -1743,7 +1739,6 @@ namespace DeadCoreEditor
                     ga._changeGravity = true;
                 }
 
-                // Attach/synchronize config
                 if (!GravityAreaService.PlacedGravityConfigs.ContainsKey(obj))
                 {
                     float force = 9.81f;
@@ -1915,7 +1910,6 @@ namespace DeadCoreEditor
             {
                 identifiedType = PlacedObjectType.Checkpoint;
             }
-
             else if (low.Contains("gravity") || obj.GetComponentInChildren<GravityArea>() != null || obj.GetComponentInChildren<GravityReceiver>() != null)
             {
                 identifiedType = PlacedObjectType.GravityArea;
@@ -1960,6 +1954,7 @@ namespace DeadCoreEditor
 
             GravityAreaService.PlacedGravityAreas.Remove(target);
             GravityAreaService.PlacedGravityConfigs.Remove(target);
+            StudioUIManager.LockedObjects.Remove(target);
 
             if (PathEditTarget == target) PathEditTarget = null;
             if (ParentingChildTarget == target) ParentingChildTarget = null;
@@ -2061,6 +2056,7 @@ namespace DeadCoreEditor
 
             GravityAreaService.PlacedGravityAreas.Clear();
             GravityAreaService.PlacedGravityConfigs.Clear();
+            StudioUIManager.LockedObjects.Clear();
 
             ActiveCustomCheckpoint = null;
 
@@ -2290,7 +2286,6 @@ namespace DeadCoreEditor
                 h._maximumVelocity = speed * 20f;
                 CachedHelixScripts[turbineObj] = h;
 
-                // Auto-resolve HingeJoint if not yet assigned by native script
                 if (h._hingeJoint == null)
                 {
                     h._hingeJoint = h.GetComponent<HingeJoint>()
@@ -2303,7 +2298,7 @@ namespace DeadCoreEditor
                     h._hingeJoint.useMotor = true;
                     JointMotor m = h._hingeJoint.motor;
                     m.targetVelocity = speed * 20f;
-                    m.force = 3000f; // High torque ensures it reaches target speed immediately
+                    m.force = 3000f;
                     m.freeSpin = false;
                     h._hingeJoint.motor = m;
                 }
@@ -2423,11 +2418,8 @@ namespace DeadCoreEditor
                     l.range = Mathf.Max(1f, cfg.Range);
                     l.color = cfg.Color;
 
-                    // Point lights radiate across a full sphere (4π steradians)
                     float lumens = Mathf.Pow(Mathf.Max(0.1f, cfg.Intensity), 2.0f) * 3500f;
                     l.intensity = lumens;
-
-                    // Leave point shadows off by default (cubemap shadows are 6x heavier in HDRP)
                     l.shadows = LightShadows.None;
 
                     ApplyHDRPVolumetricSettings(l.gameObject, cfg.VolumetricIntensity, lumens, cfg.Color);
@@ -2537,7 +2529,6 @@ namespace DeadCoreEditor
                         _detectedShaderNeonProps[sName] = shaderProps;
                     }
 
-                    // Diagnostic dump: logs once per shader to console so you can see the exact properties
                     if (_loggedShaderDumps.Add(sName))
                     {
                         MelonLogger.Msg($"--------------------------------------------------");
@@ -2579,7 +2570,6 @@ namespace DeadCoreEditor
                                                   pLow.Contains("neon") || pLow.Contains("color2") ||
                                                   pLow.Contains("second") || pLow.Contains("stripe");
 
-                                // Auto-detect: if this property currently holds a blue/cyan color, it's the native line!
                                 if (!isNeonProp && mat.HasProperty(pName))
                                 {
                                     Color cur = mat.GetColor(pName);
@@ -2629,7 +2619,7 @@ namespace DeadCoreEditor
                         }
                     }
 
-                    // 3. UNLIT / ADDITIVE SHADERS (Only tint _Color if it's purely an additive line ribbon)
+                    // 3. UNLIT / ADDITIVE SHADERS
                     string sLow = sName.ToLowerInvariant();
                     if (sLow.Contains("unlit") || sLow.Contains("additive") || sLow.Contains("laser") || sLow.Contains("beam"))
                     {
@@ -2637,7 +2627,6 @@ namespace DeadCoreEditor
                         if (mat.HasProperty("_Color")) { mat.SetColor("_Color", cfg.Color); mpb.SetColor("_Color", cfg.Color); }
                     }
 
-                    // Enable emission keywords
                     mat.EnableKeyword("_EMISSION");
                     mat.EnableKeyword("_EMISSIVE_COLOR_MAP");
                     mat.EnableKeyword("_EMISSIVE_ENABLE");
@@ -2647,7 +2636,6 @@ namespace DeadCoreEditor
                     if (mat.HasProperty("_EmissiveIntensity")) mat.SetFloat("_EmissiveIntensity", cfg.Intensity);
                 }
 
-                // 4. COMMIT BOTH MATERIAL AND PROPERTY BLOCK
                 rend.materials = mats;
                 rend.SetPropertyBlock(mpb);
             }
@@ -2659,7 +2647,6 @@ namespace DeadCoreEditor
             string mName = mat.name.ToLowerInvariant();
             string sName = (mat.shader != null) ? mat.shader.name.ToLowerInvariant() : "";
 
-            // If any known neon/line/circuit keywords are in the material or shader name
             if (mName.Contains("neon") || mName.Contains("line") || mName.Contains("glow") ||
                 mName.Contains("circuit") || mName.Contains("emiss") || mName.Contains("laser") ||
                 mName.Contains("energy") || mName.Contains("pulse") || mName.Contains("core") ||
@@ -2672,14 +2659,12 @@ namespace DeadCoreEditor
                 sName.Contains("energy") || sName.Contains("additive") || sName.Contains("pulse"))
                 return true;
 
-            // Check if any DeadCore line property exists on this material
             for (int k = 0; k < DeadCoreNeonProperties.Length; k++)
             {
                 if (mat.HasProperty(DeadCoreNeonProperties[k]))
                     return true;
             }
 
-            // Always process single-material meshes (the material is an uber-shader handling both metal and lines)
             return totalMatsOnRenderer == 1;
         }
 
@@ -3237,22 +3222,17 @@ namespace DeadCoreEditor
                         CachedHelixScripts[obj] = helixScript;
                     }
 
-                    // 1. Verify Helix component state
                     if (helixScript != null && !helixScript.enabled)
                         continue;
 
-                    // 2. Check native DeadCore Pushing Zone (DeadCore disables this when the helix shuts off)
                     HelixPushingZone zone = obj.GetComponentInChildren<HelixPushingZone>(true);
                     if (zone != null && !zone.enabled)
                         continue;
 
-                    // 3. Check the native fin switch:
-                    // In DeadCore, shooting the fin target activates the switch (_isOn == true) to disable the turbine temporarily.
                     Interuptor finSwitch = obj.GetComponentInChildren<Interuptor>(true);
                     if (finSwitch != null && finSwitch._isOn)
                         continue;
 
-                    // 4. Only skip if the joint explicitly has its motor turned off (e.g. deactivated by a switch)
                     if (helixScript != null && helixScript._hingeJoint != null)
                     {
                         if (!helixScript._hingeJoint.useMotor)
@@ -3403,7 +3383,6 @@ namespace DeadCoreEditor
             Cursor.lockState = CursorLockMode.Locked;
             Cursor.visible = false;
 
-            // Reset all switches and their connected objects back to their initial state
             SwitchService.ResetAllSwitchesForPlaytest(enteringPlaytest: true);
 
             UnfreezePlayerControls();
@@ -3426,7 +3405,6 @@ namespace DeadCoreEditor
                 player.transform.position = targetPos;
                 player.transform.rotation = targetRot;
 
-                // Reset all switches and their connected objects back to their initial state
                 SwitchService.ResetAllSwitchesForPlaytest(enteringPlaytest: true);
 
                 MelonLogger.Msg(">> [Respawn] Returned to active Checkpoint!");
@@ -3594,7 +3572,6 @@ namespace DeadCoreEditor
             _lightRefreshTimer = 0.35f;
             SetSpotlightMeshesVisible(false);
 
-            // Hide cable and truss handles so they don't show during initial playtest
             ProceduralCableService.HideAllCableHandles();
             StructuralTrussService.HideAllTrussHandles();
 
@@ -3654,7 +3631,13 @@ namespace DeadCoreEditor
                 while (curr != null)
                 {
                     if (curr.gameObject != null && PlacedObjects.Contains(curr.gameObject))
+                    {
+                        // Ignore locked nodes so frozen geometry cannot be accidentally selected or dragged
+                        if (StudioUIManager.LockedObjects.Contains(curr.gameObject))
+                            break;
+
                         return curr.gameObject;
+                    }
                     curr = curr.parent;
                 }
             }
@@ -3755,7 +3738,8 @@ namespace DeadCoreEditor
                 GUI.color = new Color(0.2f, 0.85f, 0.4f, 1f);
                 if (GUI.Button(new Rect(x + 30, y + 150, 125, 42), "Restart")) RestartRun();
 
-                GUI.color = new Color(0.2f, 0.7f, 1f, 1f);                if (GUI.Button(new Rect(x + 165, y + 150, 130, 42), "Edit (F1)")) ToggleEditMode();
+                GUI.color = new Color(0.2f, 0.7f, 1f, 1f);
+                if (GUI.Button(new Rect(x + 165, y + 150, 130, 42), "Edit (F1)")) ToggleEditMode();
 
                 GUI.color = new Color(0.85f, 0.3f, 0.3f, 1f);
                 if (GUI.Button(new Rect(x + 305, y + 150, 125, 42), "Main Menu"))

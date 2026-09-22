@@ -453,6 +453,7 @@ namespace DeadCoreEditor
                 else if (data.Has<TurretConfig>()) legacyParam = data.Get<TurretConfig>().FireDelay;
                 else if (data.Has<LaserConfig>()) legacyParam = data.Get<LaserConfig>().RotationSpeed;
                 else if (data.Has<LightConfig>()) legacyParam = data.Get<LightConfig>().Intensity;
+                else if (data.Has<GravityConfig>()) legacyParam = data.Get<GravityConfig>().GravityForce;
 
                 string line = $"{name};{pos.x.ToString("F4", inv)};{pos.y.ToString("F4", inv)};{pos.z.ToString("F4", inv)};" +
                               $"{scl.x.ToString("F4", inv)};{rot.x.ToString("F4", inv)};{rot.y.ToString("F4", inv)};{rot.z.ToString("F4", inv)};{rot.w.ToString("F4", inv)};" +
@@ -623,7 +624,6 @@ namespace DeadCoreEditor
 
             string lowName = rawName.ToLower();
 
-            // 1. Check for Modern COMP tags: ";COMP:<TAG>:<DATA>"
             int compIdx = 0;
             bool foundModernTags = false;
             while ((compIdx = line.IndexOf(";COMP:", compIdx, StringComparison.OrdinalIgnoreCase)) != -1)
@@ -641,7 +641,6 @@ namespace DeadCoreEditor
                     {
                         comp.Deserialize(payload);
 
-                        // Only add active and moving motion paths
                         if (comp is ObjectMotionPath pathComp)
                         {
                             if (!pathComp.IsActive || (pathComp.TotalDistance < 0.05f && Mathf.Abs(pathComp.RotationSpeed) < 0.01f))
@@ -657,7 +656,6 @@ namespace DeadCoreEditor
                 compIdx += 6;
             }
 
-            // 2. Legacy Fallback Parser
             if (!foundModernTags)
             {
                 if (lowName.Contains("spawn") || lowName.Contains("entry"))
@@ -699,6 +697,11 @@ namespace DeadCoreEditor
                     lc.RotationSpeed = legacyParam;
                     lc.IsRotating = lowName.Contains("rotating") && legacyParam != 0f;
                 }
+                else if (lowName.Contains("gravity"))
+                {
+                    var gc = data.GetOrCreate<GravityConfig>();
+                    if (legacyParam > 0.01f) gc.GravityForce = legacyParam;
+                }
 
                 if (lowName.Contains("spotlight") || lowName.Contains("sunlight"))
                 {
@@ -715,7 +718,6 @@ namespace DeadCoreEditor
                 }
 
                 string pathSub = PersistenceUtility.ExtractSubTagData(line, ";PATH:");
-                // Strictly require explicit activation flag '1' so dormant objects never move
                 if (!string.IsNullOrEmpty(pathSub) && pathSub.StartsWith("1:"))
                 {
                     var mp = new ObjectMotionPath();
