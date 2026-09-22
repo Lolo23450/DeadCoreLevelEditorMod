@@ -13,6 +13,7 @@ namespace DeadCoreEditor
         public static readonly Dictionary<GameObject, GravityConfig> PlacedGravityConfigs = new Dictionary<GameObject, GravityConfig>();
 
         private static Material _volumeBoxMat = null;
+        private static Material _arrowMat = null;
 
         public static void EnsureMaterials()
         {
@@ -22,12 +23,22 @@ namespace DeadCoreEditor
                 _volumeBoxMat = new Material(s)
                 {
                     name = "Mat_GravityArea_Preview",
-                    color = new Color(0.4f, 0.1f, 0.9f, 0.25f)
+                    color = new Color(0.45f, 0.15f, 0.95f, 0.20f)
+                };
+            }
+
+            if (_arrowMat == null)
+            {
+                Shader s = Shader.Find("HDRP/Unlit") ?? Shader.Find("Unlit/Color");
+                _arrowMat = new Material(s)
+                {
+                    name = "Mat_GravityArrow_Preview",
+                    color = new Color(0.2f, 0.95f, 1f, 0.95f)
                 };
             }
         }
 
-        public static GameObject CreateProceduralGravityArea(Vector3 position, Vector3 size, Vector3 direction)
+        public static GameObject CreateProceduralGravityArea(Vector3 position, Vector3 size, float force = 9.81f)
         {
             EnsureMaterials();
 
@@ -37,27 +48,19 @@ namespace DeadCoreEditor
             go.transform.localScale = size;
             go.layer = 0;
 
-            // 1. Ensure any existing colliders are wiped or converted
-            Collider[] existing = go.GetComponentsInChildren<Collider>(true);
-            for (int i = 0; i < existing.Length; i++)
-            {
-                if (existing[i] != null) GameObject.DestroyImmediate(existing[i]);
-            }
-
-            // 2. The main Trigger Box Collider for GravityArea
+            // Trigger box collider
             BoxCollider bc = go.AddComponent<BoxCollider>();
             bc.isTrigger = true;
             bc.size = Vector3.one;
             bc.center = Vector3.zero;
 
-            // 3. Visual Volume Indicator (Mesh only, NO collider)
+            // Visual Volume Indicator (Mesh only, NO collider)
             GameObject boxVisual = new GameObject("Volume_Visual_Box");
             boxVisual.transform.SetParent(go.transform, false);
             boxVisual.transform.localPosition = Vector3.zero;
             boxVisual.transform.localScale = Vector3.one;
-            boxVisual.layer = 2; // Ignore Raycast layer
+            boxVisual.layer = 2; // Ignore Raycast
 
-            // Use a clean primitive mesh without GameObject.CreatePrimitive (which adds a BoxCollider)
             GameObject tempCube = GameObject.CreatePrimitive(PrimitiveType.Cube);
             Mesh cubeMesh = tempCube.GetComponent<MeshFilter>().sharedMesh;
             GameObject.DestroyImmediate(tempCube);
@@ -70,18 +73,21 @@ namespace DeadCoreEditor
             mr.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
             mr.receiveShadows = false;
 
-            // 4. Attach native DeadCore GravityArea component
+            // Direction Arrow Shaft & Tip
+            CreateDirectionArrow(boxVisual.transform);
+
+            // Attach native DeadCore GravityArea component
             GravityArea area = go.AddComponent<GravityArea>();
             if (area != null)
             {
-                area.gravity = direction;
                 area.affectOthers = true;
                 area._changeGravity = true;
             }
 
             GravityConfig cfg = new GravityConfig
             {
-                GravityDirection = direction,
+                GravityForce = force,
+                LocalAxis = Vector3.up,
                 AffectOthers = true,
                 ChangeGravity = true,
                 IsActive = true
@@ -92,17 +98,32 @@ namespace DeadCoreEditor
             ApplyGravityConfig(go, cfg);
             EditorSessionManager.RegisterPlacedObject(go);
 
-            // Clean up any stray solid colliders that might have been added
-            Collider[] allCols = go.GetComponentsInChildren<Collider>(true);
-            for (int i = 0; i < allCols.Length; i++)
-            {
-                if (allCols[i] != null && allCols[i].gameObject.name != "Editor_Snapping_Proxy")
-                {
-                    allCols[i].isTrigger = true;
-                }
-            }
-
             return go;
+        }
+
+        private static void CreateDirectionArrow(Transform parent)
+        {
+            GameObject arrowRoot = new GameObject("Gravity_Arrow_Indicator");
+            arrowRoot.transform.SetParent(parent, false);
+            arrowRoot.layer = 2;
+
+            // Cylinder Shaft
+            GameObject shaft = GameObject.CreatePrimitive(PrimitiveType.Cylinder);
+            GameObject.DestroyImmediate(shaft.GetComponent<Collider>());
+            shaft.transform.SetParent(arrowRoot.transform, false);
+            shaft.transform.localScale = new Vector3(0.08f, 0.35f, 0.08f);
+            shaft.transform.localPosition = new Vector3(0f, 0.15f, 0f);
+            shaft.GetComponent<Renderer>().sharedMaterial = _arrowMat;
+            shaft.layer = 2;
+
+            // Sphere Tip
+            GameObject tip = GameObject.CreatePrimitive(PrimitiveType.Sphere);
+            GameObject.DestroyImmediate(tip.GetComponent<Collider>());
+            tip.transform.SetParent(arrowRoot.transform, false);
+            tip.transform.localScale = new Vector3(0.22f, 0.22f, 0.22f);
+            tip.transform.localPosition = new Vector3(0f, 0.50f, 0f);
+            tip.GetComponent<Renderer>().sharedMaterial = _arrowMat;
+            tip.layer = 2;
         }
 
         public static void ApplyGravityConfig(GameObject go, GravityConfig cfg)
@@ -110,10 +131,12 @@ namespace DeadCoreEditor
             if (go == null || cfg == null) return;
             PlacedGravityConfigs[go] = cfg.Clone();
 
+            Vector3 worldGrav = cfg.CalculateWorldGravity(go.transform.rotation);
+
             GravityArea area = go.GetComponentInChildren<GravityArea>(true);
             if (area != null)
             {
-                area.gravity = cfg.GravityDirection;
+                area.gravity = worldGrav;
                 area.affectOthers = cfg.AffectOthers;
                 area._changeGravity = cfg.ChangeGravity;
                 area.enabled = cfg.IsActive;
@@ -123,9 +146,9 @@ namespace DeadCoreEditor
             if (bc != null)
             {
                 bc.enabled = cfg.IsActive;
+                bc.isTrigger = true;
             }
 
-            // Also support GravityReceiver if present on the target
             GravityReceiver receiver = go.GetComponentInChildren<GravityReceiver>(true);
             if (receiver != null)
             {
@@ -137,6 +160,24 @@ namespace DeadCoreEditor
             if (vis != null)
             {
                 vis.gameObject.SetActive(EditorSessionManager.IsEditModeActive);
+            }
+        }
+
+        public static void UpdateAllGravityRotations()
+        {
+            for (int i = 0; i < PlacedGravityAreas.Count; i++)
+            {
+                GameObject go = PlacedGravityAreas[i];
+                if (go == null || !go.activeInHierarchy) continue;
+
+                if (PlacedGravityConfigs.TryGetValue(go, out var cfg))
+                {
+                    GravityArea area = go.GetComponentInChildren<GravityArea>(true);
+                    if (area != null)
+                    {
+                        area.gravity = cfg.CalculateWorldGravity(go.transform.rotation);
+                    }
+                }
             }
         }
 

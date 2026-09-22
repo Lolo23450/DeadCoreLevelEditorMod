@@ -2862,57 +2862,148 @@ namespace DeadCoreEditor
             {
                 var card = CreateModularSection(_inspectorContent, "GravityArea", "Zero-G / Gravity Volume");
                 var gc = data.GetOrCreate<GravityConfig>();
+                if (GravityAreaService.PlacedGravityConfigs.TryGetValue(obj, out var existingGc))
+                    gc = existingGc;
 
-                GravityArea ga = obj.GetComponentInChildren<GravityArea>(true);
-                if (ga != null)
+                // Live Gravity Readout
+                Vector3 currentWorldGrav = gc.CalculateWorldGravity(obj.transform.rotation);
+                CreateTextPrimitive(card.transform, $"Vector: ({currentWorldGrav.x:F1}, {currentWorldGrav.y:F1}, {currentWorldGrav.z:F1})",
+                    Vector2.zero, Vector2.one, Vector2.zero, Vector2.zero, 10f, FontStyles.Normal, Color.cyan, TextAlignmentOptions.MidlineLeft);
+
+                // Gravity Strength Slider
+                AddSliderRow(card.transform, "Gravity Force", 0f, 60f, gc.GravityForce, "{0:F1} m/s²", (v) =>
                 {
-                    gc.GravityDirection = ga.gravity;
-                    gc.AffectOthers = ga.affectOthers;
-                    gc.ChangeGravity = ga._changeGravity;
-                }
+                    gc.GravityForce = v;
+                    var targets = GetSelectionTargets(obj);
+                    for (int t = 0; t < targets.Count; t++)
+                    {
+                        if (GravityAreaService.PlacedGravityConfigs.TryGetValue(targets[t], out var tgc))
+                        {
+                            tgc.GravityForce = v;
+                            GravityAreaService.ApplyGravityConfig(targets[t], tgc);
+                        }
+                        else
+                        {
+                            var newCfg = gc.Clone();
+                            newCfg.GravityForce = v;
+                            GravityAreaService.ApplyGravityConfig(targets[t], newCfg);
+                        }
+                    }
+                });
 
-                // Direction Presets (Up, Down, Left, Right)
+                // Relative Pull Direction (relative to the box's local orientation)
+                GameObject axisHeader = CreateRowContainerPrimitive(card.transform, "Row_AxisHeader", 20f);
+                CreateTextPrimitive(axisHeader.transform, "-- Pull Direction (Relative to Box) --",
+                    Vector2.zero, Vector2.one, Vector2.zero, Vector2.zero, 9.5f, FontStyles.Bold, new Color(0.3f, 0.85f, 1f), TextAlignmentOptions.MidlineLeft);
+
+                GameObject axisRow = CreateRowContainerPrimitive(card.transform, "Row_GravAxisBtns", 24f);
+                SetupRowHorizontalLayoutPrimitive(axisRow, 4f);
+
+                CreateButtonPrimitive(axisRow.transform, "Btn_AxisTop", "Top (+Y)", 65f, () =>
+                {
+                    gc.LocalAxis = Vector3.up;
+                    var targets = GetSelectionTargets(obj);
+                    for (int t = 0; t < targets.Count; t++)
+                    {
+                        if (GravityAreaService.PlacedGravityConfigs.TryGetValue(targets[t], out var tgc))
+                        {
+                            tgc.LocalAxis = Vector3.up;
+                            GravityAreaService.ApplyGravityConfig(targets[t], tgc);
+                        }
+                    }
+                    RebuildModularInspectorCards(obj);
+                }, gc.LocalAxis == Vector3.up ? new Color(0.18f, 0.52f, 0.92f) : new Color(0.18f, 0.22f, 0.28f));
+
+                CreateButtonPrimitive(axisRow.transform, "Btn_AxisBottom", "Bottom (-Y)", 65f, () =>
+                {
+                    gc.LocalAxis = Vector3.down;
+                    var targets = GetSelectionTargets(obj);
+                    for (int t = 0; t < targets.Count; t++)
+                    {
+                        if (GravityAreaService.PlacedGravityConfigs.TryGetValue(targets[t], out var tgc))
+                        {
+                            tgc.LocalAxis = Vector3.down;
+                            GravityAreaService.ApplyGravityConfig(targets[t], tgc);
+                        }
+                    }
+                    RebuildModularInspectorCards(obj);
+                }, gc.LocalAxis == Vector3.down ? new Color(0.18f, 0.52f, 0.92f) : new Color(0.18f, 0.22f, 0.28f));
+
+                CreateButtonPrimitive(axisRow.transform, "Btn_AxisFwd", "Forward (+Z)", 75f, () =>
+                {
+                    gc.LocalAxis = Vector3.forward;
+                    var targets = GetSelectionTargets(obj);
+                    for (int t = 0; t < targets.Count; t++)
+                    {
+                        if (GravityAreaService.PlacedGravityConfigs.TryGetValue(targets[t], out var tgc))
+                        {
+                            tgc.LocalAxis = Vector3.forward;
+                            GravityAreaService.ApplyGravityConfig(targets[t], tgc);
+                        }
+                    }
+                    RebuildModularInspectorCards(obj);
+                }, gc.LocalAxis == Vector3.forward ? new Color(0.18f, 0.52f, 0.92f) : new Color(0.18f, 0.22f, 0.28f));
+
+                // Quick Force Presets
                 GameObject presetRow = CreateRowContainerPrimitive(card.transform, "Row_GravPresets", 24f);
                 SetupRowHorizontalLayoutPrimitive(presetRow, 4f);
 
-                CreateButtonPrimitive(presetRow.transform, "Btn_GravUp", "Up (Invert)", 70f, () =>
+                CreateButtonPrimitive(presetRow.transform, "Btn_PresetNormal", "Normal (9.8)", 75f, () =>
                 {
-                    gc.GravityDirection = new Vector3(0f, 9.81f, 0f);
+                    gc.GravityForce = 9.81f;
                     var targets = GetSelectionTargets(obj);
                     for (int t = 0; t < targets.Count; t++)
-                        GravityAreaService.ApplyGravityConfig(targets[t], gc);
+                    {
+                        if (GravityAreaService.PlacedGravityConfigs.TryGetValue(targets[t], out var tgc))
+                        {
+                            tgc.GravityForce = 9.81f;
+                            GravityAreaService.ApplyGravityConfig(targets[t], tgc);
+                        }
+                    }
                     RebuildModularInspectorCards(obj);
                 }, new Color(0.18f, 0.45f, 0.85f));
 
-                CreateButtonPrimitive(presetRow.transform, "Btn_GravDown", "Down", 60f, () =>
+                CreateButtonPrimitive(presetRow.transform, "Btn_PresetHigh", "High (20.0)", 75f, () =>
                 {
-                    gc.GravityDirection = new Vector3(0f, -9.81f, 0f);
+                    gc.GravityForce = 20.0f;
                     var targets = GetSelectionTargets(obj);
                     for (int t = 0; t < targets.Count; t++)
-                        GravityAreaService.ApplyGravityConfig(targets[t], gc);
+                    {
+                        if (GravityAreaService.PlacedGravityConfigs.TryGetValue(targets[t], out var tgc))
+                        {
+                            tgc.GravityForce = 20.0f;
+                            GravityAreaService.ApplyGravityConfig(targets[t], tgc);
+                        }
+                    }
                     RebuildModularInspectorCards(obj);
-                }, new Color(0.2f, 0.25f, 0.35f));
+                }, new Color(0.85f, 0.45f, 0.15f));
 
-                CreateButtonPrimitive(presetRow.transform, "Btn_ZeroG", "Zero-G", 60f, () =>
+                CreateButtonPrimitive(presetRow.transform, "Btn_PresetZeroG", "Zero-G (0.0)", 75f, () =>
                 {
-                    gc.GravityDirection = Vector3.zero;
+                    gc.GravityForce = 0.0f;
                     var targets = GetSelectionTargets(obj);
                     for (int t = 0; t < targets.Count; t++)
-                        GravityAreaService.ApplyGravityConfig(targets[t], gc);
+                    {
+                        if (GravityAreaService.PlacedGravityConfigs.TryGetValue(targets[t], out var tgc))
+                        {
+                            tgc.GravityForce = 0.0f;
+                            GravityAreaService.ApplyGravityConfig(targets[t], tgc);
+                        }
+                    }
                     RebuildModularInspectorCards(obj);
                 }, new Color(0.5f, 0.2f, 0.8f));
 
-                AddSliderRow(card.transform, "Gravity Y", -30f, 30f, gc.GravityDirection.y, "{0:F1} m/s²", (v) =>
+                AddToggleRow(card.transform, "Affect Non-Player Objects", gc.AffectOthers, (st) =>
                 {
-                    gc.GravityDirection = new Vector3(gc.GravityDirection.x, v, gc.GravityDirection.z);
+                    gc.AffectOthers = st;
                     var targets = GetSelectionTargets(obj);
                     for (int t = 0; t < targets.Count; t++)
                         GravityAreaService.ApplyGravityConfig(targets[t], gc);
                 });
 
-                AddToggleRow(card.transform, "Affect Non-Player Objects", gc.AffectOthers, (st) =>
+                AddToggleRow(card.transform, "Orient Player Camera to Surface", gc.ChangeGravity, (st) =>
                 {
-                    gc.AffectOthers = st;
+                    gc.ChangeGravity = st;
                     var targets = GetSelectionTargets(obj);
                     for (int t = 0; t < targets.Count; t++)
                         GravityAreaService.ApplyGravityConfig(targets[t], gc);

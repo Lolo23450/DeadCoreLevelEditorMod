@@ -240,7 +240,10 @@ namespace DeadCoreEditor
                 if (ga != null)
                 {
                     var gCfg = data.GetOrCreate<GravityConfig>();
-                    gCfg.GravityDirection = ga.gravity;
+                    gCfg.GravityForce = ga.gravity.magnitude > 0.01f ? ga.gravity.magnitude : 9.81f;
+                    // Compute what local axis this world gravity was pointing at:
+                    Vector3 localDir = Quaternion.Inverse(obj.transform.rotation) * ga.gravity.normalized;
+                    gCfg.LocalAxis = localDir.sqrMagnitude > 0.01f ? localDir : Vector3.up;
                     gCfg.AffectOthers = ga.affectOthers;
                     gCfg.ChangeGravity = ga._changeGravity;
                     gCfg.IsActive = ga.enabled;
@@ -277,7 +280,20 @@ namespace DeadCoreEditor
                     if (ga != null)
                     {
                         var gCfg = data.GetOrCreate<GravityConfig>();
-                        gCfg.GravityDirection = ga.gravity;
+
+                        // Convert world gravity to local orientation + magnitude
+                        if (ga.gravity.sqrMagnitude > 0.001f)
+                        {
+                            gCfg.GravityForce = ga.gravity.magnitude;
+                            Vector3 unrotated = Quaternion.Inverse(obj.transform.rotation) * ga.gravity.normalized;
+                            gCfg.LocalAxis = unrotated.sqrMagnitude > 0.001f ? unrotated : Vector3.up;
+                        }
+                        else
+                        {
+                            gCfg.GravityForce = 0f;
+                            gCfg.LocalAxis = Vector3.up;
+                        }
+
                         gCfg.AffectOthers = ga.affectOthers;
                         gCfg.ChangeGravity = ga._changeGravity;
                         gCfg.IsActive = ga.enabled;
@@ -1262,6 +1278,12 @@ namespace DeadCoreEditor
                 }
             }
 
+            // Use GravityAreaService.PlacedGravityAreas
+            if (GravityAreaService.PlacedGravityAreas.Count > 0)
+            {
+                GravityAreaService.UpdateAllGravityRotations();
+            }
+
             GameObject player = FindPlayerEntity();
             CharacterController cc = GetPlayerController();
 
@@ -1453,7 +1475,7 @@ namespace DeadCoreEditor
                     return GravityAreaService.CreateProceduralGravityArea(
                         position,
                         scale,
-                        new Vector3(0f, 9.81f, 0f) // inverted gravity by default
+                        9.81f
                     );
                 }
             }
@@ -1724,10 +1746,20 @@ namespace DeadCoreEditor
                 // Attach/synchronize config
                 if (!GravityAreaService.PlacedGravityConfigs.ContainsKey(obj))
                 {
-                    Vector3 defaultGrav = (ga != null && ga.gravity != Vector3.zero) ? ga.gravity : new Vector3(0f, 9.81f, 0f);
+                    float force = 9.81f;
+                    Vector3 localAxis = Vector3.up;
+
+                    if (ga != null && ga.gravity.sqrMagnitude > 0.01f)
+                    {
+                        force = ga.gravity.magnitude;
+                        Vector3 unrotated = Quaternion.Inverse(obj.transform.rotation) * ga.gravity.normalized;
+                        if (unrotated.sqrMagnitude > 0.01f) localAxis = unrotated;
+                    }
+
                     GravityAreaService.PlacedGravityConfigs[obj] = new GravityConfig
                     {
-                        GravityDirection = defaultGrav,
+                        GravityForce = force,
+                        LocalAxis = localAxis,
                         AffectOthers = true,
                         ChangeGravity = true,
                         IsActive = true

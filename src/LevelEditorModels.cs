@@ -636,14 +636,16 @@ namespace DeadCoreEditor
     {
         public string ComponentTag => "GRAVITY";
 
-        public Vector3 GravityDirection = new Vector3(0f, -9.81f, 0f);
+        public float GravityForce = 9.81f;
+        public Vector3 LocalAxis = Vector3.up; // (0, 1, 0) = points toward the top of the box
         public bool AffectOthers = true;
         public bool ChangeGravity = true;
         public bool IsActive = true;
 
         public GravityConfig Clone() => new GravityConfig
         {
-            GravityDirection = this.GravityDirection,
+            GravityForce = this.GravityForce,
+            LocalAxis = this.LocalAxis,
             AffectOthers = this.AffectOthers,
             ChangeGravity = this.ChangeGravity,
             IsActive = this.IsActive
@@ -651,10 +653,17 @@ namespace DeadCoreEditor
 
         IEditorComponent IEditorComponent.Clone() => Clone();
 
+        public Vector3 CalculateWorldGravity(Quaternion rotation)
+        {
+            Vector3 normAxis = LocalAxis.sqrMagnitude > 0.001f ? LocalAxis.normalized : Vector3.up;
+            return (rotation * normAxis) * GravityForce;
+        }
+
         public string Serialize()
         {
             var inv = CultureInfo.InvariantCulture;
-            return $"{GravityDirection.x.ToString("F3", inv)}:{GravityDirection.y.ToString("F3", inv)}:{GravityDirection.z.ToString("F3", inv)}:" +
+            return $"{GravityForce.ToString("F3", inv)}:" +
+                   $"{LocalAxis.x.ToString("F3", inv)}:{LocalAxis.y.ToString("F3", inv)}:{LocalAxis.z.ToString("F3", inv)}:" +
                    $"{(AffectOthers ? 1 : 0)}:{(ChangeGravity ? 1 : 0)}:{(IsActive ? 1 : 0)}";
         }
 
@@ -664,19 +673,35 @@ namespace DeadCoreEditor
             string[] p = rawData.Split(':');
             var inv = CultureInfo.InvariantCulture;
 
-            if (p.Length >= 3)
+            // Supports both modern and legacy formats
+            if (p.Length >= 6)
             {
-                GravityDirection = new Vector3(
+                GravityForce = PersistenceUtility.ParseFloat(p[0], 9.81f);
+                LocalAxis = new Vector3(
+                    PersistenceUtility.ParseFloat(p[1]),
+                    PersistenceUtility.ParseFloat(p[2], 1f),
+                    PersistenceUtility.ParseFloat(p[3])
+                );
+                AffectOthers = p[4] == "1";
+                ChangeGravity = p[5] == "1";
+                if (p.Length >= 7) IsActive = p[6] == "1";
+            }
+            else if (p.Length >= 3) // Legacy fallback: (dirX:dirY:dirZ)
+            {
+                Vector3 legacyDir = new Vector3(
                     PersistenceUtility.ParseFloat(p[0]),
                     PersistenceUtility.ParseFloat(p[1]),
                     PersistenceUtility.ParseFloat(p[2], -9.81f)
                 );
+                GravityForce = legacyDir.magnitude;
+                LocalAxis = legacyDir.sqrMagnitude > 0.01f ? legacyDir.normalized : Vector3.up;
+                if (p.Length >= 4) AffectOthers = p[3] == "1";
+                if (p.Length >= 5) ChangeGravity = p[4] == "1";
+                if (p.Length >= 6) IsActive = p[5] == "1";
             }
-            if (p.Length >= 4) AffectOthers = p[3] == "1";
-            if (p.Length >= 5) ChangeGravity = p[4] == "1";
-            if (p.Length >= 6) IsActive = p[5] == "1";
         }
     }
+
 
     // =========================================================================
     // SECTION 4: CATALOG ASSETS & TRAIT MAPPING
