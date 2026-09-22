@@ -2871,7 +2871,7 @@ namespace DeadCoreEditor
                     Vector2.zero, Vector2.one, Vector2.zero, Vector2.zero, 10f, FontStyles.Normal, Color.cyan, TextAlignmentOptions.MidlineLeft);
 
                 // Gravity Strength Slider
-                AddSliderRow(card.transform, "Gravity Force", 0f, 60f, gc.GravityForce, "{0:F1} m/s²", (v) =>
+                AddSliderRow(card.transform, "Gravity Force", -60f, 60f, gc.GravityForce, "{0:F1} m/s²", (v) =>
                 {
                     gc.GravityForce = v;
                     var targets = GetSelectionTargets(obj);
@@ -2944,6 +2944,21 @@ namespace DeadCoreEditor
                     RebuildModularInspectorCards(obj);
                 }, gc.LocalAxis == Vector3.forward ? new Color(0.18f, 0.52f, 0.92f) : new Color(0.18f, 0.22f, 0.28f));
 
+                CreateButtonPrimitive(axisRow.transform, "Btn_AxisBck", "Backward (-Z)", 75f, () =>
+                {
+                    gc.LocalAxis = Vector3.back;
+                    var targets = GetSelectionTargets(obj);
+                    for (int t = 0; t < targets.Count; t++)
+                    {
+                        if (GravityAreaService.PlacedGravityConfigs.TryGetValue(targets[t], out var tgc))
+                        {
+                            tgc.LocalAxis = Vector3.forward;
+                            GravityAreaService.ApplyGravityConfig(targets[t], tgc);
+                        }
+                    }
+                    RebuildModularInspectorCards(obj);
+                }, gc.LocalAxis == Vector3.forward ? new Color(0.18f, 0.52f, 0.92f) : new Color(0.18f, 0.22f, 0.28f));
+
                 // Quick Force Presets
                 GameObject presetRow = CreateRowContainerPrimitive(card.transform, "Row_GravPresets", 24f);
                 SetupRowHorizontalLayoutPrimitive(presetRow, 4f);
@@ -2996,14 +3011,6 @@ namespace DeadCoreEditor
                 AddToggleRow(card.transform, "Affect Non-Player Objects", gc.AffectOthers, (st) =>
                 {
                     gc.AffectOthers = st;
-                    var targets = GetSelectionTargets(obj);
-                    for (int t = 0; t < targets.Count; t++)
-                        GravityAreaService.ApplyGravityConfig(targets[t], gc);
-                });
-
-                AddToggleRow(card.transform, "Orient Player Camera to Surface", gc.ChangeGravity, (st) =>
-                {
-                    gc.ChangeGravity = st;
                     var targets = GetSelectionTargets(obj);
                     for (int t = 0; t < targets.Count; t++)
                         GravityAreaService.ApplyGravityConfig(targets[t], gc);
