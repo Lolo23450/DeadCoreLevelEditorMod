@@ -758,6 +758,7 @@ namespace DeadCoreEditor
                 case "NEON": return new NeonConfig();
                 case "CABLE": return new CableConfig();
                 case "TRUSS": return new TrussConfig();
+                case "GRAVITY": return new GravityConfig();
                 default: return null;
             }
         }

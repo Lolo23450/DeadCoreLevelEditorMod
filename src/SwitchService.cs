@@ -151,6 +151,27 @@ namespace DeadCoreEditor
                 if (zones[z] != null && (switchGo == null || !zones[z].transform.IsChildOf(switchGo.transform)))
                     zones[z].enabled = active;
             }
+
+            // Synchronize Gravity Areas & Gravity Receivers
+            GravityArea[] gravAreas = targetGo.GetComponentsInChildren<GravityArea>(true);
+            for (int i = 0; i < gravAreas.Length; i++)
+            {
+                if (gravAreas[i] != null)
+                {
+                    if (active) gravAreas[i].OnSwitchOn();
+                    else gravAreas[i].OnSwitchOff();
+                }
+            }
+
+            GravityReceiver[] gravReceivers = targetGo.GetComponentsInChildren<GravityReceiver>(true);
+            for (int i = 0; i < gravReceivers.Length; i++)
+            {
+                if (gravReceivers[i] != null)
+                {
+                    if (active) gravReceivers[i].OnSwitchOn();
+                    else gravReceivers[i].OnSwitchOff();
+                }
+            }
         }
 
         private static void ToggleParentComponentsExcludingSwitch(GameObject parentGo, GameObject switchGo, bool active)

@@ -39,7 +39,8 @@ namespace DeadCoreEditor
         Sunlight = 1 << 9,
         Skybox = 1 << 10,
         Switch = 1 << 11,
-        Architecture = 1 << 12
+        Architecture = 1 << 12,
+        GravityArea = 1 << 13
     }
 
     public enum PlacedObjectType
@@ -56,7 +57,8 @@ namespace DeadCoreEditor
         Laser,
         Checkpoint,
         SkyboxController,
-        Switch
+        Switch,
+        GravityArea
     }
 
     public enum EditorGizmoMode { Select = 0, Translate = 1, Rotate = 2, Scale = 3 }
@@ -311,14 +313,28 @@ namespace DeadCoreEditor
         }
     }
 
+    public enum LightKind
+    {
+        Spot = 0,
+        Point = 1,
+        Directional = 2
+    }
+
     public class LightConfig : IEditorComponent
     {
         public string ComponentTag => "LIGHT";
         public Color Color = Color.cyan;
         public float SpotAngle = 60f;
+        public float Range = 25f;
         public float Intensity = 8.0f;
-        public float VolumetricIntensity = 4.0f;
-        public bool IsDirectional = false;
+        public float VolumetricIntensity = 2.0f;
+        public LightKind Kind = LightKind.Spot;
+
+        public bool IsDirectional
+        {
+            get => Kind == LightKind.Directional;
+            set { if (value) Kind = LightKind.Directional; }
+        }
 
         // Dynamic Glitch & Waveform Modifiers
         public GlowMode Mode = GlowMode.Steady;
@@ -335,6 +351,8 @@ namespace DeadCoreEditor
                 Color = this.Color,
                 SpotAngle = this.SpotAngle,
                 Intensity = this.Intensity,
+                Kind = this.Kind,
+                Range = this.Range,
                 VolumetricIntensity = this.VolumetricIntensity,
                 IsDirectional = this.IsDirectional,
                 Mode = this.Mode,
@@ -355,9 +373,10 @@ namespace DeadCoreEditor
             byte g = (byte)Mathf.Clamp(Mathf.RoundToInt(Color.g * 255f), 0, 255);
             byte b = (byte)Mathf.Clamp(Mathf.RoundToInt(Color.b * 255f), 0, 255);
             string hex = $"{r:X2}{g:X2}{b:X2}";
+
             return $"{Intensity.ToString("F2", inv)}:{SpotAngle.ToString("F1", inv)}:{hex}:{VolumetricIntensity.ToString("F2", inv)}:" +
-                   $"{(IsDirectional ? 1 : 0)}:{(int)Mode}:{Frequency.ToString("F2", inv)}:{MinMultiplier.ToString("F2", inv)}:" +
-                   $"{MaxMultiplier.ToString("F2", inv)}:{SyncGroup}:{PhaseOffset.ToString("F2", inv)}";
+                   $"{(int)Kind}:{(int)Mode}:{Frequency.ToString("F2", inv)}:{MinMultiplier.ToString("F2", inv)}:" +
+                   $"{MaxMultiplier.ToString("F2", inv)}:{SyncGroup}:{PhaseOffset.ToString("F2", inv)}:{Range.ToString("F1", inv)}";
         }
 
         public void Deserialize(string rawData)
@@ -380,7 +399,14 @@ namespace DeadCoreEditor
                 }
             }
             if (p.Length >= 4 && float.TryParse(p[3], NumberStyles.Float, inv, out float v)) VolumetricIntensity = v;
-            if (p.Length >= 5) IsDirectional = p[4] == "1";
+
+            // Backward-compatible: 0 = Spot, 1 = Directional, 2 = Point
+            if (p.Length >= 5)
+            {
+                int k = PersistenceUtility.ParseInt(p[4], 0);
+                Kind = (LightKind)Mathf.Clamp(k, 0, 2);
+                IsDirectional = (Kind == LightKind.Directional);
+            }
 
             if (p.Length >= 6) Mode = (GlowMode)PersistenceUtility.ParseInt(p[5], 0);
             if (p.Length >= 7) Frequency = Mathf.Clamp(PersistenceUtility.ParseFloat(p[6], 1.5f), 0.1f, 25f);
@@ -388,6 +414,9 @@ namespace DeadCoreEditor
             if (p.Length >= 9) MaxMultiplier = Mathf.Clamp(PersistenceUtility.ParseFloat(p[8], 1.6f), 0.5f, 6f);
             if (p.Length >= 10) SyncGroup = PersistenceUtility.ParseInt(p[9], 0);
             if (p.Length >= 11) PhaseOffset = PersistenceUtility.ParseFloat(p[10], 0f);
+
+            // Token 12: Range radius (defaults to 25m on legacy files)
+            if (p.Length >= 12) Range = Mathf.Clamp(PersistenceUtility.ParseFloat(p[11], 25f), 1f, 250f);
         }
     }
     public enum GlowMode
@@ -603,6 +632,51 @@ namespace DeadCoreEditor
             return val;
         }
     }
+    public class GravityConfig : IEditorComponent
+    {
+        public string ComponentTag => "GRAVITY";
+
+        public Vector3 GravityDirection = new Vector3(0f, -9.81f, 0f);
+        public bool AffectOthers = true;
+        public bool ChangeGravity = true;
+        public bool IsActive = true;
+
+        public GravityConfig Clone() => new GravityConfig
+        {
+            GravityDirection = this.GravityDirection,
+            AffectOthers = this.AffectOthers,
+            ChangeGravity = this.ChangeGravity,
+            IsActive = this.IsActive
+        };
+
+        IEditorComponent IEditorComponent.Clone() => Clone();
+
+        public string Serialize()
+        {
+            var inv = CultureInfo.InvariantCulture;
+            return $"{GravityDirection.x.ToString("F3", inv)}:{GravityDirection.y.ToString("F3", inv)}:{GravityDirection.z.ToString("F3", inv)}:" +
+                   $"{(AffectOthers ? 1 : 0)}:{(ChangeGravity ? 1 : 0)}:{(IsActive ? 1 : 0)}";
+        }
+
+        public void Deserialize(string rawData)
+        {
+            if (string.IsNullOrWhiteSpace(rawData)) return;
+            string[] p = rawData.Split(':');
+            var inv = CultureInfo.InvariantCulture;
+
+            if (p.Length >= 3)
+            {
+                GravityDirection = new Vector3(
+                    PersistenceUtility.ParseFloat(p[0]),
+                    PersistenceUtility.ParseFloat(p[1]),
+                    PersistenceUtility.ParseFloat(p[2], -9.81f)
+                );
+            }
+            if (p.Length >= 4) AffectOthers = p[3] == "1";
+            if (p.Length >= 5) ChangeGravity = p[4] == "1";
+            if (p.Length >= 6) IsActive = p[5] == "1";
+        }
+    }
 
     // =========================================================================
     // SECTION 4: CATALOG ASSETS & TRAIT MAPPING
@@ -643,6 +717,8 @@ namespace DeadCoreEditor
         public bool IsRotatingLaser { get => (Traits & AssetTrait.RotatingLaser) != 0; set => SetTrait(AssetTrait.RotatingLaser, value); }
         public bool IsSkybox { get => (Traits & AssetTrait.Skybox) != 0; set => SetTrait(AssetTrait.Skybox, value); }
         public bool IsSwitch { get => (Traits & AssetTrait.Switch) != 0; set => SetTrait(AssetTrait.Switch, value); }
+
+        public bool IsGravityArea { get => (Traits & AssetTrait.GravityArea) != 0; set => SetTrait(AssetTrait.GravityArea, value); }
 
         public void SetTrait(AssetTrait trait, bool enable)
         {

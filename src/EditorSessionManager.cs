@@ -157,6 +157,9 @@ namespace DeadCoreEditor
 
         private static void SyncDictionariesToEntityData(GameObject obj, EditorEntityData data)
         {
+            if (obj == null || data == null) return;
+
+            // 1. Jumper Pads
             if (JumperForces.TryGetValue(obj, out float jf))
             {
                 var jc = data.GetOrCreate<JumperConfig>();
@@ -164,18 +167,21 @@ namespace DeadCoreEditor
                 if (JumperActiveStates.TryGetValue(obj, out bool ja)) jc.IsActive = ja;
             }
 
+            // 2. Turbines / Helix
             if (TurbineSpeeds.TryGetValue(obj, out float ts))
             {
                 var tc = data.GetOrCreate<TurbineConfig>();
                 tc.Speed = ts;
             }
 
+            // 3. Defense Turrets
             if (TurretFireDelays.TryGetValue(obj, out float fd))
             {
                 var tc = data.GetOrCreate<TurretConfig>();
                 tc.FireDelay = fd;
             }
 
+            // 4. Laser Hazards
             if (LaserRotationSpeeds.TryGetValue(obj, out float lrs))
             {
                 var lc = data.GetOrCreate<LaserConfig>();
@@ -183,11 +189,13 @@ namespace DeadCoreEditor
                 lc.IsRotating = Mathf.Abs(lrs) > 0.01f;
             }
 
+            // 5. Lights (Spot, Point, Sun)
             if (PlacedLights.TryGetValue(obj, out var lcCfg))
             {
                 data.Set(lcCfg.Clone());
             }
 
+            // 6. Kinematic Motion Paths
             if (MotionPaths.TryGetValue(obj, out var mp))
             {
                 data.Set(mp.Clone());
@@ -197,39 +205,83 @@ namespace DeadCoreEditor
                 data.Remove<ObjectMotionPath>();
             }
 
+            // 7. Interactive Switches
             if (SwitchService.PlacedSwitches.TryGetValue(obj, out var swCfg))
             {
                 data.Set(swCfg.Clone());
             }
 
+            // 8. Glowing Neon Accents & Glitch Profiles
             if (PlacedNeonConfigs.TryGetValue(obj, out var neonCfg))
             {
                 data.Set(neonCfg.Clone());
             }
 
+            // 9. Procedural Cables & Wires
             if (ProceduralCableService.PlacedCables.TryGetValue(obj, out var cableCfg))
             {
                 data.Set(cableCfg.Clone());
             }
 
+            // 10. Procedural Trusses & Girders
             if (StructuralTrussService.PlacedTrusses.TryGetValue(obj, out var trussCfg))
             {
                 data.Set(trussCfg.Clone());
             }
 
+            // 11. Gravity Areas & Gravity Receivers
+            if (GravityAreaService.PlacedGravityConfigs.TryGetValue(obj, out var gravCfg))
+            {
+                data.Set(gravCfg.Clone());
+            }
+            else
+            {
+                GravityArea ga = obj.GetComponentInChildren<GravityArea>(true);
+                if (ga != null)
+                {
+                    var gCfg = data.GetOrCreate<GravityConfig>();
+                    gCfg.GravityDirection = ga.gravity;
+                    gCfg.AffectOthers = ga.affectOthers;
+                    gCfg.ChangeGravity = ga._changeGravity;
+                    gCfg.IsActive = ga.enabled;
+                }
+                else
+                {
+                    GravityReceiver gr = obj.GetComponentInChildren<GravityReceiver>(true);
+                    if (gr != null)
+                    {
+                        var gCfg = data.GetOrCreate<GravityConfig>();
+                        gCfg.IsActive = gr.enabled;
+                    }
+                }
+            }
+
+            // 12. Object Types (Gates, Checkpoints, Skybox, Gravity)
             if (PlacedObjectTypes.TryGetValue(obj, out var pType))
             {
                 if (pType == PlacedObjectType.SpawnGate || pType == PlacedObjectType.GoalGate || pType == PlacedObjectType.Checkpoint)
                 {
-                    var gc = data.GetOrCreate<GateConfig>();
-                    gc.IsSpawn = (pType == PlacedObjectType.SpawnGate);
-                    gc.IsGoal = (pType == PlacedObjectType.GoalGate);
+                    var gateCfg = data.GetOrCreate<GateConfig>();
+                    gateCfg.IsSpawn = (pType == PlacedObjectType.SpawnGate);
+                    gateCfg.IsGoal = (pType == PlacedObjectType.GoalGate);
                     CheckPointScript cp = obj.GetComponentInChildren<CheckPointScript>();
-                    if (cp != null) gc.CheckpointId = cp._id;
+                    if (cp != null) gateCfg.CheckpointId = cp._id;
                 }
                 else if (pType == PlacedObjectType.SkyboxController)
                 {
                     data.Set(SkyboxControllerService.ActiveConfig.Clone());
+                }
+                else if (pType == PlacedObjectType.GravityArea && !data.Has<GravityConfig>())
+                {
+                    GravityArea ga = obj.GetComponentInChildren<GravityArea>(true);
+                    if (ga != null)
+                    {
+                        var gCfg = data.GetOrCreate<GravityConfig>();
+                        gCfg.GravityDirection = ga.gravity;
+                        gCfg.AffectOthers = ga.affectOthers;
+                        gCfg.ChangeGravity = ga._changeGravity;
+                        gCfg.IsActive = ga.enabled;
+                    }
                 }
             }
         }
@@ -281,6 +333,11 @@ namespace DeadCoreEditor
                 StructuralTrussService.ApplyTrussConfig(obj, trc.Clone());
             }
 
+            if (data.TryGetComponent<GravityConfig>(out var gravCfg))
+            {
+                GravityAreaService.ApplyGravityConfig(obj, gravCfg.Clone());
+            }
+
             if (data.TryGetComponent<ObjectMotionPath>(out var mp) && mp.IsActive && (mp.TotalDistance > 0.05f || Mathf.Abs(mp.RotationSpeed) > 0.01f))
             {
                 MotionPaths[obj] = mp.Clone();
@@ -304,16 +361,16 @@ namespace DeadCoreEditor
                 SwitchService.ApplySwitchConfig(obj, swc.Clone());
             }
 
-            if (data.TryGetComponent<GateConfig>(out var gc))
+            if (data.TryGetComponent<GateConfig>(out var gateCfg))
             {
                 CheckPointScript cp = obj.GetComponentInChildren<CheckPointScript>();
-                if (gc.IsSpawn)
+                if (gateCfg.IsSpawn)
                 {
                     PlacedObjectTypes[obj] = PlacedObjectType.SpawnGate;
                     ApplyGateVisualTint(obj, new Color(1.0f, 0.45f, 0.05f));
                     if (cp != null) cp._id = 0;
                 }
-                else if (gc.IsGoal)
+                else if (gateCfg.IsGoal)
                 {
                     PlacedObjectTypes[obj] = PlacedObjectType.GoalGate;
                     PlacedGoalGate = obj;
@@ -323,7 +380,7 @@ namespace DeadCoreEditor
                 else
                 {
                     PlacedObjectTypes[obj] = PlacedObjectType.Checkpoint;
-                    if (cp != null && gc.CheckpointId != 0) cp._id = gc.CheckpointId;
+                    if (cp != null && gateCfg.CheckpointId != 0) cp._id = gateCfg.CheckpointId;
                 }
             }
         }
@@ -1354,7 +1411,10 @@ namespace DeadCoreEditor
                 if (clean.Contains("spawn") || clean.Contains("entry")) found = AllAssets.Find(a => a.IsSpawnGate);
                 else if (clean.Contains("goal") || clean.Contains("finish") || clean.Contains("end")) found = AllAssets.Find(a => a.IsGoalGate);
                 else if (clean.Contains("sunlight") || clean.Contains("sun")) found = AllAssets.Find(a => a.IsSunlight);
-                else if (clean.Contains("spotlight") || clean.Contains("light")) found = AllAssets.Find(a => a.IsSpotlight);
+                else if (clean.Contains("pointlight") || clean.Contains("omni") || clean.Contains("bulb"))
+                    found = AllAssets.Find(a => a.DisplayName.ToLower().Contains("omni") || a.DisplayName.ToLower().Contains("point") || a.DisplayName.ToLower().Contains("bulb"));
+                else if (clean.Contains("spotlight") || clean.Contains("light"))
+                    found = AllAssets.Find(a => a.IsSpotlight);
                 else if (clean.Contains("rotating") && clean.Contains("laser")) found = AllAssets.Find(a => a.IsRotatingLaser);
                 else if (clean.Contains("laser")) found = AllAssets.Find(a => a.IsLaser);
                 else if (clean.Contains("platform") || clean.Contains("floor") || clean.Contains("plateforme") || clean.Contains("16x16"))
@@ -1387,6 +1447,14 @@ namespace DeadCoreEditor
                     if (customRotation.HasValue) truss.transform.rotation = customRotation.Value;
                     truss.transform.localScale = scale;
                     return truss;
+                }
+                if (clean.Contains("gravity"))
+                {
+                    return GravityAreaService.CreateProceduralGravityArea(
+                        position,
+                        scale,
+                        new Vector3(0f, 9.81f, 0f) // inverted gravity by default
+                    );
                 }
             }
 
@@ -1430,8 +1498,9 @@ namespace DeadCoreEditor
                 if (lods[l] != null) GameObject.DestroyImmediate(lods[l]);
             }
 
-            // 2. Strip stray rigidbodies and native animations ONLY from static architecture (PRESERVE checkpoints, jumpers, turrets, turbines)
-            if (!asset.IsHelix && !asset.IsTurret && !asset.IsJumper && !asset.IsCheckPoint && !asset.IsSpawnGate && !asset.IsGoalGate)
+            // 2. Strip stray rigidbodies and native animations ONLY from static architecture (PRESERVE checkpoints, jumpers, turrets, turbines, gravity areas)
+            bool isGravity = asset.IsGravityArea || asset.DisplayName.ToLower().Contains("gravity");
+            if (!asset.IsHelix && !asset.IsTurret && !asset.IsJumper && !asset.IsCheckPoint && !asset.IsSpawnGate && !asset.IsGoalGate && !isGravity)
             {
                 Rigidbody[] strayRbs = obj.GetComponentsInChildren<Rigidbody>(true);
                 for (int r = 0; r < strayRbs.Length; r++)
@@ -1459,7 +1528,7 @@ namespace DeadCoreEditor
                 if (allRends[r] != null)
                 {
                     allRends[r].enabled = true;
-                    if (allRends[r].gameObject.name != "Editor_Snapping_Proxy")
+                    if (allRends[r].gameObject.name != "Editor_Snapping_Proxy" && allRends[r].gameObject.name != "Volume_Visual_Box")
                         allRends[r].gameObject.layer = 0;
                 }
             }
@@ -1482,7 +1551,8 @@ namespace DeadCoreEditor
 
                 c.enabled = true;
 
-                if (isHazard || isLight)
+                // HAZARDS, LIGHTS & GRAVITY VOLUMES MUST ALWAYS BE TRIGGERS (NEVER SOLID)
+                if (isHazard || isLight || isGravity)
                 {
                     c.isTrigger = true;
                 }
@@ -1518,7 +1588,8 @@ namespace DeadCoreEditor
                 }
             }
 
-            if (!hasSolidCollider && !isHazard && !isGate && !isLight && !isHelix && !isTurret && !isJumper)
+            // Fallback: only add a solid box/mesh collider if it's solid architecture (never for gravity areas, triggers, or hazards!)
+            if (!hasSolidCollider && !isHazard && !isGate && !isLight && !isHelix && !isTurret && !isJumper && !isGravity)
             {
                 MeshFilter[] mfs = obj.GetComponentsInChildren<MeshFilter>(true);
                 for (int m = 0; m < mfs.Length; m++)
@@ -1588,6 +1659,7 @@ namespace DeadCoreEditor
                     l.enabled = true;
                     PlacedLights[obj] = new LightConfig
                     {
+                        Kind = LightKind.Directional,
                         IsDirectional = true,
                         Color = new Color(1f, 0.85f, 0.6f),
                         Intensity = 3.0f,
@@ -1597,13 +1669,27 @@ namespace DeadCoreEditor
                 }
                 StudioGizmoController.AttachSunVisualWidget(obj);
             }
-            else if (asset.IsSpotlight)
+            else if (asset.IsSpotlight || asset.DisplayName.ToLower().Contains("omni") || asset.DisplayName.ToLower().Contains("point") || asset.DisplayName.ToLower().Contains("bulb"))
             {
                 Light l = obj.GetComponentInChildren<Light>();
                 if (l != null)
                 {
                     l.enabled = true;
-                    if (!PlacedLights.ContainsKey(obj)) PlacedLights[obj] = new LightConfig();
+                    if (!PlacedLights.ContainsKey(obj))
+                    {
+                        string dName = asset.DisplayName.ToLower();
+                        bool isPoint = (l.type == LightType.Point) || dName.Contains("omni") || dName.Contains("point") || dName.Contains("bulb");
+
+                        PlacedLights[obj] = new LightConfig
+                        {
+                            Kind = isPoint ? LightKind.Point : LightKind.Spot,
+                            Range = (l.range > 0f) ? l.range : (isPoint ? 25f : 150f),
+                            SpotAngle = (l.spotAngle > 0f) ? l.spotAngle : 60f,
+                            Color = (l.color != default) ? l.color : Color.cyan,
+                            Intensity = isPoint ? 6.0f : 8.0f,
+                            VolumetricIntensity = isPoint ? 1.5f : 4.0f
+                        };
+                    }
                     ApplyLightConfig(obj, PlacedLights[obj]);
                 }
             }
@@ -1617,6 +1703,37 @@ namespace DeadCoreEditor
                 if (bc == null) bc = obj.AddComponent<BoxCollider>();
                 bc.size = new Vector3(2.5f, 2.5f, 2.5f);
                 bc.isTrigger = true;
+            }
+            else if (isGravity)
+            {
+                // Ensure a trigger box collider exists on the root
+                BoxCollider bc = obj.GetComponent<BoxCollider>();
+                if (bc == null) bc = obj.AddComponent<BoxCollider>();
+                bc.isTrigger = true;
+                bc.enabled = true;
+
+                // Ensure GravityArea native script is ready
+                GravityArea ga = obj.GetComponentInChildren<GravityArea>(true);
+                if (ga != null)
+                {
+                    ga.enabled = true;
+                    ga.affectOthers = true;
+                    ga._changeGravity = true;
+                }
+
+                // Attach/synchronize config
+                if (!GravityAreaService.PlacedGravityConfigs.ContainsKey(obj))
+                {
+                    Vector3 defaultGrav = (ga != null && ga.gravity != Vector3.zero) ? ga.gravity : new Vector3(0f, 9.81f, 0f);
+                    GravityAreaService.PlacedGravityConfigs[obj] = new GravityConfig
+                    {
+                        GravityDirection = defaultGrav,
+                        AffectOthers = true,
+                        ChangeGravity = true,
+                        IsActive = true
+                    };
+                }
+                GravityAreaService.ApplyGravityConfig(obj, GravityAreaService.PlacedGravityConfigs[obj]);
             }
 
             if (asset.IsHelix) ApplyTurbineSpeed(obj, ActiveTurbineSpeed);
@@ -1767,6 +1884,13 @@ namespace DeadCoreEditor
                 identifiedType = PlacedObjectType.Checkpoint;
             }
 
+            else if (low.Contains("gravity") || obj.GetComponentInChildren<GravityArea>() != null || obj.GetComponentInChildren<GravityReceiver>() != null)
+            {
+                identifiedType = PlacedObjectType.GravityArea;
+                if (!GravityAreaService.PlacedGravityAreas.Contains(obj))
+                    GravityAreaService.PlacedGravityAreas.Add(obj);
+            }
+
             PlacedObjectTypes[obj] = identifiedType;
 
             if (obj.transform.parent != null)
@@ -1801,6 +1925,9 @@ namespace DeadCoreEditor
             ProceduralCableService.DestroyCableHandles(target);
             StructuralTrussService.PlacedTrusses.Remove(target);
             StructuralTrussService.DestroyTrussHandles(target);
+
+            GravityAreaService.PlacedGravityAreas.Remove(target);
+            GravityAreaService.PlacedGravityConfigs.Remove(target);
 
             if (PathEditTarget == target) PathEditTarget = null;
             if (ParentingChildTarget == target) ParentingChildTarget = null;
@@ -1899,6 +2026,9 @@ namespace DeadCoreEditor
             ProceduralCableService.PlacedCables.Clear();
             StructuralTrussService.DestroyAllTrussHandles();
             StructuralTrussService.PlacedTrusses.Clear();
+
+            GravityAreaService.PlacedGravityAreas.Clear();
+            GravityAreaService.PlacedGravityConfigs.Clear();
 
             ActiveCustomCheckpoint = null;
 
@@ -2225,7 +2355,8 @@ namespace DeadCoreEditor
 
             Light l = lightObj.GetComponentInChildren<Light>();
 
-            if (cfg.IsDirectional)
+            // 1. DIRECTIONAL SUNLIGHT
+            if (cfg.Kind == LightKind.Directional || cfg.IsDirectional)
             {
                 Light targetSun = (SceneHarvestingService.NativeSceneSun != null && SceneHarvestingService.NativeSceneSun.gameObject.activeInHierarchy)
                     ? SceneHarvestingService.NativeSceneSun
@@ -2249,6 +2380,28 @@ namespace DeadCoreEditor
                 if (l != null && targetSun != l) l.enabled = false;
                 StudioGizmoController.AttachSunVisualWidget(lightObj);
             }
+            // 2. 360° OMNI / POINT LIGHT
+            else if (cfg.Kind == LightKind.Point)
+            {
+                if (l != null)
+                {
+                    l.enabled = true;
+                    l.type = LightType.Point;
+                    l.renderMode = LightRenderMode.Auto;
+                    l.range = Mathf.Max(1f, cfg.Range);
+                    l.color = cfg.Color;
+
+                    // Point lights radiate across a full sphere (4π steradians)
+                    float lumens = Mathf.Pow(Mathf.Max(0.1f, cfg.Intensity), 2.0f) * 3500f;
+                    l.intensity = lumens;
+
+                    // Leave point shadows off by default (cubemap shadows are 6x heavier in HDRP)
+                    l.shadows = LightShadows.None;
+
+                    ApplyHDRPVolumetricSettings(l.gameObject, cfg.VolumetricIntensity, lumens, cfg.Color);
+                }
+            }
+            // 3. CONE SPOTLIGHT
             else
             {
                 if (l != null)
@@ -2256,7 +2409,7 @@ namespace DeadCoreEditor
                     l.enabled = true;
                     l.type = LightType.Spot;
                     l.renderMode = LightRenderMode.Auto;
-                    l.range = 150f;
+                    l.range = Mathf.Max(1f, cfg.Range > 0 ? cfg.Range : 150f);
                     l.spotAngle = Mathf.Clamp(cfg.SpotAngle, 5f, 150f);
                     l.color = cfg.Color;
 
@@ -2267,6 +2420,7 @@ namespace DeadCoreEditor
                 }
             }
 
+            // 4. FIXTURE MESH & EMISSIVE CASING TINTING
             Renderer[] rends = lightObj.GetComponentsInChildren<Renderer>(true);
             for (int i = 0; i < rends.Length; i++)
             {
@@ -2279,6 +2433,7 @@ namespace DeadCoreEditor
                 if (m.HasProperty("_VolumetricDimmer")) m.SetFloat("_VolumetricDimmer", volVal);
                 if (m.HasProperty("_Volumetric")) m.SetFloat("_Volumetric", volVal);
                 if (m.HasProperty("_Color")) m.SetColor("_Color", cfg.Color);
+                if (m.HasProperty("_BaseColor")) m.SetColor("_BaseColor", cfg.Color);
                 if (m.HasProperty("_EmissionColor"))
                 {
                     m.SetColor("_EmissionColor", cfg.Color * (cfg.Intensity * 0.75f));
@@ -2286,6 +2441,7 @@ namespace DeadCoreEditor
                 }
             }
         }
+
 
         private static readonly HashSet<string> _loggedShaderNames = new HashSet<string>();
         private static readonly HashSet<string> _loggedShaderDumps = new HashSet<string>();
@@ -2568,7 +2724,11 @@ namespace DeadCoreEditor
                 Light l = obj.GetComponentInChildren<Light>();
                 if (l != null)
                 {
-                    l.spotAngle = cfg.SpotAngle + 0.1f;
+                    if (cfg.Kind == LightKind.Spot)
+                        l.spotAngle = cfg.SpotAngle + 0.05f;
+                    else if (cfg.Kind == LightKind.Point)
+                        l.range = cfg.Range + 0.05f;
+
                     l.enabled = false;
                 }
                 ApplyLightConfig(obj, cfg);
@@ -2664,6 +2824,9 @@ namespace DeadCoreEditor
 
                 Transform lens = obj.transform.Find("Light_Lens");
                 if (lens != null) lens.gameObject.SetActive(visible);
+
+                Transform bulb = obj.transform.Find("Light_Bulb");
+                if (bulb != null) bulb.gameObject.SetActive(visible);
 
                 Transform sunWidget = obj.transform.Find("Sun_Editor_Widget");
                 if (sunWidget != null) sunWidget.gameObject.SetActive(visible);

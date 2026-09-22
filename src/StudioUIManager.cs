@@ -2673,25 +2673,6 @@ namespace DeadCoreEditor
                         EditorSessionManager.ApplyLightConfig(targets[t], lc);
                 });
 
-                if (!lc.IsDirectional)
-                {
-                    AddSliderRow(card.transform, "Spot Angle", 10f, 150f, lc.SpotAngle, "{0:F0}°", (v) =>
-                    {
-                        lc.SpotAngle = v;
-                        var targets = GetSelectionTargets(obj);
-                        for (int t = 0; t < targets.Count; t++)
-                            EditorSessionManager.ApplyLightConfig(targets[t], lc);
-                    });
-                }
-
-                AddSliderRow(card.transform, "Volumetric", 0f, 10f, lc.VolumetricIntensity, "{0:F1}", (v) =>
-                {
-                    lc.VolumetricIntensity = v;
-                    var targets = GetSelectionTargets(obj);
-                    for (int t = 0; t < targets.Count; t++)
-                        EditorSessionManager.ApplyLightConfig(targets[t], lc);
-                });
-
                 AddColorControl(card.transform, "Light Color", lc.Color, (newCol) =>
                 {
                     lc.Color = newCol;
@@ -2753,6 +2734,27 @@ namespace DeadCoreEditor
                         var targets = GetSelectionTargets(obj);
                         for (int t = 0; t < targets.Count; t++)
                             if (EditorSessionManager.PlacedLights.TryGetValue(targets[t], out var tlc)) tlc.SyncGroup = lc.SyncGroup;
+                    });
+                }
+
+                if (lc.Kind == LightKind.Point)
+                {
+                    AddSliderRow(card.transform, "Radius / Range", 3f, 80f, lc.Range, "{0:F0}m", (v) =>
+                    {
+                        lc.Range = v;
+                        var targets = GetSelectionTargets(obj);
+                        for (int t = 0; t < targets.Count; t++)
+                            EditorSessionManager.ApplyLightConfig(targets[t], lc);
+                    });
+                }
+                else if (lc.Kind == LightKind.Spot)
+                {
+                    AddSliderRow(card.transform, "Spot Angle", 10f, 150f, lc.SpotAngle, "{0:F0}°", (v) =>
+                    {
+                        lc.SpotAngle = v;
+                        var targets = GetSelectionTargets(obj);
+                        for (int t = 0; t < targets.Count; t++)
+                            EditorSessionManager.ApplyLightConfig(targets[t], lc);
                     });
                 }
 
@@ -2851,6 +2853,70 @@ namespace DeadCoreEditor
 
                 GameObject badgeRow = CreateRowContainerPrimitive(card.transform, "Row_GateBadge", 22f);
                 CreateTextPrimitive(badgeRow.transform, $"Role: [{role}]", Vector2.zero, Vector2.one, Vector2.zero, Vector2.zero, 10f, FontStyles.Bold, badgeCol, TextAlignmentOptions.MidlineLeft);
+
+                _activeInspectorCards.Add(card);
+            }
+
+            // GRAVITY AREA INSPECTOR CARD
+            if (data.Has<GravityConfig>() || type == PlacedObjectType.GravityArea || obj.GetComponentInChildren<GravityArea>() != null)
+            {
+                var card = CreateModularSection(_inspectorContent, "GravityArea", "Zero-G / Gravity Volume");
+                var gc = data.GetOrCreate<GravityConfig>();
+
+                GravityArea ga = obj.GetComponentInChildren<GravityArea>(true);
+                if (ga != null)
+                {
+                    gc.GravityDirection = ga.gravity;
+                    gc.AffectOthers = ga.affectOthers;
+                    gc.ChangeGravity = ga._changeGravity;
+                }
+
+                // Direction Presets (Up, Down, Left, Right)
+                GameObject presetRow = CreateRowContainerPrimitive(card.transform, "Row_GravPresets", 24f);
+                SetupRowHorizontalLayoutPrimitive(presetRow, 4f);
+
+                CreateButtonPrimitive(presetRow.transform, "Btn_GravUp", "Up (Invert)", 70f, () =>
+                {
+                    gc.GravityDirection = new Vector3(0f, 9.81f, 0f);
+                    var targets = GetSelectionTargets(obj);
+                    for (int t = 0; t < targets.Count; t++)
+                        GravityAreaService.ApplyGravityConfig(targets[t], gc);
+                    RebuildModularInspectorCards(obj);
+                }, new Color(0.18f, 0.45f, 0.85f));
+
+                CreateButtonPrimitive(presetRow.transform, "Btn_GravDown", "Down", 60f, () =>
+                {
+                    gc.GravityDirection = new Vector3(0f, -9.81f, 0f);
+                    var targets = GetSelectionTargets(obj);
+                    for (int t = 0; t < targets.Count; t++)
+                        GravityAreaService.ApplyGravityConfig(targets[t], gc);
+                    RebuildModularInspectorCards(obj);
+                }, new Color(0.2f, 0.25f, 0.35f));
+
+                CreateButtonPrimitive(presetRow.transform, "Btn_ZeroG", "Zero-G", 60f, () =>
+                {
+                    gc.GravityDirection = Vector3.zero;
+                    var targets = GetSelectionTargets(obj);
+                    for (int t = 0; t < targets.Count; t++)
+                        GravityAreaService.ApplyGravityConfig(targets[t], gc);
+                    RebuildModularInspectorCards(obj);
+                }, new Color(0.5f, 0.2f, 0.8f));
+
+                AddSliderRow(card.transform, "Gravity Y", -30f, 30f, gc.GravityDirection.y, "{0:F1} m/s²", (v) =>
+                {
+                    gc.GravityDirection = new Vector3(gc.GravityDirection.x, v, gc.GravityDirection.z);
+                    var targets = GetSelectionTargets(obj);
+                    for (int t = 0; t < targets.Count; t++)
+                        GravityAreaService.ApplyGravityConfig(targets[t], gc);
+                });
+
+                AddToggleRow(card.transform, "Affect Non-Player Objects", gc.AffectOthers, (st) =>
+                {
+                    gc.AffectOthers = st;
+                    var targets = GetSelectionTargets(obj);
+                    for (int t = 0; t < targets.Count; t++)
+                        GravityAreaService.ApplyGravityConfig(targets[t], gc);
+                });
 
                 _activeInspectorCards.Add(card);
             }

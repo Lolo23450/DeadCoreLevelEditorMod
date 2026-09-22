@@ -1238,6 +1238,37 @@ namespace DeadCoreEditor
                 switchAsset.ComputeSizeMetrics();
                 EditorSessionManager.AllAssets.Add(switchAsset);
             }
+
+            try
+            {
+                GravityArea nativeGravity = GameObject.FindObjectOfType<GravityArea>();
+                if (nativeGravity == null)
+                {
+                    GravityArea[] all = Resources.FindObjectsOfTypeAll<GravityArea>();
+                    if (all != null && all.Length > 0) nativeGravity = all[0];
+                }
+
+                if (nativeGravity != null)
+                {
+                    GravityAreaService.PrefabGravityArea = nativeGravity.gameObject;
+                }
+            }
+            catch { }
+
+            if (GravityAreaService.PrefabGravityArea != null)
+            {
+                var gravAsset = new CatalogAsset
+                {
+                    DisplayName = "Gravity Field Area",
+                    SourceTemplate = GravityAreaService.PrefabGravityArea,
+                    Category = AssetCategory.Gameplay,
+                    SubCategory = "Gameplay",
+                    Traits = AssetTrait.GravityArea,
+                    DefaultScale = 1.0f
+                };
+                gravAsset.ComputeSizeMetrics();
+                EditorSessionManager.AllAssets.Add(gravAsset);
+            }
         }
 
         private static void HarvestProceduralHazardsAndLights()
@@ -1308,6 +1339,43 @@ namespace DeadCoreEditor
                 sunOrb.GetComponent<Renderer>().material = sunMat;
             }
             sunTemplate.SetActive(false);
+
+            // --- OMNI POINT LIGHT TEMPLATE ---
+            GameObject pointTemplate = new GameObject("Template_PointLight");
+            Light pLight = pointTemplate.AddComponent<Light>();
+            pLight.type = LightType.Point;
+            pLight.range = 25f;
+            pLight.color = Color.cyan;
+            pLight.intensity = 5000f;
+
+            // Create a glowing frosted sphere bulb instead of the cylinder cone housing
+            GameObject bulb = GameObject.CreatePrimitive(PrimitiveType.Sphere);
+            bulb.name = "Light_Housing";
+            bulb.transform.SetParent(pointTemplate.transform, false);
+            bulb.transform.localScale = Vector3.one * 0.5f;
+
+            Collider bCol = bulb.GetComponent<Collider>();
+            if (bCol != null) GameObject.DestroyImmediate(bCol);
+
+            if (EditorSessionManager.CachedSceneMaterial != null)
+            {
+                bulb.GetComponent<Renderer>().material = EditorSessionManager.CachedSceneMaterial;
+            }
+
+            pointTemplate.SetActive(false);
+
+            var pointAsset = new CatalogAsset
+            {
+                DisplayName = "Omni Light Bulb",
+                SourceTemplate = pointTemplate,
+                FilterMesh = bulb.GetComponent<MeshFilter>()?.sharedMesh,
+                Category = AssetCategory.Gameplay,
+                SubCategory = "Lighting",
+                Traits = AssetTrait.Spotlight,
+                DefaultScale = 1.0f
+            };
+            pointAsset.ComputeSizeMetrics();
+            EditorSessionManager.AllAssets.Add(pointAsset);
 
             var sunAsset = new CatalogAsset
             {
