@@ -2022,7 +2022,9 @@ namespace DeadCoreEditor
             EditorEntityData data = EditorSessionManager.ExtractEntityData(obj);
             EditorSessionManager.PlacedObjectTypes.TryGetValue(obj, out PlacedObjectType type);
 
-            // JUMPER
+            // =========================================================================
+            // 1. JUMPER LAUNCH PAD
+            // =========================================================================
             if (data.Has<JumperConfig>() || type == PlacedObjectType.Jumper)
             {
                 var card = CreateModularSection(_inspectorContent, "Jumper", "Jumper Launch Pad");
@@ -2044,7 +2046,9 @@ namespace DeadCoreEditor
                 _activeInspectorCards.Add(card);
             }
 
-            // TURBINE
+            // =========================================================================
+            // 2. TURBINE / HELIX FAN
+            // =========================================================================
             if (data.Has<TurbineConfig>() || type == PlacedObjectType.Turbine)
             {
                 var card = CreateModularSection(_inspectorContent, "Turbine", "Helix Turbine Fan");
@@ -2059,7 +2063,9 @@ namespace DeadCoreEditor
                 _activeInspectorCards.Add(card);
             }
 
-            // TURRET
+            // =========================================================================
+            // 3. DEFENSE TURRET
+            // =========================================================================
             if (data.Has<TurretConfig>() || type == PlacedObjectType.Turret)
             {
                 var card = CreateModularSection(_inspectorContent, "Turret", "Defense Turret");
@@ -2081,7 +2087,9 @@ namespace DeadCoreEditor
                 _activeInspectorCards.Add(card);
             }
 
-            // LASER
+            // =========================================================================
+            // 4. LASER HAZARD
+            // =========================================================================
             if (data.Has<LaserConfig>() || type == PlacedObjectType.RotatingLaser || type == PlacedObjectType.Laser)
             {
                 var card = CreateModularSection(_inspectorContent, "Laser", "Laser Barrier Hazard");
@@ -2096,7 +2104,9 @@ namespace DeadCoreEditor
                 _activeInspectorCards.Add(card);
             }
 
-            // LIGHTING
+            // =========================================================================
+            // 5. LIGHTING & VOLUMETRICS
+            // =========================================================================
             if (data.Has<LightConfig>() || EditorSessionManager.PlacedLights.ContainsKey(obj))
             {
                 var card = CreateModularSection(_inspectorContent, "Lighting", "Light & Volumetrics");
@@ -2194,7 +2204,9 @@ namespace DeadCoreEditor
                 _activeInspectorCards.Add(card);
             }
 
-            // SWITCH TARGET
+            // =========================================================================
+            // 6. SWITCH TARGET
+            // =========================================================================
             if (data.Has<SwitchConfig>() || SwitchService.PlacedSwitches.ContainsKey(obj))
             {
                 var card = CreateModularSection(_inspectorContent, "Switch", "Switch Target");
@@ -2232,7 +2244,9 @@ namespace DeadCoreEditor
                 _activeInspectorCards.Add(card);
             }
 
-            // SKYBOX
+            // =========================================================================
+            // 7. CELESTIAL SKYBOX & ATMOSPHERE
+            // =========================================================================
             bool isSkybox = data.Has<SkyboxConfig>() || type == PlacedObjectType.SkyboxController || (obj.name != null && obj.name.ToLower().Contains("skybox"));
             if (isSkybox)
             {
@@ -2268,7 +2282,9 @@ namespace DeadCoreEditor
                 _activeInspectorCards.Add(card);
             }
 
-            // GATE
+            // =========================================================================
+            // 8. GATE & CHECKPOINT SETTINGS
+            // =========================================================================
             bool isGate = data.Has<GateConfig>() || type == PlacedObjectType.Checkpoint || type == PlacedObjectType.SpawnGate || type == PlacedObjectType.GoalGate;
             if (isGate)
             {
@@ -2284,7 +2300,9 @@ namespace DeadCoreEditor
                 _activeInspectorCards.Add(card);
             }
 
-            // GRAVITY AREA
+            // =========================================================================
+            // 9. ZERO-G / GRAVITY VOLUME
+            // =========================================================================
             if (data.Has<GravityConfig>() || type == PlacedObjectType.GravityArea || obj.GetComponentInChildren<GravityArea>() != null)
             {
                 var card = CreateModularSection(_inspectorContent, "GravityArea", "Zero-G / Gravity Volume");
@@ -2427,7 +2445,9 @@ namespace DeadCoreEditor
                 _activeInspectorCards.Add(card);
             }
 
-            // MOTION PATH
+            // =========================================================================
+            // 10. KINEMATIC MOTION PATH
+            // =========================================================================
             GameObject pathOwner = obj;
             if (EditorSessionManager.IsWaypointMarker(obj, out GameObject resolvedOwner, out _)) pathOwner = resolvedOwner;
 
@@ -2510,7 +2530,9 @@ namespace DeadCoreEditor
                 _activeInspectorCards.Add(card);
             }
 
-            // NEON
+            // =========================================================================
+            // 11. NEON & EMISSIVE ACCENTS
+            // =========================================================================
             Renderer[] rends = obj.GetComponentsInChildren<Renderer>(true);
             bool hasMeshes = rends != null && rends.Length > 0 &&
                              type != PlacedObjectType.Spotlight &&
@@ -2582,10 +2604,12 @@ namespace DeadCoreEditor
                 _activeInspectorCards.Add(card);
             }
 
-            // CABLE
+            // =========================================================================
+            // 12. PROCEDURAL WIRE & CABLE (FULL FEATURED)
+            // =========================================================================
             GameObject cableTarget = obj;
-            if (ProceduralCableService.IsCableHandle(obj, out GameObject cOwner, out _))
-                cableTarget = cOwner;
+            bool isCableHandle = ProceduralCableService.IsCableHandle(obj, out GameObject cOwner, out bool isCableEndB);
+            if (isCableHandle) cableTarget = cOwner;
 
             if (cableTarget != null && (data.Has<CableConfig>() || ProceduralCableService.PlacedCables.ContainsKey(cableTarget)))
             {
@@ -2594,7 +2618,15 @@ namespace DeadCoreEditor
                 if (ProceduralCableService.PlacedCables.TryGetValue(cableTarget, out var existingCc))
                     cc = existingCc;
 
-                AddSliderRow(card.transform, "Thickness (m)", 0.02f, 0.8f, cc.Radius, "{0:F3}m", (v) =>
+                if (isCableHandle)
+                {
+                    CreateTextPrimitive(card.transform, $"Active Joint: [Point {(isCableEndB ? "B" : "A")}]",
+                        Vector2.zero, Vector2.one, Vector2.zero, Vector2.zero, 10f, FontStyles.Bold,
+                        isCableEndB ? new Color(1f, 0.5f, 0.1f) : new Color(0.2f, 1f, 0.4f), TextAlignmentOptions.MidlineLeft);
+                }
+
+                // Cable Geometry & Hanging Sag
+                AddSliderRow(card.transform, "Thickness (m)", 0.015f, 0.6f, cc.Radius, "{0:F3}m", (v) =>
                 {
                     cc.Radius = v;
                     ProceduralCableService.ApplyCableConfig(cableTarget, cc);
@@ -2605,13 +2637,72 @@ namespace DeadCoreEditor
                     ProceduralCableService.ApplyCableConfig(cableTarget, cc);
                 });
 
+                // Style & Bundling Selectors
+                GameObject styleRow = CreateRowContainerPrimitive(card.transform, "Row_CableStyle", 24f);
+                SetupRowHorizontalLayoutPrimitive(styleRow, 4f);
+                CreateButtonPrimitive(styleRow.transform, "Btn_CableStyle", $"Style: [{cc.Style}]", 140f, () =>
+                {
+                    cc.Style = (CableStyle)(((int)cc.Style + 1) % 3);
+                    ProceduralCableService.ApplyCableConfig(cableTarget, cc);
+                    RebuildModularInspectorCards(obj);
+                }, new Color(0.18f, 0.28f, 0.40f));
+
+                CreateButtonPrimitive(styleRow.transform, "Btn_CableBundle", $"Bundle: [{cc.Bundle}]", 110f, () =>
+                {
+                    cc.Bundle = (CableBundleType)(((int)cc.Bundle + 1) % 3);
+                    ProceduralCableService.ApplyCableConfig(cableTarget, cc);
+                    RebuildModularInspectorCards(obj);
+                }, new Color(0.16f, 0.22f, 0.32f));
+
+                // Neon Colors & Glowing UV Energy Stream
+                if (cc.Style != CableStyle.IndustrialSolid)
+                {
+                    AddColorControl(card.transform, "Conduit Neon Glow", cc.NeonColor, (newCol) =>
+                    {
+                        cc.NeonColor = newCol;
+                        ProceduralCableService.ApplyCableConfig(cableTarget, cc);
+                    });
+
+                    AddSliderRow(card.transform, "Glow Intensity", 0.5f, 8.0f, cc.GlowIntensity, "{0:F1}x", (v) =>
+                    {
+                        cc.GlowIntensity = v;
+                        ProceduralCableService.ApplyCableConfig(cableTarget, cc);
+                    });
+
+                    AddSliderRow(card.transform, "Energy Flow Spd", -10.0f, 10.0f, cc.EnergyFlowSpeed, "{0:F1} m/s", (v) =>
+                    {
+                        cc.EnergyFlowSpeed = v;
+                    });
+                }
+
+                // Mounting Collars Toggle
+                AddToggleRow(card.transform, "Mounting Collar Sockets", cc.HasMountSockets, (st) =>
+                {
+                    cc.HasMountSockets = st;
+                    ProceduralCableService.ApplyCableConfig(cableTarget, cc);
+                });
+
+                // Joint Surface Snap Buttons
+                GameObject snapRow = CreateRowContainerPrimitive(card.transform, "Row_CableSnaps", 26f);
+                SetupRowHorizontalLayoutPrimitive(snapRow, 6f);
+                CreateButtonPrimitive(snapRow.transform, "Btn_SnapA", "Snap Joint A to Surface", 125f, () =>
+                {
+                    ProceduralCableService.SnapHandleToSurface(cableTarget, false);
+                }, new Color(0.2f, 0.55f, 0.35f));
+                CreateButtonPrimitive(snapRow.transform, "Btn_SnapB", "Snap Joint B to Surface", 125f, () =>
+                {
+                    ProceduralCableService.SnapHandleToSurface(cableTarget, true);
+                }, new Color(0.55f, 0.35f, 0.15f));
+
                 _activeInspectorCards.Add(card);
             }
 
-            // TRUSS
+            // =========================================================================
+            // 13. STRUCTURAL SPACE-TRUSS GIRDER (FULL FEATURED)
+            // =========================================================================
             GameObject trussTarget = obj;
-            if (StructuralTrussService.IsTrussHandle(obj, out GameObject tOwner, out _))
-                trussTarget = tOwner;
+            bool isTrussHandle = StructuralTrussService.IsTrussHandle(obj, out GameObject tOwner, out bool isTrussEndB);
+            if (isTrussHandle) trussTarget = tOwner;
 
             if (trussTarget != null && (data.Has<TrussConfig>() || StructuralTrussService.PlacedTrusses.ContainsKey(trussTarget)))
             {
@@ -2620,16 +2711,67 @@ namespace DeadCoreEditor
                 if (StructuralTrussService.PlacedTrusses.TryGetValue(trussTarget, out var existingTc))
                     tc = existingTc;
 
-                AddSliderRow(card.transform, "Width (m)", 0.3f, 4.0f, tc.Width, "{0:F2}m", (v) =>
+                if (isTrussHandle)
+                {
+                    CreateTextPrimitive(card.transform, $"Active Joint: [Joint {(isTrussEndB ? "B" : "A")}]",
+                        Vector2.zero, Vector2.one, Vector2.zero, Vector2.zero, 10f, FontStyles.Bold,
+                        isTrussEndB ? new Color(1f, 0.5f, 0.1f) : new Color(0.2f, 1f, 0.4f), TextAlignmentOptions.MidlineLeft);
+                }
+
+                // Geometric Spans & Strut Sizing
+                AddSliderRow(card.transform, "Girder Width (m)", 0.25f, 4.0f, tc.Width, "{0:F2}m", (v) =>
                 {
                     tc.Width = v;
                     StructuralTrussService.ApplyTrussConfig(trussTarget, tc);
                 });
-                AddSliderRow(card.transform, "Bay Length (m)", 0.4f, 5.0f, tc.BayLength, "{0:F2}m", (v) =>
+                AddSliderRow(card.transform, "Bay Interval (m)", 0.35f, 5.0f, tc.BayLength, "{0:F2}m", (v) =>
                 {
                     tc.BayLength = v;
                     StructuralTrussService.ApplyTrussConfig(trussTarget, tc);
                 });
+                AddSliderRow(card.transform, "Strut Thickness", 0.015f, 0.25f, tc.StrutThickness, "{0:F3}m", (v) =>
+                {
+                    tc.StrutThickness = v;
+                    StructuralTrussService.ApplyTrussConfig(trussTarget, tc);
+                });
+
+                // Style Selector (Industrial / Neon Lacing / Hazard)
+                GameObject trussStyleRow = CreateRowContainerPrimitive(card.transform, "Row_TrussStyle", 24f);
+                SetupRowHorizontalLayoutPrimitive(trussStyleRow, 4f);
+                CreateButtonPrimitive(trussStyleRow.transform, "Btn_TrussStyle", $"Style: [{tc.Style}]", 240f, () =>
+                {
+                    tc.Style = (TrussStyle)(((int)tc.Style + 1) % 3);
+                    StructuralTrussService.ApplyTrussConfig(trussTarget, tc);
+                    RebuildModularInspectorCards(obj);
+                }, new Color(0.18f, 0.28f, 0.40f));
+
+                // Neon Triangle Lacing Accents
+                if (tc.Style == TrussStyle.NeonLaced)
+                {
+                    AddColorControl(card.transform, "Truss Lacing Glow", tc.AccentColor, (newCol) =>
+                    {
+                        tc.AccentColor = newCol;
+                        StructuralTrussService.ApplyTrussConfig(trussTarget, tc);
+                    });
+
+                    AddSliderRow(card.transform, "Lacing Glow Power", 0.5f, 8.0f, tc.GlowIntensity, "{0:F1}x", (v) =>
+                    {
+                        tc.GlowIntensity = v;
+                        StructuralTrussService.ApplyTrussConfig(trussTarget, tc);
+                    });
+                }
+
+                // Joint Surface Anchor Buttons
+                GameObject snapTrussRow = CreateRowContainerPrimitive(card.transform, "Row_TrussSnaps", 26f);
+                SetupRowHorizontalLayoutPrimitive(snapTrussRow, 6f);
+                CreateButtonPrimitive(snapTrussRow.transform, "Btn_SnapTrussA", "Anchor Joint A to Surface", 130f, () =>
+                {
+                    StructuralTrussService.SnapHandleToSurface(trussTarget, false);
+                }, new Color(0.2f, 0.55f, 0.35f));
+                CreateButtonPrimitive(snapTrussRow.transform, "Btn_SnapTrussB", "Anchor Joint B to Surface", 130f, () =>
+                {
+                    StructuralTrussService.SnapHandleToSurface(trussTarget, true);
+                }, new Color(0.55f, 0.35f, 0.15f));
 
                 _activeInspectorCards.Add(card);
             }
