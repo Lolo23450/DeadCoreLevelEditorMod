@@ -40,7 +40,8 @@ namespace DeadCoreEditor
         Skybox = 1 << 10,
         Switch = 1 << 11,
         Architecture = 1 << 12,
-        GravityArea = 1 << 13
+        GravityArea = 1 << 13,
+        AudioController = 1 << 14
     }
 
     public enum PlacedObjectType
@@ -58,7 +59,8 @@ namespace DeadCoreEditor
         Checkpoint,
         SkyboxController,
         Switch,
-        GravityArea
+        GravityArea,
+        AudioController
     }
 
     public enum EditorGizmoMode { Select = 0, Translate = 1, Rotate = 2, Scale = 3 }
@@ -162,10 +164,17 @@ namespace DeadCoreEditor
         public string ComponentTag => "JUMPER";
         public float Force = 25.0f;
         public bool IsActive = true;
+        public float ReactivateDelay = 4.0f;
 
-        public IEditorComponent Clone() => new JumperConfig { Force = this.Force, IsActive = this.IsActive };
+        public IEditorComponent Clone() => new JumperConfig
+        {
+            Force = this.Force,
+            IsActive = this.IsActive,
+            ReactivateDelay = this.ReactivateDelay
+        };
 
-        public string Serialize() => $"{Force.ToString("F2", CultureInfo.InvariantCulture)}:{(IsActive ? 1 : 0)}";
+        public string Serialize() =>
+            $"{Force.ToString("F2", CultureInfo.InvariantCulture)}:{(IsActive ? 1 : 0)}:{ReactivateDelay.ToString("F2", CultureInfo.InvariantCulture)}";
 
         public void Deserialize(string rawData)
         {
@@ -175,6 +184,8 @@ namespace DeadCoreEditor
                 Force = f;
             if (parts.Length >= 2)
                 IsActive = parts[1] == "1";
+            if (parts.Length >= 3 && float.TryParse(parts[2], NumberStyles.Float, CultureInfo.InvariantCulture, out float d))
+                ReactivateDelay = Mathf.Max(0.1f, d);
         }
     }
 
@@ -491,6 +502,61 @@ namespace DeadCoreEditor
         }
     }
 
+    public class AudioConfig : IEditorComponent
+    {
+        public string ComponentTag => "AUDIO";
+
+        public string MusicTrackName = "";
+        public float MusicVolume = 0.85f;
+        public float MusicPitch = 1.0f;
+        public bool Loop = true;
+        public bool PlayInEditMode = false;
+        public string AmbientTrackName = "";
+        public float AmbientVolume = 0.50f;
+
+        public AudioConfig Clone()
+        {
+            return new AudioConfig
+            {
+                MusicTrackName = this.MusicTrackName,
+                MusicVolume = this.MusicVolume,
+                MusicPitch = this.MusicPitch,
+                Loop = this.Loop,
+                PlayInEditMode = this.PlayInEditMode,
+                AmbientTrackName = this.AmbientTrackName,
+                AmbientVolume = this.AmbientVolume
+            };
+        }
+
+        IEditorComponent IEditorComponent.Clone() => Clone();
+
+        public string Serialize()
+        {
+            var inv = CultureInfo.InvariantCulture;
+            // Escape ':' to '%3A' so FMOD 'event:/...' paths don't break string splitting
+            string safeMusic = (MusicTrackName ?? "").Replace(":", "%3A");
+            string safeAmb = (AmbientTrackName ?? "").Replace(":", "%3A");
+
+            return $"{safeMusic}:{MusicVolume.ToString("F2", inv)}:{MusicPitch.ToString("F2", inv)}:" +
+                   $"{(Loop ? 1 : 0)}:{(PlayInEditMode ? 1 : 0)}:{safeAmb}:{AmbientVolume.ToString("F2", inv)}";
+        }
+
+        public void Deserialize(string rawData)
+        {
+            if (string.IsNullOrWhiteSpace(rawData)) return;
+            string[] p = rawData.Split(':');
+            var inv = CultureInfo.InvariantCulture;
+
+            if (p.Length >= 1) MusicTrackName = p[0].Replace("%3A", ":");
+            if (p.Length >= 2) MusicVolume = PersistenceUtility.ParseFloat(p[1], 0.85f);
+            if (p.Length >= 3) MusicPitch = PersistenceUtility.ParseFloat(p[2], 1.0f);
+            if (p.Length >= 4) Loop = p[3] == "1";
+            if (p.Length >= 5) PlayInEditMode = p[4] == "1";
+            if (p.Length >= 6) AmbientTrackName = p[5].Replace("%3A", ":");
+            if (p.Length >= 7) AmbientVolume = PersistenceUtility.ParseFloat(p[6], 0.50f);
+        }
+    }
+
     public class SwitchConfig : IEditorComponent
     {
         public string ComponentTag => "SWITCH";
@@ -742,8 +808,8 @@ namespace DeadCoreEditor
         public bool IsRotatingLaser { get => (Traits & AssetTrait.RotatingLaser) != 0; set => SetTrait(AssetTrait.RotatingLaser, value); }
         public bool IsSkybox { get => (Traits & AssetTrait.Skybox) != 0; set => SetTrait(AssetTrait.Skybox, value); }
         public bool IsSwitch { get => (Traits & AssetTrait.Switch) != 0; set => SetTrait(AssetTrait.Switch, value); }
-
         public bool IsGravityArea { get => (Traits & AssetTrait.GravityArea) != 0; set => SetTrait(AssetTrait.GravityArea, value); }
+        public bool IsAudioController { get => (Traits & AssetTrait.AudioController) != 0; set => SetTrait(AssetTrait.AudioController, value); }
 
         public void SetTrait(AssetTrait trait, bool enable)
         {

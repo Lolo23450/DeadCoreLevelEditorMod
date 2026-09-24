@@ -60,6 +60,7 @@ namespace DeadCoreEditor
 
         // Contextual Entity Tuning Defaults
         public static float ActiveJumperForce = 25.0f;
+        public static float ActiveJumperReactivateDelay = 4.0f;
         public static float ActiveTurbineSpeed = 35.0f;
         public static float ActiveTurretFireDelay = 1.0f;
         public static float ActiveLaserRotationSpeed = 45.0f;
@@ -95,11 +96,12 @@ namespace DeadCoreEditor
 
         // Synchronized Component Dictionaries
         public static Dictionary<GameObject, float> JumperForces = new Dictionary<GameObject, float>();
+        public static Dictionary<GameObject, float> JumperReactivateDelays = new Dictionary<GameObject, float>();
+        public static Dictionary<GameObject, bool> JumperActiveStates = new Dictionary<GameObject, bool>();
         public static Dictionary<GameObject, float> TurbineSpeeds = new Dictionary<GameObject, float>();
         public static Dictionary<GameObject, float> TurretFireDelays = new Dictionary<GameObject, float>();
         public static Dictionary<GameObject, float> LaserRotationSpeeds = new Dictionary<GameObject, float>();
         public static Dictionary<GameObject, LightConfig> PlacedLights = new Dictionary<GameObject, LightConfig>();
-        public static Dictionary<GameObject, bool> JumperActiveStates = new Dictionary<GameObject, bool>();
         public static Dictionary<GameObject, NeonConfig> PlacedNeonConfigs = new Dictionary<GameObject, NeonConfig>();
 
         // History Undo/Redo Stacks
@@ -164,6 +166,7 @@ namespace DeadCoreEditor
                 var jc = data.GetOrCreate<JumperConfig>();
                 jc.Force = jf;
                 if (JumperActiveStates.TryGetValue(obj, out bool ja)) jc.IsActive = ja;
+                if (JumperReactivateDelays.TryGetValue(obj, out float jd)) jc.ReactivateDelay = jd;
             }
 
             if (TurbineSpeeds.TryGetValue(obj, out float ts))
@@ -246,7 +249,10 @@ namespace DeadCoreEditor
                     }
                 }
             }
-
+            if (MapAudioService.PlacedAudioConfigs.TryGetValue(obj, out var audioCfg))
+            {
+                data.Set(audioCfg.Clone());
+            }
             if (PlacedObjectTypes.TryGetValue(obj, out var pType))
             {
                 if (pType == PlacedObjectType.SpawnGate || pType == PlacedObjectType.GoalGate || pType == PlacedObjectType.Checkpoint)
@@ -297,6 +303,7 @@ namespace DeadCoreEditor
             if (data.TryGetComponent<JumperConfig>(out var jc))
             {
                 ApplyJumperForce(obj, jc.Force);
+                ApplyJumperReactivateDelay(obj, jc.ReactivateDelay);
                 ApplyJumperActive(obj, jc.IsActive);
             }
 
@@ -384,6 +391,11 @@ namespace DeadCoreEditor
                     PlacedObjectTypes[obj] = PlacedObjectType.Checkpoint;
                     if (cp != null && gateCfg.CheckpointId != 0) cp._id = gateCfg.CheckpointId;
                 }
+            }
+            if (data.TryGetComponent<AudioConfig>(out var audioCfg))
+            {
+                PlacedObjectTypes[obj] = PlacedObjectType.AudioController;
+                MapAudioService.ApplyAudioConfig(obj, audioCfg);
             }
         }
 
@@ -965,7 +977,7 @@ namespace DeadCoreEditor
 
             verts.Add(center + new Vector3(-bh.x, -bh.y, -bh.z));
             verts.Add(center + new Vector3(bh.x, -bh.y, -bh.z));
-            verts.Add(center + new Vector3(bh.x, bh.y, -bh.z));
+            verts.Add(center + new Vector3(bh.x, -bh.y, -bh.z));
             verts.Add(center + new Vector3(-bh.x, bh.y, -bh.z));
             verts.Add(center + new Vector3(-bh.x, -bh.y, -bh.z));
             verts.Add(center + new Vector3(bh.x, -bh.y, -bh.z));
@@ -1015,11 +1027,13 @@ namespace DeadCoreEditor
             SetSimulationActive(!IsEditModeActive);
             SetSnappingProxiesActive(IsEditModeActive ? EditorConfigService.Config.SnappingProxiesVisible : false);
             SetJumperSimulationActive(!IsEditModeActive);
+            MapAudioService.RefreshPlaybackForActiveMode();
 
             if (IsEditModeActive)
             {
                 RestorePlaytestSnapshots();
                 SwitchService.ResetAllSwitchesForPlaytest(enteringPlaytest: false);
+                ForceRefreshAllJumpers();
 
                 if (player != null)
                 {
@@ -1047,7 +1061,6 @@ namespace DeadCoreEditor
             }
             else
             {
-                // CRASH PREVENTION: Auto-save backup before entering playtest!
                 if (EditorConfigService.Config.AutoSaveOnPlaytest)
                 {
                     StudioUIManager.PerformAutoSaveBackup();
@@ -1056,6 +1069,7 @@ namespace DeadCoreEditor
                 CapturePlaytestSnapshots();
                 SwitchService.ResetAllSwitchesForPlaytest(enteringPlaytest: true);
                 ForceRefreshAllTurbines();
+                ForceRefreshAllJumpers();
 
                 IsLevelCompleted = false;
 
@@ -1122,28 +1136,43 @@ namespace DeadCoreEditor
                 GameObject obj = PlacedJumpers[i];
                 if (obj == null) continue;
 
-                bool isPadEnabled = true;
-                if (JumperActiveStates.TryGetValue(obj, out bool padState)) isPadEnabled = padState;
-
-                bool shouldBeActive = active && isPadEnabled;
-
-                Jumper[] jumpers = obj.GetComponentsInChildren<Jumper>(true);
-                for (int j = 0; j < jumpers.Length; j++)
+                bool shouldBeActive = active;
+                if (active && JumperActiveStates.TryGetValue(obj, out bool desiredState))
                 {
-                    if (jumpers[j] != null)
-                    {
-                        jumpers[j].enabled = shouldBeActive;
-                        if (jumpers[j].Fx != null) jumpers[j].Fx.SetActive(shouldBeActive);
-                    }
+                    shouldBeActive = desiredState;
                 }
 
-                Collider[] cols = obj.GetComponentsInChildren<Collider>(true);
-                for (int c = 0; c < cols.Length; c++)
+                ApplyJumperActive(obj, shouldBeActive);
+            }
+        }
+
+        public static void ApplyJumperReactivateDelay(GameObject jumperObj, float delay)
+        {
+            if (jumperObj == null) return;
+            delay = Mathf.Max(0.1f, delay);
+            JumperReactivateDelays[jumperObj] = delay;
+
+            if (EntityRegistry.TryGetValue(jumperObj, out var data))
+            {
+                var jc = data.GetOrCreate<JumperConfig>();
+                jc.ReactivateDelay = delay;
+            }
+
+            Jumper[] jumpers = jumperObj.GetComponentsInChildren<Jumper>(true);
+            for (int i = 0; i < jumpers.Length; i++)
+            {
+                Jumper j = jumpers[i];
+                if (j == null) continue;
+
+                // DeadCore's native Jumper field controlling cooldown before reactivation
+                j.switchDuration = delay;
+
+                // Also keep any child Interuptor synced to this exact duration
+                if (j._interuptor != null)
                 {
-                    if (cols[c] != null && cols[c].isTrigger && cols[c].gameObject.name != "Editor_Snapping_Proxy")
-                    {
-                        cols[c].enabled = shouldBeActive;
-                    }
+                    j._interuptor.IsAutoSwitch = true;
+                    j._interuptor.TimeBeforeSwitch = delay;
+                    j._interuptor._warningTime = Mathf.Min(1.5f, delay * 0.3f);
                 }
             }
         }
@@ -1153,23 +1182,67 @@ namespace DeadCoreEditor
             if (jumperObj == null) return;
             JumperActiveStates[jumperObj] = active;
 
-            bool effectiveActive = active && !IsEditModeActive;
+            float delay = 4.0f;
+            if (JumperReactivateDelays.TryGetValue(jumperObj, out float d)) delay = d;
+            else if (EntityRegistry.TryGetValue(jumperObj, out var ent) && ent.TryGetComponent<JumperConfig>(out var jcfg)) delay = jcfg.ReactivateDelay;
 
             Jumper[] jumpers = jumperObj.GetComponentsInChildren<Jumper>(true);
             foreach (var jc in jumpers)
             {
                 if (jc == null) continue;
-                jc.enabled = effectiveActive;
-                if (jc.Fx != null) jc.Fx.SetActive(effectiveActive);
-            }
 
-            Collider[] cols = jumperObj.GetComponentsInChildren<Collider>(true);
-            foreach (var col in cols)
-            {
-                if (col != null && col.isTrigger && col.gameObject.name != "Editor_Snapping_Proxy")
+                jc.switchDuration = Mathf.Max(0.1f, delay);
+                jc.enabled = active;
+                if (jc.Fx != null) jc.Fx.SetActive(active);
+
+                if (jc._interuptor != null)
                 {
-                    col.enabled = effectiveActive;
+                    jc._interuptor.TimeBeforeSwitch = Mathf.Max(0.1f, delay);
+                    jc._interuptor._warningTime = Mathf.Min(1.5f, delay * 0.3f);
+                    jc._interuptor.IsAutoSwitch = true;
                 }
+
+                if (!IsEditModeActive)
+                {
+                    if (active)
+                    {
+                        try { jc.SwitchOn(); } catch { }
+                    }
+                    else
+                    {
+                        try { jc.SwitchOff(); } catch { }
+                    }
+                }
+            }
+        }
+
+        public static void ForceRefreshAllJumpers()
+        {
+            if (PlacedJumpers == null || PlacedJumpers.Count == 0) return;
+
+            for (int i = 0; i < PlacedJumpers.Count; i++)
+            {
+                GameObject obj = PlacedJumpers[i];
+                if (obj == null || !obj.activeInHierarchy) continue;
+
+                float force = ActiveJumperForce;
+                float delay = ActiveJumperReactivateDelay;
+                bool active = true;
+
+                if (JumperForces.TryGetValue(obj, out float f)) force = f;
+                if (JumperReactivateDelays.TryGetValue(obj, out float d)) delay = d;
+                if (JumperActiveStates.TryGetValue(obj, out bool a)) active = a;
+
+                if (EntityRegistry.TryGetValue(obj, out var data) && data.TryGetComponent<JumperConfig>(out var jc))
+                {
+                    force = jc.Force;
+                    delay = jc.ReactivateDelay;
+                    active = jc.IsActive;
+                }
+
+                ApplyJumperForce(obj, force);
+                ApplyJumperReactivateDelay(obj, delay);
+                ApplyJumperActive(obj, active);
             }
         }
 
@@ -1207,6 +1280,9 @@ namespace DeadCoreEditor
 
             SceneHarvestingService.CleanupProceduralResources();
             SkyboxControllerService.ResetToSceneDefault();
+            MapAudioService.StopLevelAudio();
+            MapAudioService.StopPreview();
+            MapAudioService.PlacedAudioConfigs.Clear();
 
             DestroyAllWaypointVisuals();
 
@@ -1234,6 +1310,7 @@ namespace DeadCoreEditor
             TargetRoll = 0f;
 
             ActiveJumperForce = 25.0f;
+            ActiveJumperReactivateDelay = 4.0f;
             ActiveTurbineSpeed = 35.0f;
             ActiveTurretFireDelay = 1.0f;
             ActivePlacementScale = 1.0f;
@@ -1252,6 +1329,7 @@ namespace DeadCoreEditor
                 if (_lightRefreshTimer <= 0f)
                 {
                     ForceRefreshAllTurbines();
+                    ForceRefreshAllJumpers();
                     ForceRefreshAllLights();
                 }
             }
@@ -1301,10 +1379,7 @@ namespace DeadCoreEditor
                     if (Input.GetMouseButtonDown(0) && !Input.GetMouseButton(1) && !StudioUIManager.IsPointerOverUI())
                     {
                         if (!StudioGizmoController.IsHoveringHandle)
-                        {
-                            GameObject aimed = GetAimedPlacedObject();
-                            SelectObject(aimed, isAdditive: isCtrl);
-                        }
+                            SelectObject(GetAimedPlacedObject(), isAdditive: isCtrl);
                     }
                 }
             }
@@ -1688,7 +1763,12 @@ namespace DeadCoreEditor
 
             if (asset.IsHelix) ApplyTurbineSpeed(obj, ActiveTurbineSpeed);
             if (asset.IsTurret) ApplyTurretSettings(obj, ActiveTurretFireDelay, 1500f);
-            if (asset.IsJumper) ApplyJumperForce(obj, ActiveJumperForce);
+            if (asset.IsJumper)
+            {
+                ApplyJumperForce(obj, ActiveJumperForce);
+                ApplyJumperReactivateDelay(obj, ActiveJumperReactivateDelay);
+                ApplyJumperActive(obj, true);
+            }
             if (asset.IsSwitch) SwitchService.ApplySwitchConfig(obj, new SwitchConfig());
 
             obj.SetActive(true);
@@ -1885,6 +1965,10 @@ namespace DeadCoreEditor
             if (SelectedObject == target) SelectedObject = SelectedObjects.Count > 0 ? SelectedObjects[SelectedObjects.Count - 1] : null;
 
             PlacedJumpers.Remove(target);
+            JumperForces.Remove(target);
+            JumperReactivateDelays.Remove(target);
+            JumperActiveStates.Remove(target);
+
             PlacedTurbines.Remove(target);
             CachedHelixScripts.Remove(target);
             PlacedRotatingLasers.Remove(target);
@@ -1962,6 +2046,10 @@ namespace DeadCoreEditor
             _detectedShaderNeonProps.Clear();
 
             PlacedJumpers.Clear();
+            JumperForces.Clear();
+            JumperReactivateDelays.Clear();
+            JumperActiveStates.Clear();
+
             PlacedTurbines.Clear();
             CachedHelixScripts.Clear();
             PlacedLaserBarriers.Clear();
@@ -1982,7 +2070,6 @@ namespace DeadCoreEditor
 
             ActiveCustomCheckpoint = null;
 
-            JumperForces.Clear();
             TurbineSpeeds.Clear();
             TurretFireDelays.Clear();
 
@@ -2708,6 +2795,26 @@ namespace DeadCoreEditor
 
                 Transform skyWidget = obj.transform.Find("Skybox_Editor_Widget");
                 if (skyWidget != null) skyWidget.gameObject.SetActive(visible);
+
+                Transform audioWidget = obj.transform.Find("Audio_Editor_Widget");
+                if (audioWidget != null) audioWidget.gameObject.SetActive(visible);
+
+                // Completely hide visual renderers & colliders for Audio Controllers during playtest
+                if (PlacedObjectTypes.TryGetValue(obj, out var pType) && pType == PlacedObjectType.AudioController)
+                {
+                    Renderer[] rends = obj.GetComponentsInChildren<Renderer>(true);
+                    for (int r = 0; r < rends.Length; r++)
+                    {
+                        if (rends[r] != null) rends[r].enabled = visible;
+                    }
+
+                    Collider[] cols = obj.GetComponentsInChildren<Collider>(true);
+                    for (int c = 0; c < cols.Length; c++)
+                    {
+                        if (cols[c] != null && cols[c].gameObject.name != "Editor_Snapping_Proxy")
+                            cols[c].enabled = visible;
+                    }
+                }
             }
         }
 
@@ -3220,6 +3327,7 @@ namespace DeadCoreEditor
 
             UnfreezePlayerControls();
             ForceRefreshAllTurbines();
+            ForceRefreshAllJumpers();
 
             MelonLogger.Msg(">> [Restart] Restarted run cleanly from Entry Gate!");
         }
@@ -3250,6 +3358,7 @@ namespace DeadCoreEditor
 
             if (cc != null) cc.enabled = true;
             ForceRefreshAllTurbines();
+            ForceRefreshAllJumpers();
             UnfreezePlayerControls();
         }
 

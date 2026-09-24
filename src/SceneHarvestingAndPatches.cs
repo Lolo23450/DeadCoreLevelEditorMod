@@ -443,23 +443,26 @@ namespace DeadCoreEditor
             // 4. Sweep all remaining loaded scene hierarchies
             HarvestAllLoadedScenesArchitecture(_seenMeshInstanceIDs, _displayNameCounts, _meshToOriginalMaterials);
 
-            // 5. Deep scan loaded AssetBundles AND crawl unmounted disk archives
+            // 5. Deep scan loaded AssetBundles AND crawl unmounted disk archives (models + audio)
             HarvestLoadedAndDiskAssetBundles(_seenMeshInstanceIDs, _displayNameCounts, _meshToOriginalMaterials);
 
             // 6. Deep search through memory components and resources
             HarvestLoadedComponentsFromMemory(_seenMeshInstanceIDs, _displayNameCounts, _meshToOriginalMaterials);
             HarvestResidualMeshesFromMemory(_seenMeshInstanceIDs, _displayNameCounts, _meshToOriginalMaterials);
 
+            // 7. Scan audio clips into MapAudioService
+            MapAudioService.ScanGameAudioClips();
+
             DebugDumpSceneLighting();
 
             MelonLogger.Msg($">> [Harvest] Base scene catalog ready ({EditorSessionManager.AllAssets.Count} assets). Starting cross-level sweep...");
 
-            // 7. Asynchronous, race-condition-free cross-tower crawler
+            // 8. Asynchronous cross-tower crawler
             MelonCoroutines.Start(HarvestCrossLevelTowersCoroutine());
         }
 
         // =========================================================================
-        // FIX 1: LOADED + ON-DISK ASSETBUNDLE HARVESTER (ALL FORMATS)
+        // HYBRID ASSETBUNDLE HARVESTER (MODELS, PREFABS & AUDIO CLIPS)
         // =========================================================================
 
         public static void HarvestLoadedAndDiskAssetBundles(HashSet<int> seenMeshIDs, Dictionary<string, int> displayNameCounts, Dictionary<int, Material[]> meshToOriginalMaterials)
@@ -583,52 +586,83 @@ namespace DeadCoreEditor
 
         private static void ExtractAssetsFromBundleObject(object bundle, MethodInfo loadAllMethod, HashSet<int> seenMeshIDs, Dictionary<string, int> displayNameCounts, Dictionary<int, Material[]> meshToOriginalMaterials)
         {
-            // 1. Inspect bundled GameObjects
-            Il2CppSystem.Object[] rawGos = loadAllMethod.Invoke(bundle, new object[] { typeof(GameObject) }) as Il2CppSystem.Object[];
-            if (rawGos != null)
+            // 1. Inspect bundled GameObjects (Prefabs, props)
+            try
             {
-                for (int i = 0; i < rawGos.Length; i++)
+                Il2CppSystem.Object[] rawGos = loadAllMethod.Invoke(bundle, new object[] { typeof(GameObject) }) as Il2CppSystem.Object[];
+                if (rawGos != null)
                 {
-                    if (rawGos[i] == null) continue;
-                    GameObject go = rawGos[i].TryCast<GameObject>();
-                    if (go == null) continue;
-
-                    MeshFilter[] mfs = go.GetComponentsInChildren<MeshFilter>(true);
-                    for (int f = 0; f < mfs.Length; f++)
+                    for (int i = 0; i < rawGos.Length; i++)
                     {
-                        MeshFilter mf = mfs[f];
-                        if (mf == null || mf.sharedMesh == null) continue;
-                        TryHarvestMesh(mf.sharedMesh, mf.gameObject.name, mf.sharedMesh.name, mf.gameObject, mf.GetComponent<Renderer>(), seenMeshIDs, displayNameCounts, meshToOriginalMaterials);
-                    }
+                        if (rawGos[i] == null) continue;
+                        GameObject go = rawGos[i].TryCast<GameObject>();
+                        if (go == null) continue;
 
-                    SkinnedMeshRenderer[] smrs = go.GetComponentsInChildren<SkinnedMeshRenderer>(true);
-                    for (int s = 0; s < smrs.Length; s++)
-                    {
-                        SkinnedMeshRenderer smr = smrs[s];
-                        if (smr == null || smr.sharedMesh == null) continue;
-                        TryHarvestMesh(smr.sharedMesh, smr.gameObject.name, smr.sharedMesh.name, smr.gameObject, smr, seenMeshIDs, displayNameCounts, meshToOriginalMaterials);
+                        MeshFilter[] mfs = go.GetComponentsInChildren<MeshFilter>(true);
+                        for (int f = 0; f < mfs.Length; f++)
+                        {
+                            MeshFilter mf = mfs[f];
+                            if (mf == null || mf.sharedMesh == null) continue;
+                            TryHarvestMesh(mf.sharedMesh, mf.gameObject.name, mf.sharedMesh.name, mf.gameObject, mf.GetComponent<Renderer>(), seenMeshIDs, displayNameCounts, meshToOriginalMaterials);
+                        }
+
+                        SkinnedMeshRenderer[] smrs = go.GetComponentsInChildren<SkinnedMeshRenderer>(true);
+                        for (int s = 0; s < smrs.Length; s++)
+                        {
+                            SkinnedMeshRenderer smr = smrs[s];
+                            if (smr == null || smr.sharedMesh == null) continue;
+                            TryHarvestMesh(smr.sharedMesh, smr.gameObject.name, smr.sharedMesh.name, smr.gameObject, smr, seenMeshIDs, displayNameCounts, meshToOriginalMaterials);
+                        }
                     }
                 }
             }
+            catch { }
 
             // 2. Direct Meshes
-            Il2CppSystem.Object[] rawMeshes = loadAllMethod.Invoke(bundle, new object[] { typeof(Mesh) }) as Il2CppSystem.Object[];
-            if (rawMeshes != null)
+            try
             {
-                for (int m = 0; m < rawMeshes.Length; m++)
+                Il2CppSystem.Object[] rawMeshes = loadAllMethod.Invoke(bundle, new object[] { typeof(Mesh) }) as Il2CppSystem.Object[];
+                if (rawMeshes != null)
                 {
-                    if (rawMeshes[m] == null) continue;
-                    Mesh mesh = rawMeshes[m].TryCast<Mesh>();
-                    if (mesh != null)
+                    for (int m = 0; m < rawMeshes.Length; m++)
                     {
-                        TryHarvestMesh(mesh, mesh.name, mesh.name, null, null, seenMeshIDs, displayNameCounts, meshToOriginalMaterials);
+                        if (rawMeshes[m] == null) continue;
+                        Mesh mesh = rawMeshes[m].TryCast<Mesh>();
+                        if (mesh != null)
+                        {
+                            TryHarvestMesh(mesh, mesh.name, mesh.name, null, null, seenMeshIDs, displayNameCounts, meshToOriginalMaterials);
+                        }
                     }
                 }
             }
+            catch { }
+
+            // 3. Audio Clips (Music, ambience, soundscapes)
+            try
+            {
+                Il2CppSystem.Object[] rawClips = loadAllMethod.Invoke(bundle, new object[] { typeof(AudioClip) }) as Il2CppSystem.Object[];
+                if (rawClips != null)
+                {
+                    for (int a = 0; a < rawClips.Length; a++)
+                    {
+                        if (rawClips[a] == null) continue;
+                        AudioClip clip = rawClips[a].TryCast<AudioClip>();
+                        if (clip != null && !string.IsNullOrWhiteSpace(clip.name))
+                        {
+                            string clipName = clip.name.Trim();
+                            if (!MapAudioService.DiscoveredClips.ContainsKey(clipName))
+                            {
+                                MapAudioService.DiscoveredClips[clipName] = clip;
+                            }
+                        }
+                    }
+                }
+            }
+            catch { }
         }
 
         // =========================================================================
-        // FIX 2: ASYNC CROSS-LEVEL SWEEPER (COROUTINE-DRIVEN)
+        // ASYNC CROSS-LEVEL SWEEPER (COROUTINE-DRIVEN)
         // =========================================================================
 
         private static IEnumerator HarvestCrossLevelTowersCoroutine()
@@ -647,7 +681,6 @@ namespace DeadCoreEditor
 
                 string sName = Path.GetFileNameWithoutExtension(scenePath);
 
-                // 1. Begin additive load asynchronously
                 AsyncOperation loadOp = null;
                 try
                 {
@@ -664,7 +697,7 @@ namespace DeadCoreEditor
                     while (!loadOp.isDone) yield return null;
                 }
 
-                yield return null; // Allow frame for Awake / hierarchy initialization
+                yield return null;
 
                 Scene loadedScene = SceneManager.GetSceneByName(sName);
                 if (!loadedScene.IsValid())
@@ -679,7 +712,23 @@ namespace DeadCoreEditor
                     int added = _seenMeshInstanceIDs.Count - before;
                     totalCrossHarvested += added;
 
-                    // 2. Unload asynchronously and wait until fully unloaded
+                    // Also harvest any level-specific AudioSources in loaded scene
+                    AudioSource[] sceneSources = loadedScene.GetRootGameObjects() != null
+                        ? Resources.FindObjectsOfTypeAll<AudioSource>()
+                        : null;
+                    if (sceneSources != null)
+                    {
+                        for (int sc = 0; sc < sceneSources.Length; sc++)
+                        {
+                            if (sceneSources[sc] != null && sceneSources[sc].clip != null)
+                            {
+                                string cName = sceneSources[sc].clip.name.Trim();
+                                if (!MapAudioService.DiscoveredClips.ContainsKey(cName))
+                                    MapAudioService.DiscoveredClips[cName] = sceneSources[sc].clip;
+                            }
+                        }
+                    }
+
                     AsyncOperation unloadOp = SceneManager.UnloadSceneAsync(loadedScene);
                     if (unloadOp != null)
                     {
@@ -1454,6 +1503,38 @@ namespace DeadCoreEditor
             };
             rotLaserAsset.ComputeSizeMetrics();
             EditorSessionManager.AllAssets.Add(rotLaserAsset);
+
+            // --- AUDIO CONTROLLER TEMPLATE ---
+            GameObject audioTemplate = new GameObject("Template_Audio_Controller");
+            BoxCollider audioCol = audioTemplate.AddComponent<BoxCollider>();
+            audioCol.size = new Vector3(2f, 2f, 2f);
+            audioCol.isTrigger = true;
+
+            // Visual Speaker Sphere
+            GameObject speakerSphere = GameObject.CreatePrimitive(PrimitiveType.Sphere);
+            speakerSphere.name = "Audio_Editor_Widget"; // Named for SetSpotlightMeshesVisible
+            GameObject.DestroyImmediate(speakerSphere.GetComponent<Collider>());
+            speakerSphere.transform.SetParent(audioTemplate.transform, false);
+            speakerSphere.transform.localScale = Vector3.one * 0.9f;
+
+            if (unlitShader != null)
+            {
+                Material audioMat = new Material(unlitShader) { color = new Color(0.95f, 0.4f, 0.85f, 1f) };
+                speakerSphere.GetComponent<Renderer>().sharedMaterial = audioMat;
+            }
+            audioTemplate.SetActive(false);
+
+            var audioAsset = new CatalogAsset
+            {
+                DisplayName = "Map Audio & Music Controller",
+                SourceTemplate = audioTemplate,
+                Category = AssetCategory.Gameplay,
+                SubCategory = "Lighting",
+                Traits = AssetTrait.AudioController,
+                DefaultScale = 1.0f
+            };
+            audioAsset.ComputeSizeMetrics();
+            EditorSessionManager.AllAssets.Add(audioAsset);
         }
 
         private static void RegisterLaserBarrier(string name, float width, float height, Material mat, AssetTrait traits)
@@ -1571,7 +1652,6 @@ namespace DeadCoreEditor
             if (go == null) return false;
             string n = go.name.ToLower();
 
-            // Do not hide gravity areas
             if (go.GetComponent<GravityArea>() != null || go.GetComponent<GravityReceiver>() != null || n.Contains("gravity"))
                 return false;
 
@@ -1650,8 +1730,8 @@ namespace DeadCoreEditor
                 name.StartsWith("Holographic_") ||
                 name.StartsWith("Waypoint_") ||
                 name.StartsWith("Highlight_") ||
-                name.StartsWith("Volume_Visual_Box") ||         // Protected volume preview mesh
-                name.StartsWith("Gravity_Arrow_Indicator") ||    // Protected orientation arrow
+                name.StartsWith("Volume_Visual_Box") ||
+                name.StartsWith("Gravity_Arrow_Indicator") ||
                 name.StartsWith("Card_"))
             {
                 return true;

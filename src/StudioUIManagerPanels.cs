@@ -61,6 +61,15 @@ namespace DeadCoreEditor
         private static bool _useWorldCoordinates = false;
         private static TMP_Text _coordSpaceToggleText = null;
 
+        private static StudioFloatingWindow _audioPickerWin = null;
+        private static RectTransform _audioPickerContent = null;
+        private static TMP_InputField _audioSearchInput = null;
+        private static string _audioSearchQuery = "";
+        private static int _audioFilterCategory = 0; // 0=Music (>30s), 1=Ambience (8-30s), 2=All
+        private static AudioConfig _currentEditingAudioConfig = null;
+        private static GameObject _currentEditingAudioObj = null;
+        private static bool _isBrowsingAmbient = false;
+
         // Asset Browser
         private static GameObject _assetBrowserPanel = null;
         private static ScrollRect _assetBrowserScrollRect = null;
@@ -241,6 +250,8 @@ namespace DeadCoreEditor
             if (_toolbarPanel != null && _toolbarPanel.activeInHierarchy &&
                 RectTransformUtility.RectangleContainsScreenPoint(_toolbarPanel.GetComponent<RectTransform>(), mousePos))
                 return true;
+
+            if (IsWindowHovered(_audioPickerWin, mousePos)) return true;
 
             return false;
         }
@@ -2036,6 +2047,13 @@ namespace DeadCoreEditor
                     for (int t = 0; t < targets.Count; t++)
                         EditorSessionManager.ApplyJumperForce(targets[t], v);
                 });
+                AddSliderRow(card.transform, "Reactivate Delay", 0.5f, 30.0f, jc.ReactivateDelay, "{0:F1}s", (v) =>
+                {
+                    jc.ReactivateDelay = v;
+                    var targets = GetSelectionTargets(obj);
+                    for (int t = 0; t < targets.Count; t++)
+                        EditorSessionManager.ApplyJumperReactivateDelay(targets[t], v);
+                });
                 AddToggleRow(card.transform, "Active Pad", jc.IsActive, (state) =>
                 {
                     jc.IsActive = state;
@@ -2440,6 +2458,77 @@ namespace DeadCoreEditor
                     var targets = GetSelectionTargets(obj);
                     for (int t = 0; t < targets.Count; t++)
                         GravityAreaService.ApplyGravityConfig(targets[t], gc);
+                });
+
+                _activeInspectorCards.Add(card);
+            }
+
+            // =========================================================================
+            // 14. MAP AUDIO & MUSIC CONTROLLER
+            // =========================================================================
+            bool isAudio = data.Has<AudioConfig>() || type == PlacedObjectType.AudioController || (obj.name != null && obj.name.ToLower().Contains("audio"));
+            if (isAudio)
+            {
+                var card = CreateModularSection(_inspectorContent, "Audio", "Map Music & Atmosphere Audio");
+                var ac = data.GetOrCreate<AudioConfig>();
+                if (MapAudioService.PlacedAudioConfigs.TryGetValue(obj, out var existingAc))
+                    ac = existingAc;
+
+                _currentEditingAudioConfig = ac;
+                _currentEditingAudioObj = obj;
+
+                // Music Section
+                string musicDisplay = string.IsNullOrEmpty(ac.MusicTrackName) ? "None (Muted)" : ac.MusicTrackName;
+                GameObject mRow = CreateRowContainerPrimitive(card.transform, "Row_MusicTrack", 28f);
+                SetupRowHorizontalLayoutPrimitive(mRow, 6f);
+                CreateTextPrimitive(mRow.transform, $"Music: <color=white><b>{musicDisplay}</b></color>", Vector2.zero, Vector2.one, Vector2.zero, Vector2.zero, 10f, FontStyles.Normal, new Color(0.2f, 0.85f, 1f), TextAlignmentOptions.MidlineLeft);
+
+                CreateButtonPrimitive(mRow.transform, "Btn_BrowseMusic", "Browse OST...", 110f, () =>
+                {
+                    _isBrowsingAmbient = false;
+                    OpenAudioPicker(ac, obj);
+                }, new Color(0.18f, 0.52f, 0.88f));
+
+                AddSliderRow(card.transform, "Music Volume", 0.0f, 1.0f, ac.MusicVolume, "{0:F2}", (v) =>
+                {
+                    ac.MusicVolume = v;
+                    MapAudioService.ApplyAudioConfig(obj, ac);
+                });
+
+                AddSliderRow(card.transform, "Playback Pitch", 0.5f, 2.0f, ac.MusicPitch, "{0:F2}x", (v) =>
+                {
+                    ac.MusicPitch = v;
+                    MapAudioService.ApplyAudioConfig(obj, ac);
+                });
+
+                AddToggleRow(card.transform, "Loop Music Track", ac.Loop, (val) =>
+                {
+                    ac.Loop = val;
+                    MapAudioService.ApplyAudioConfig(obj, ac);
+                });
+
+                AddToggleRow(card.transform, "Play While in Edit Mode", ac.PlayInEditMode, (val) =>
+                {
+                    ac.PlayInEditMode = val;
+                    MapAudioService.ApplyAudioConfig(obj, ac);
+                });
+
+                // Ambient Section
+                string ambDisplay = string.IsNullOrEmpty(ac.AmbientTrackName) ? "None (Silent)" : ac.AmbientTrackName;
+                GameObject aRow = CreateRowContainerPrimitive(card.transform, "Row_AmbTrack", 28f);
+                SetupRowHorizontalLayoutPrimitive(aRow, 6f);
+                CreateTextPrimitive(aRow.transform, $"Ambience: <color=white><b>{ambDisplay}</b></color>", Vector2.zero, Vector2.one, Vector2.zero, Vector2.zero, 10f, FontStyles.Normal, new Color(0.85f, 0.4f, 0.95f), TextAlignmentOptions.MidlineLeft);
+
+                CreateButtonPrimitive(aRow.transform, "Btn_BrowseAmb", "Browse Amb...", 110f, () =>
+                {
+                    _isBrowsingAmbient = true;
+                    OpenAudioPicker(ac, obj);
+                }, new Color(0.55f, 0.25f, 0.75f));
+
+                AddSliderRow(card.transform, "Ambience Volume", 0.0f, 1.0f, ac.AmbientVolume, "{0:F2}", (v) =>
+                {
+                    ac.AmbientVolume = v;
+                    MapAudioService.ApplyAudioConfig(obj, ac);
                 });
 
                 _activeInspectorCards.Add(card);
@@ -3195,6 +3284,285 @@ namespace DeadCoreEditor
 
             RefreshInspectorValues();
             EditorSessionManager.UpdateSelectionHighlight();
+        }
+        private static void BuildAudioPickerWindow()
+        {
+            try
+            {
+                if (_audioPickerWin != null && _audioPickerWin.WindowRoot != null)
+                {
+                    GameObject.DestroyImmediate(_audioPickerWin.WindowRoot);
+                    _audioPickerWin = null;
+                }
+
+                _audioPickerWin = StudioFloatingWindow.Create(_canvasRoot.transform, "Win_AudioPicker", "DeadCore OST & Audio Selector", new Vector2(750f, 560f), Vector2.zero);
+
+                // 1. Top Controls Bar
+                GameObject topRow = new GameObject("Audio_TopRow", Il2CppType.Of<RectTransform>());
+                topRow.transform.SetParent(_audioPickerWin.ContentRt, false);
+
+                RectTransform trt = topRow.GetComponent<RectTransform>();
+                trt.anchorMin = new Vector2(0f, 1f);
+                trt.anchorMax = new Vector2(1f, 1f);
+                trt.pivot = new Vector2(0.5f, 1f);
+                trt.anchoredPosition = Vector2.zero;
+                trt.sizeDelta = new Vector2(0f, 34f);
+
+                HorizontalLayoutGroup thlg = topRow.AddComponent<HorizontalLayoutGroup>();
+                thlg.padding = new RectOffset(4, 4, 3, 3);
+                thlg.spacing = 6f;
+                thlg.childControlWidth = false;
+                thlg.childControlHeight = true;
+                thlg.childForceExpandWidth = false;
+                thlg.childForceExpandHeight = true;
+
+                CreateButtonPrimitive(topRow.transform, "BtnFilt_All", "All", 75f, () =>
+                {
+                    _audioFilterCategory = 0;
+                    RefreshAudioClipList();
+                }, new Color(0.18f, 0.45f, 0.85f));
+
+                CreateButtonPrimitive(topRow.transform, "BtnFilt_Music", "OST Music", 100f, () =>
+                {
+                    _audioFilterCategory = 1;
+                    RefreshAudioClipList();
+                }, new Color(0.14f, 0.17f, 0.22f));
+
+                CreateButtonPrimitive(topRow.transform, "BtnFilt_Amb", "Ambience", 100f, () =>
+                {
+                    _audioFilterCategory = 2;
+                    RefreshAudioClipList();
+                }, new Color(0.14f, 0.17f, 0.22f));
+
+                CreateButtonPrimitive(topRow.transform, "Btn_Rescan", "↻ Scan", 75f, () =>
+                {
+                    MapAudioService.ScanGameAudioClips(RefreshAudioClipList);
+                }, new Color(0.2f, 0.55f, 0.35f));
+
+                _audioSearchInput = CreateInputFieldPrimitive(topRow.transform, "SearchAudio", Vector2.zero, Vector2.one, Vector2.zero, Vector2.zero, "Filter tracks by name...", (val) =>
+                {
+                    _audioSearchQuery = (val ?? "").Trim().ToLowerInvariant();
+                    RefreshAudioClipList();
+                });
+
+                if (_audioSearchInput != null)
+                {
+                    LayoutElement inLe = _audioSearchInput.GetComponent<LayoutElement>();
+                    if (inLe == null) inLe = _audioSearchInput.gameObject.AddComponent<LayoutElement>();
+                    inLe.preferredWidth = 220f;
+                    inLe.flexibleWidth = 1f;
+                }
+
+                // 2. Middle Scroll Area
+                GameObject scrollWrapper = new GameObject("Audio_ScrollWrapper", Il2CppType.Of<RectTransform>());
+                scrollWrapper.transform.SetParent(_audioPickerWin.ContentRt, false);
+
+                RectTransform srt = scrollWrapper.GetComponent<RectTransform>();
+                srt.anchorMin = Vector2.zero;
+                srt.anchorMax = Vector2.one;
+                srt.offsetMin = new Vector2(2f, 44f);
+                srt.offsetMax = new Vector2(-2f, -40f);
+
+                CreateScrollViewPrimitive(scrollWrapper.transform, "Audio_Scroll",
+                    Vector2.zero, Vector2.one,
+                    Vector2.zero, Vector2.zero,
+                    out _audioPickerContent);
+
+                // 3. Bottom Action Bar
+                GameObject bottomBar = new GameObject("Audio_BottomBar", Il2CppType.Of<RectTransform>());
+                bottomBar.transform.SetParent(_audioPickerWin.ContentRt, false);
+
+                RectTransform brt = bottomBar.GetComponent<RectTransform>();
+                brt.anchorMin = new Vector2(0f, 0f);
+                brt.anchorMax = new Vector2(1f, 0f);
+                brt.pivot = new Vector2(0.5f, 0f);
+                brt.anchoredPosition = Vector2.zero;
+                brt.sizeDelta = new Vector2(0f, 38f);
+
+                HorizontalLayoutGroup bhlg = bottomBar.AddComponent<HorizontalLayoutGroup>();
+                bhlg.padding = new RectOffset(6, 6, 3, 3);
+                bhlg.spacing = 10f;
+                bhlg.childControlWidth = false;
+                bhlg.childControlHeight = true;
+                bhlg.childForceExpandWidth = false;
+                bhlg.childForceExpandHeight = true;
+
+                CreateButtonPrimitive(bottomBar.transform, "Btn_StopPreview", "⏹ Stop Preview", 135f, () =>
+                {
+                    MapAudioService.StopPreview();
+                    RefreshAudioClipList();
+                }, new Color(0.65f, 0.2f, 0.2f));
+
+                CreateButtonPrimitive(bottomBar.transform, "Btn_OpenFolder", "📂 Open CustomAudio Folder", 210f, () =>
+                {
+                    MapAudioService.OpenCustomAudioFolder();
+                }, new Color(0.18f, 0.40f, 0.65f));
+
+                GameObject spacer = new GameObject("Spacer", Il2CppType.Of<RectTransform>());
+                spacer.transform.SetParent(bottomBar.transform, false);
+                spacer.AddComponent<LayoutElement>().flexibleWidth = 1f;
+
+                CreateButtonPrimitive(bottomBar.transform, "Btn_ClearTrack", "Mute / None", 120f, () =>
+                {
+                    if (_currentEditingAudioConfig != null && _currentEditingAudioObj != null)
+                    {
+                        if (_isBrowsingAmbient) _currentEditingAudioConfig.AmbientTrackName = "";
+                        else _currentEditingAudioConfig.MusicTrackName = "";
+                        MapAudioService.ApplyAudioConfig(_currentEditingAudioObj, _currentEditingAudioConfig);
+                        RebuildModularInspectorCards(_currentEditingAudioObj);
+                    }
+                    _audioPickerWin.Hide();
+                }, new Color(0.25f, 0.28f, 0.35f));
+            }
+            catch (Exception ex)
+            {
+                MelonLogger.Error($"[AudioPicker Build Error] {ex}");
+            }
+        }
+
+        public static void OpenAudioPicker(AudioConfig cfg, GameObject obj)
+        {
+            _currentEditingAudioConfig = cfg;
+            _currentEditingAudioObj = obj;
+
+            if (_audioPickerWin == null || _audioPickerWin.WindowRoot == null)
+            {
+                BuildAudioPickerWindow();
+            }
+
+            if (MapAudioService.AvailableTracks.Count == 0)
+            {
+                MapAudioService.ScanGameAudioClips(RefreshAudioClipList);
+            }
+
+            if (_audioPickerWin != null && _audioPickerWin.TitleText != null)
+            {
+                _audioPickerWin.TitleText.text = _isBrowsingAmbient ? "Select Ambient Soundscape" : "Select DeadCore OST Track";
+            }
+
+            RefreshAudioClipList();
+            _audioPickerWin?.Show();
+        }
+
+        private static void RefreshAudioClipList()
+        {
+            if (_audioPickerContent == null) return;
+
+            for (int i = _audioPickerContent.childCount - 1; i >= 0; i--)
+            {
+                GameObject.Destroy(_audioPickerContent.GetChild(i).gameObject);
+            }
+
+            List<MapAudioService.TrackItem> matched = new List<MapAudioService.TrackItem>();
+
+            foreach (var kvp in MapAudioService.AvailableTracks)
+            {
+                var track = kvp.Value;
+                if (track == null) continue;
+
+                // Category filtering: 0=All, 1=Music, 2=Ambience
+                if (_audioFilterCategory == 1 && !track.IsMusic) continue;
+                if (_audioFilterCategory == 2 && track.IsMusic) continue;
+
+                if (!string.IsNullOrEmpty(_audioSearchQuery) &&
+                    !track.DisplayName.ToLowerInvariant().Contains(_audioSearchQuery) &&
+                    !track.Id.ToLowerInvariant().Contains(_audioSearchQuery))
+                {
+                    continue;
+                }
+
+                matched.Add(track);
+            }
+
+            matched.Sort((a, b) =>
+            {
+                if (a.IsMusic != b.IsMusic) return a.IsMusic ? -1 : 1;
+                return string.Compare(a.DisplayName, b.DisplayName, StringComparison.OrdinalIgnoreCase);
+            });
+
+            if (matched.Count == 0)
+            {
+                GameObject guideCard = new GameObject("AudioGuideCard", Il2CppType.Of<RectTransform>());
+                guideCard.transform.SetParent(_audioPickerContent, false);
+
+                RectTransform grt = guideCard.GetComponent<RectTransform>();
+                grt.sizeDelta = new Vector2(680f, 160f);
+
+                Image bg = guideCard.AddComponent<Image>();
+                bg.color = new Color(0.08f, 0.10f, 0.15f, 0.95f);
+
+                VerticalLayoutGroup vlg = guideCard.AddComponent<VerticalLayoutGroup>();
+                vlg.padding = new RectOffset(16, 16, 14, 14);
+                vlg.spacing = 8f;
+                vlg.childControlWidth = true;
+                vlg.childControlHeight = false;
+                vlg.childForceExpandWidth = true;
+                vlg.childForceExpandHeight = false;
+
+                CreateTextPrimitive(guideCard.transform, "🎵 No Sound Tracks Found", Vector2.zero, Vector2.one, Vector2.zero, Vector2.zero, 13f, FontStyles.Bold, Color.cyan, TextAlignmentOptions.Center);
+                CreateTextPrimitive(guideCard.transform, "Click [↻ Scan] above to scan DeadCore's FMOD banks, or drop custom music into UserData/CustomAudio/.", Vector2.zero, Vector2.one, Vector2.zero, Vector2.zero, 11f, FontStyles.Normal, Color.white, TextAlignmentOptions.Center);
+
+                LayoutRebuilder.ForceRebuildLayoutImmediate(_audioPickerContent);
+                return;
+            }
+
+            for (int i = 0; i < matched.Count; i++)
+            {
+                var track = matched[i];
+                GameObject row = new GameObject("Row_Track_" + i, Il2CppType.Of<RectTransform>());
+                row.transform.SetParent(_audioPickerContent, false);
+
+                RectTransform rrt = row.GetComponent<RectTransform>();
+                rrt.sizeDelta = new Vector2(700f, 34f);
+
+                LayoutElement le = row.AddComponent<LayoutElement>();
+                le.preferredHeight = 34f;
+                le.minHeight = 34f;
+
+                bool isSelected = (_isBrowsingAmbient && _currentEditingAudioConfig?.AmbientTrackName == track.Id) ||
+                                  (!_isBrowsingAmbient && _currentEditingAudioConfig?.MusicTrackName == track.Id);
+
+                Image bg = row.AddComponent<Image>();
+                bg.color = isSelected ? new Color(0.18f, 0.52f, 0.88f, 0.85f) : new Color(0.12f, 0.14f, 0.18f, 0.85f);
+
+                string tag = track.IsFMOD ? (track.IsMusic ? "<color=#00E5FF>[OST]</color> " : "<color=#B388FF>[AMB]</color> ") : "<color=#69F0AE>[FILE]</color> ";
+                CreateTextPrimitive(row.transform, tag + track.DisplayName, new Vector2(0f, 0f), new Vector2(0.68f, 1f), new Vector2(8f, 0f), Vector2.zero, 11f, FontStyles.Bold, Color.white, TextAlignmentOptions.MidlineLeft);
+
+                bool isPlayingThis = MapAudioService.IsPreviewPlaying(track.Id);
+                Button prevBtn = CreateButtonPrimitive(row.transform, "Btn_Prev_" + i, isPlayingThis ? "⏹ Stop" : "▶ Play", 80f, () =>
+                {
+                    MapAudioService.PreviewTrack(track.Id);
+                    RefreshAudioClipList();
+                }, isPlayingThis ? new Color(0.85f, 0.3f, 0.3f) : new Color(0.18f, 0.22f, 0.30f));
+                RectTransform prt = prevBtn.GetComponent<RectTransform>();
+                prt.anchorMin = new Vector2(1f, 0.5f);
+                prt.anchorMax = new Vector2(1f, 0.5f);
+                prt.pivot = new Vector2(1f, 0.5f);
+                prt.anchoredPosition = new Vector2(-90f, 0f);
+                prt.sizeDelta = new Vector2(75f, 24f);
+
+                Button selBtn = CreateButtonPrimitive(row.transform, "Btn_Sel_" + i, "Select", 75f, () =>
+                {
+                    MapAudioService.StopPreview();
+                    if (_currentEditingAudioConfig != null && _currentEditingAudioObj != null)
+                    {
+                        if (_isBrowsingAmbient) _currentEditingAudioConfig.AmbientTrackName = track.Id;
+                        else _currentEditingAudioConfig.MusicTrackName = track.Id;
+
+                        MapAudioService.ApplyAudioConfig(_currentEditingAudioObj, _currentEditingAudioConfig);
+                        RebuildModularInspectorCards(_currentEditingAudioObj);
+                    }
+                    _audioPickerWin.Hide();
+                }, new Color(0.18f, 0.65f, 0.35f));
+                RectTransform srt = selBtn.GetComponent<RectTransform>();
+                srt.anchorMin = new Vector2(1f, 0.5f);
+                srt.anchorMax = new Vector2(1f, 0.5f);
+                srt.pivot = new Vector2(1f, 0.5f);
+                srt.anchoredPosition = new Vector2(-6f, 0f);
+                srt.sizeDelta = new Vector2(75f, 24f);
+            }
+
+            LayoutRebuilder.ForceRebuildLayoutImmediate(_audioPickerContent);
         }
 
         private static void BuildAssignCategoryWindow()

@@ -34,7 +34,7 @@ namespace DeadCoreEditor
         /// <summary>
         /// Finds all objects connected to this switch, whether they are parented UNDER
         /// the switch or the switch is parented UNDER them (parent object).
-        /// Safely ignores internal switch prefab meshes and colliders.
+        /// Safely ignores internal switch prefab meshes, colliders, and jumpers.
         /// </summary>
         public static List<GameObject> GetConnectedObjects(GameObject switchGo)
         {
@@ -45,7 +45,9 @@ namespace DeadCoreEditor
             if (switchGo.transform.parent != null)
             {
                 GameObject parentObj = switchGo.transform.parent.gameObject;
-                if (EditorSessionManager.PlacedObjects.Contains(parentObj) && !PlacedSwitches.ContainsKey(parentObj))
+                if (EditorSessionManager.PlacedObjects.Contains(parentObj) &&
+                    !PlacedSwitches.ContainsKey(parentObj) &&
+                    parentObj.GetComponentInChildren<Jumper>(true) == null)
                 {
                     connected.Add(parentObj);
                 }
@@ -57,11 +59,14 @@ namespace DeadCoreEditor
                 Transform child = switchGo.transform.GetChild(i);
                 if (child == null || child.name == "Editor_Snapping_Proxy") continue;
 
+                // Ignore jumpers completely
+                if (child.GetComponent<Jumper>() != null || child.GetComponentInChildren<Jumper>(true) != null)
+                    continue;
+
                 // Only include placed level objects, ignoring native switch internal parts
                 if (EditorSessionManager.PlacedObjects.Contains(child.gameObject) ||
                     child.name.StartsWith("Custom_") ||
                     child.GetComponent<LaserScript>() != null ||
-                    child.GetComponent<Jumper>() != null ||
                     child.GetComponent<Helix>() != null ||
                     child.GetComponent<TurretScript>() != null)
                 {
@@ -96,24 +101,18 @@ namespace DeadCoreEditor
         {
             if (targetGo == null) return;
 
+            // Never manipulate Jumpers through SwitchService
+            if (targetGo.GetComponentInChildren<Jumper>(true) != null) return;
+
             bool isParentOfSwitch = (switchGo != null && switchGo.transform.IsChildOf(targetGo.transform));
 
             if (!isParentOfSwitch)
             {
-                // Target is a child: safe to toggle the GameObject directly
                 targetGo.SetActive(active);
             }
             else
             {
-                // Target is the parent of the switch: do NOT SetActive(false) on the parent,
-                // otherwise the switch inside it would be destroyed/deactivated too!
                 ToggleParentComponentsExcludingSwitch(targetGo, switchGo, active);
-            }
-
-            // Synchronize Jumper pad physics and FX
-            if (EditorSessionManager.PlacedObjectTypes.TryGetValue(targetGo, out var type) && type == PlacedObjectType.Jumper)
-            {
-                EditorSessionManager.ApplyJumperActive(targetGo, active);
             }
 
             // Synchronize Kinematic Motion Paths
@@ -220,7 +219,6 @@ namespace DeadCoreEditor
                         interuptor.IsAutoSwitch = cfg.IsAutoSwitch;
                         interuptor.TimeBeforeSwitch = Mathf.Max(0.1f, cfg.TimeBeforeSwitch);
 
-                        // Call native activation/deactivation to reset shaders, materials, and timers cleanly
                         try
                         {
                             if (cfg.InitialStateOn)
@@ -246,7 +244,7 @@ namespace DeadCoreEditor
                     }
                     else
                     {
-                        // Edit Mode (F1): restore ALL connected objects to active so they can be viewed & edited
+                        // Edit Mode (F1): restore connected objects to active
                         for (int i = 0; i < connected.Count; i++)
                         {
                             ApplyStateToHierarchy(connected[i], true, switchGo);
@@ -273,6 +271,9 @@ namespace DeadCoreEditor
         {
             if (__instance == null || EditorSessionManager.IsEditModeActive || SwitchService.IsResettingSwitches) return;
 
+            // Completely ignore all internal Jumper / Booster interuptors
+            if (__instance.GetComponentInParent<Jumper>() != null) return;
+
             Transform curr = __instance.transform;
             while (curr != null)
             {
@@ -293,6 +294,9 @@ namespace DeadCoreEditor
         public static void Postfix(Interuptor __instance)
         {
             if (__instance == null || EditorSessionManager.IsEditModeActive || SwitchService.IsResettingSwitches) return;
+
+            // Completely ignore all internal Jumper / Booster interuptors
+            if (__instance.GetComponentInParent<Jumper>() != null) return;
 
             Transform curr = __instance.transform;
             while (curr != null)

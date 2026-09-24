@@ -1923,7 +1923,9 @@ namespace DeadCoreEditor
 
         internal static HorizontalLayoutGroup SetupRowHorizontalLayoutPrimitive(GameObject row, float spacing = 6f)
         {
-            HorizontalLayoutGroup hlg = row.GetComponent<HorizontalLayoutGroup>() ?? row.AddComponent<HorizontalLayoutGroup>();
+            if (row == null) return null;
+            HorizontalLayoutGroup hlg = row.GetComponent<HorizontalLayoutGroup>();
+            if (hlg == null) hlg = row.AddComponent<HorizontalLayoutGroup>();
             hlg.padding = new RectOffset(2, 2, 2, 2);
             hlg.spacing = spacing;
             hlg.childControlWidth = true;

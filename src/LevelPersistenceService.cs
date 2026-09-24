@@ -761,6 +761,7 @@ namespace DeadCoreEditor
                 case "CABLE": return new CableConfig();
                 case "TRUSS": return new TrussConfig();
                 case "GRAVITY": return new GravityConfig();
+                case "AUDIO": return new AudioConfig();
                 default: return null;
             }
         }
