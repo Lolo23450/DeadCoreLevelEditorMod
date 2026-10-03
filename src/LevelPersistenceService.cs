@@ -416,10 +416,21 @@ namespace DeadCoreEditor
             if (string.IsNullOrWhiteSpace(cleanName)) cleanName = "Default_Level";
 
             string path = Path.Combine(saveDir, $"{cleanName}.txt");
+            SaveLevelToPath(path, true, path);
+        }
+
+        public static void SaveLevelToPath(string path, bool makeActive, string metadataSourcePath = null)
+        {
+            if (string.IsNullOrWhiteSpace(path)) return;
+            string saveDir = Path.GetDirectoryName(path);
+            if (!string.IsNullOrEmpty(saveDir) && !Directory.Exists(saveDir)) Directory.CreateDirectory(saveDir);
+
             List<string> lines = new List<string>();
             var inv = PersistenceUtility.Inv;
 
-            LevelMetadata existingMeta = NativeLogsMenuHijacker.ReadLevelMetadata(path, cleanName);
+            string cleanName = Path.GetFileNameWithoutExtension(path);
+            string metadataPath = string.IsNullOrWhiteSpace(metadataSourcePath) ? path : metadataSourcePath;
+            LevelMetadata existingMeta = NativeLogsMenuHijacker.ReadLevelMetadata(metadataPath, cleanName);
             lines.Add($"#TITLE: {existingMeta.Title}");
             lines.Add($"#AUTHOR: {existingMeta.Author}");
             lines.Add($"#DIFFICULTY: {existingMeta.Difficulty}");
@@ -473,10 +484,13 @@ namespace DeadCoreEditor
             File.WriteAllLines(path, lines.ToArray());
             ThumbnailCaptureService.CaptureLevelThumbnail(path, EditorSessionManager.PlacedObjects, EditorSessionManager.LevelSpawnPosition);
 
-            EditorSessionManager.ShowNotification($"Saved {lines.Count - 5} objects to {cleanName}.txt!");
-            MapBrowserService.SelectedMapPath = path;
-            MapBrowserService.SelectedMapName = cleanName;
-            MapBrowserService.RefreshFiles();
+            if (makeActive)
+            {
+                EditorSessionManager.ShowNotification($"Saved {lines.Count - 5} objects to {cleanName}.txt!");
+                MapBrowserService.SelectedMapPath = path;
+                MapBrowserService.SelectedMapName = cleanName;
+                MapBrowserService.RefreshFiles();
+            }
         }
 
         public static void LoadLevel(string filename)

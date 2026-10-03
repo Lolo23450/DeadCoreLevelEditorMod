@@ -2918,6 +2918,10 @@ namespace DeadCoreEditor
             Quaternion newRot = Quaternion.Euler(rx, ry, rz);
             Vector3 newScale = new Vector3(Mathf.Max(0.01f, sx), Mathf.Max(0.01f, sy), Mathf.Max(0.01f, sz));
 
+            Vector3 previousPosition = primary.transform.position;
+            Quaternion previousRotation = primary.transform.rotation;
+            Vector3 previousScale = primary.transform.localScale;
+
             if (_useWorldCoordinates)
             {
                 primary.transform.position = newPos;
@@ -2929,6 +2933,26 @@ namespace DeadCoreEditor
                 primary.transform.localRotation = newRot;
             }
             primary.transform.localScale = newScale;
+
+            bool changed = (primary.transform.position - previousPosition).sqrMagnitude > 0.000001f ||
+                           Quaternion.Angle(primary.transform.rotation, previousRotation) > 0.01f ||
+                           (primary.transform.localScale - previousScale).sqrMagnitude > 0.000001f;
+            if (changed)
+            {
+                EditorSessionManager.UndoHistory.Push(new HistoryRecord
+                {
+                    ActionType = HistoryActionType.Reposition,
+                    TargetObject = primary,
+                    PreviousPosition = previousPosition,
+                    NewPosition = primary.transform.position,
+                    PreviousRotation = previousRotation,
+                    NewRotation = primary.transform.rotation,
+                    PreviousScale = previousScale,
+                    NewScale = primary.transform.localScale,
+                    EntityDataSnapshot = EditorSessionManager.ExtractEntityData(primary)
+                });
+                EditorSessionManager.RedoHistory.Clear();
+            }
 
             StudioGizmoController.InvalidateCachedCenter(primary);
             EditorSessionManager.UpdateSelectionHighlight();

@@ -985,9 +985,17 @@ namespace DeadCoreEditor
                 return;
             }
 
+            RenderTexture rt = null;
+            Texture2D outputTex = null;
+            RenderTexture previousTarget = viewCam.targetTexture;
+            RenderTexture previousActive = RenderTexture.active;
+            GameObject ghost = PlacementHologramController.GhostInstance;
+            bool ghostWasActive = ghost != null && ghost.activeSelf;
+            bool editorWasActive = EditorSessionManager.IsEditModeActive;
+            byte[] pngBytes = null;
+
             try
             {
-                // 2. TEMPORARILY HIDE ALL EDITOR-ONLY CLUTTER (Simulate Play Mode)
                 StudioGizmoController.DestroyGizmo();
                 EditorSessionManager.CleanHighlightPool();
                 EditorSessionManager.HideAllWaypointMarkers();
@@ -995,81 +1003,60 @@ namespace DeadCoreEditor
                 StructuralTrussService.HideAllTrussHandles();
                 EditorSessionManager.SetSnappingProxiesActive(false);
                 EditorSessionManager.SetSpotlightMeshesVisible(false);
+                if (ghostWasActive) ghost.SetActive(false);
 
-                bool ghostWasActive = false;
-                if (PlacementHologramController.GhostInstance != null && PlacementHologramController.GhostInstance.activeSelf)
-                {
-                    ghostWasActive = true;
-                    PlacementHologramController.GhostInstance.SetActive(false);
-                }
-
-                // 3. RENDER FRAME FROM VIEWPORT CAMERA
-                int renderWidth = 512;
-                int renderHeight = 320;
-                RenderTexture rt = RenderTexture.GetTemporary(renderWidth, renderHeight, 24, RenderTextureFormat.ARGB32);
-
-                RenderTexture prevTarget = viewCam.targetTexture;
-                RenderTexture prevActive = RenderTexture.active;
-
+                const int renderWidth = 512;
+                const int renderHeight = 320;
+                rt = RenderTexture.GetTemporary(renderWidth, renderHeight, 24, RenderTextureFormat.ARGB32);
                 viewCam.targetTexture = rt;
                 viewCam.Render();
 
                 RenderTexture.active = rt;
-                Texture2D outputTex = new Texture2D(renderWidth, renderHeight, TextureFormat.RGB24, false);
-                outputTex.ReadPixels(new Rect(0, 0, renderWidth, renderHeight), 0, 0);
+                outputTex = new Texture2D(renderWidth, renderHeight, TextureFormat.RGB24, false);
+                outputTex.ReadPixels(new Rect(0f, 0f, renderWidth, renderHeight), 0, 0);
                 outputTex.Apply();
-
-                // 4. RESTORE CAMERA TARGET & RELEASE BUFFERS
-                viewCam.targetTexture = prevTarget;
-                RenderTexture.active = prevActive;
-                RenderTexture.ReleaseTemporary(rt);
-
-                // 5. WRITE PNG FILE
-                byte[] pngBytes = ImageConversion.EncodeToPNG(outputTex);
-                GameObject.DestroyImmediate(outputTex);
+                pngBytes = ImageConversion.EncodeToPNG(outputTex);
 
                 string finalPngPath = Path.ChangeExtension(levelPath, ".png");
                 File.WriteAllBytes(finalPngPath, pngBytes);
-
-                // 6. RESTORE EDITOR CLUTTER IF IN EDIT MODE
-                if (ghostWasActive && PlacementHologramController.GhostInstance != null)
-                {
-                    PlacementHologramController.GhostInstance.SetActive(true);
-                }
-
-                if (EditorSessionManager.IsEditModeActive)
-                {
-                    EditorSessionManager.SetSpotlightMeshesVisible(true);
-                    EditorSessionManager.SetSnappingProxiesActive(EditorConfigService.Config.SnappingProxiesVisible);
-                    ProceduralCableService.UpdateAllCableHandles();
-                    StructuralTrussService.UpdateAllTrussHandles();
-                    EditorSessionManager.UpdateSelectionHighlight();
-                }
-
-                EditorSessionManager.ShowNotification($"Snapshot captured from camera! ({pngBytes.Length / 1024} KB)");
-                MelonLogger.Msg($">> [Thumbnail] Custom viewport snapshot saved: '{finalPngPath}'");
+                MelonLogger.Msg($">> [Thumbnail] Snapshot saved: '{finalPngPath}'");
             }
             catch (Exception ex)
             {
                 MelonLogger.Error($"[Thumbnail] Failed to capture viewport snapshot: {ex.Message}");
                 EditorSessionManager.ShowNotification("Failed to capture snapshot.");
             }
+            finally
+            {
+                viewCam.targetTexture = previousTarget;
+                RenderTexture.active = previousActive;
+                if (rt != null) RenderTexture.ReleaseTemporary(rt);
+                if (outputTex != null) GameObject.DestroyImmediate(outputTex);
+
+                if (ghostWasActive && ghost != null) ghost.SetActive(true);
+                if (editorWasActive)
+                {
+                    EditorSessionManager.SetSpotlightMeshesVisible(true);
+                    EditorSessionManager.SetSnappingProxiesActive(EditorConfigService.Config.SnappingProxiesVisible);
+                    ProceduralCableService.UpdateAllCableHandles();
+                    StructuralTrussService.UpdateAllTrussHandles();
+                    EditorSessionManager.UpdateSelectionHighlight();
+                    StudioGizmoController.UpdateGizmo();
+                }
+            }
+
+            if (pngBytes != null)
+                EditorSessionManager.ShowNotification($"Snapshot captured ({pngBytes.Length / 1024} KB).");
         }
 
         /// <summary>
-        /// Fallback isometric capture if saving without an established viewport camera.
+        /// Captures a thumbnail from the editor viewport or the active game camera.
         /// </summary>
         public static void CaptureLevelThumbnail(string levelPath, List<GameObject> activePlacedObjects, Vector3 fallbackSpawnPos)
         {
-            // If an editor camera is active in edit mode, capture directly from current view instead
-            if (EditorSessionManager.IsEditModeActive && EditorViewportCamera.ViewportCamera != null)
-            {
-                CaptureViewportSnapshot(levelPath);
-                return;
-            }
-
-            // Otherwise, keep existing isometric calculation logic...
-            // [Existing Bounds fallback logic remains untouched here]
+            // Use the editor view when available, otherwise capture from the active game camera.
+            // This also ensures saves made outside the editor viewport still get a thumbnail.
+            CaptureViewportSnapshot(levelPath);
         }
 
         public static Texture2D LoadLevelTexture(string levelPath)

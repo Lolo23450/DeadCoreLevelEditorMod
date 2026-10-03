@@ -718,13 +718,40 @@ namespace DeadCoreEditor
                 string backupDir = Path.Combine(MapBrowserService.MyLevelsDir, "Backups");
                 if (!Directory.Exists(backupDir)) Directory.CreateDirectory(backupDir);
 
-                string backupPath = Path.Combine(backupDir, $"{baseName}_AutoSave.txt");
-                LevelPersistenceService.SaveLevel(backupPath);
-                SetNotificationText($"[Auto-Save] Backup created at {DateTime.Now:HH:mm:ss}");
+                string timestamp = DateTime.Now.ToString("yyyyMMdd_HHmmss", CultureInfo.InvariantCulture);
+                string backupPath = Path.Combine(backupDir, $"{baseName}_{timestamp}.txt");
+                LevelPersistenceService.SaveLevelToPath(backupPath, false, MapBrowserService.SelectedMapPath);
+                PruneAutoSaveBackups(backupDir, baseName, 20);
+                SetNotificationText($"[Auto-Save] Snapshot created at {DateTime.Now:HH:mm:ss}");
             }
             catch (Exception ex)
             {
                 MelonLogger.Warning($"[Auto-Save] Failed: {ex.Message}");
+            }
+        }
+
+        private static void PruneAutoSaveBackups(string backupDir, string baseName, int keepCount)
+        {
+            string prefix = baseName + "_";
+            List<string> snapshots = new List<string>();
+            foreach (string candidate in Directory.GetFiles(backupDir, "*.txt"))
+            {
+                string stem = Path.GetFileNameWithoutExtension(candidate);
+                if (!stem.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)) continue;
+                string timestamp = stem.Substring(prefix.Length);
+                if (DateTime.TryParseExact(timestamp, "yyyyMMdd_HHmmss", CultureInfo.InvariantCulture,
+                    DateTimeStyles.None, out _))
+                    snapshots.Add(candidate);
+            }
+
+            snapshots.Sort(StringComparer.OrdinalIgnoreCase);
+            int removeCount = snapshots.Count - keepCount;
+            for (int i = 0; i < removeCount; i++)
+            {
+                string textPath = snapshots[i];
+                string imagePath = Path.ChangeExtension(textPath, ".png");
+                if (File.Exists(textPath)) File.Delete(textPath);
+                if (File.Exists(imagePath)) File.Delete(imagePath);
             }
         }
 
