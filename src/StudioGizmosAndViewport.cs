@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using UnityEngine;
 
@@ -704,11 +704,18 @@ namespace DeadCoreEditor
 
             float scale = EditorSessionManager.ActivePlacementScale;
             Vector3 placeScale = Vector3.one * scale;
+            HashSet<GameObject> objectsBeforePlacement = new HashSet<GameObject>(EditorSessionManager.PlacedObjects);
             GameObject placed = EditorSessionManager.SpawnCatalogObject(asset, _targetPosition, placeScale, placementRotation);
 
             if (placed != null)
             {
-                EditorSessionManager.RegisterPlacedObject(placed);
+                if (!EditorSessionManager.PlacedObjects.Contains(placed))
+                    EditorSessionManager.RegisterPlacedObject(placed);
+
+                List<GameObject> createdObjects = EditorSessionManager.GetPlacedObjectsAddedSince(objectsBeforePlacement);
+                if (!createdObjects.Contains(placed)) createdObjects.Add(placed);
+                EditorSessionManager.RecordCreatedObjects("Place " + asset.DisplayName, createdObjects);
+
                 EditorSessionManager.LastPlacedObject = placed;
                 EditorSessionManager.SelectedObject = placed;
 
@@ -717,20 +724,6 @@ namespace DeadCoreEditor
                     EditorSessionManager.SelectedObjects.Clear();
                     EditorSessionManager.SelectedObjects.Add(placed);
                 }
-
-                EditorSessionManager.UndoHistory.Push(new HistoryRecord
-                {
-                    ActionType = HistoryActionType.Placement,
-                    TargetObject = placed,
-                    Asset = asset,
-                    AssetName = asset.DisplayName,
-                    Position = _targetPosition,
-                    Rotation = placementRotation,
-                    Scale = scale,
-                    ScaleVector = placeScale,
-                    EntityDataSnapshot = EditorSessionManager.ExtractEntityData(placed)
-                });
-                EditorSessionManager.RedoHistory.Clear();
 
                 EditorSessionManager.ShowNotification($"Placed '{asset.DisplayName}' ({scale:F2}x)");
             }
@@ -768,6 +761,7 @@ namespace DeadCoreEditor
         private static readonly Dictionary<GameObject, Vector3> _dragStartPositions = new Dictionary<GameObject, Vector3>();
         private static readonly Dictionary<GameObject, Quaternion> _dragStartRotations = new Dictionary<GameObject, Quaternion>();
         private static readonly Dictionary<GameObject, Vector3> _dragStartScales = new Dictionary<GameObject, Vector3>();
+        private static List<EditorObjectSnapshot> _dragStartSnapshots = null;
 
         public static void AttachSunVisualWidget(GameObject sunObj)
         {
@@ -1207,6 +1201,7 @@ namespace DeadCoreEditor
                     _dragStartPositions.Clear();
                     _dragStartRotations.Clear();
                     _dragStartScales.Clear();
+                    _dragStartSnapshots = EditorSessionManager.CaptureObjectSnapshots(targets);
 
                     for (int i = 0; i < targets.Count; i++)
                     {
@@ -1406,23 +1401,15 @@ namespace DeadCoreEditor
                 {
                     GameObject go = targets[i];
                     if (go != null && _dragStartPositions.ContainsKey(go))
-                    {
                         InvalidateCachedCenter(go);
-                        EditorSessionManager.UndoHistory.Push(new HistoryRecord
-                        {
-                            ActionType = HistoryActionType.Reposition,
-                            TargetObject = go,
-                            PreviousPosition = _dragStartPositions[go],
-                            NewPosition = go.transform.position,
-                            PreviousRotation = _dragStartRotations[go],
-                            NewRotation = go.transform.rotation,
-                            PreviousScale = _dragStartScales[go],
-                            NewScale = go.transform.localScale,
-                            EntityDataSnapshot = EditorSessionManager.ExtractEntityData(go)
-                        });
-                    }
                 }
-                EditorSessionManager.RedoHistory.Clear();
+
+                // Treat a multi-selection drag as one atomic edit, so one Undo restores
+                // the complete selection rather than stepping through individual objects.
+                if (_dragStartSnapshots != null && _dragStartSnapshots.Count > 0)
+                    EditorSessionManager.RecordSelectedObjectChange("Transform selection", _dragStartSnapshots, HistoryActionType.Reposition);
+
+                _dragStartSnapshots = null;
                 _activeDragAxis = -1;
             }
         }

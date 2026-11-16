@@ -133,6 +133,7 @@ namespace DeadCoreEditor
             public Vector3 Position;
             public Quaternion Rotation;
             public Vector3 LocalScale;
+            public bool ActiveSelf;
         }
 
         public static readonly Dictionary<GameObject, PlaytestTransformSnapshot> PlaytestSnapshots = new Dictionary<GameObject, PlaytestTransformSnapshot>();
@@ -415,7 +416,8 @@ namespace DeadCoreEditor
                 {
                     Position = obj.transform.position,
                     Rotation = obj.transform.rotation,
-                    LocalScale = obj.transform.localScale
+                    LocalScale = obj.transform.localScale,
+                    ActiveSelf = obj.activeSelf
                 };
             }
         }
@@ -458,9 +460,11 @@ namespace DeadCoreEditor
                         rb.position = obj.transform.position;
                         rb.rotation = obj.transform.rotation;
                     }
-                }
 
-                if (!obj.activeSelf) obj.SetActive(true);
+                    // Keep objects hidden in the editor hidden after the playtest ends.
+                    if (obj.activeSelf != snap.ActiveSelf)
+                        obj.SetActive(snap.ActiveSelf);
+                }
 
                 Renderer[] rends = obj.GetComponentsInChildren<Renderer>(true);
                 for (int r = 0; r < rends.Length; r++)
@@ -503,41 +507,35 @@ namespace DeadCoreEditor
                 GameObject parentTarget = SelectedObject;
                 if (parentTarget == null) return;
 
-                int count = 0;
+                List<GameObject> childrenToParent = new List<GameObject>();
                 for (int i = 0; i < SelectedObjects.Count; i++)
                 {
                     GameObject child = SelectedObjects[i];
-                    if (child == null || child == parentTarget) continue;
-                    if (IsWaypointMarker(child, out _, out _)) continue;
-
+                    if (child == null || child == parentTarget || IsWaypointMarker(child, out _, out _)) continue;
                     if (IsDescendantOf(child, parentTarget))
                     {
                         ShowNotification($"Cannot parent '{child.name}': Cyclic loop detected.");
                         continue;
                     }
+                    if (child.transform.parent != parentTarget.transform) childrenToParent.Add(child);
+                }
 
+                List<EditorObjectSnapshot> before = CaptureObjectSnapshots(childrenToParent);
+                int count = 0;
+                for (int i = 0; i < childrenToParent.Count; i++)
+                {
+                    GameObject child = childrenToParent[i];
+                    if (child == null) continue;
                     GameObject oldParent = child.transform.parent != null ? child.transform.parent.gameObject : null;
-                    if (oldParent == parentTarget) continue;
-
                     child.transform.SetParent(parentTarget.transform, true);
-
                     if (oldParent != null) RecalculateParentChildCount(oldParent);
                     RecalculateParentChildCount(parentTarget);
-
                     StudioGizmoController.InvalidateCachedCenter(child);
-
-                    UndoHistory.Push(new HistoryRecord
-                    {
-                        ActionType = HistoryActionType.Parenting,
-                        TargetObject = child,
-                        PreviousParent = oldParent,
-                        NewParent = parentTarget
-                    });
                     count++;
                 }
 
+                if (count > 0) RecordSelectedObjectChange("Parent selection", before, HistoryActionType.Parenting);
                 ParentingChildTarget = null;
-                RedoHistory.Clear();
                 StudioUIManager.RefreshHierarchy();
                 ShowNotification($"Parented {count} object(s) under '{parentTarget.name}' [Ctrl+P]");
             }
@@ -564,24 +562,17 @@ namespace DeadCoreEditor
                         return;
                     }
 
-                    GameObject oldParent = ParentingChildTarget.transform.parent != null ? ParentingChildTarget.transform.parent.gameObject : null;
-                    ParentingChildTarget.transform.SetParent(current.transform, true);
+                    GameObject childToParent = ParentingChildTarget;
+                    List<EditorObjectSnapshot> before = CaptureObjectSnapshots(new List<GameObject> { childToParent });
+                    GameObject oldParent = childToParent.transform.parent != null ? childToParent.transform.parent.gameObject : null;
+                    childToParent.transform.SetParent(current.transform, true);
 
                     if (oldParent != null) RecalculateParentChildCount(oldParent);
                     RecalculateParentChildCount(current);
 
-                    StudioGizmoController.InvalidateCachedCenter(ParentingChildTarget);
-
-                    UndoHistory.Push(new HistoryRecord
-                    {
-                        ActionType = HistoryActionType.Parenting,
-                        TargetObject = ParentingChildTarget,
-                        PreviousParent = oldParent,
-                        NewParent = current
-                    });
-
-                    RedoHistory.Clear();
-                    ShowNotification($"Parented '{ParentingChildTarget.name}' under '{current.name}' [Ctrl+P]");
+                    StudioGizmoController.InvalidateCachedCenter(childToParent);
+                    RecordSelectedObjectChange("Parent " + childToParent.name, before, HistoryActionType.Parenting);
+                    ShowNotification($"Parented '{childToParent.name}' under '{current.name}' [Ctrl+P]");
                     ParentingChildTarget = null;
                     StudioUIManager.RefreshHierarchy();
                 }
@@ -596,32 +587,29 @@ namespace DeadCoreEditor
                 return;
             }
 
-            int count = 0;
+            List<GameObject> childrenToUnparent = new List<GameObject>();
             for (int i = 0; i < SelectedObjects.Count; i++)
             {
                 GameObject child = SelectedObjects[i];
-                if (child == null || child.transform.parent == null) continue;
-                if (IsWaypointMarker(child, out _, out _)) continue;
+                if (child == null || child.transform.parent == null || IsWaypointMarker(child, out _, out _)) continue;
+                childrenToUnparent.Add(child);
+            }
 
+            List<EditorObjectSnapshot> before = CaptureObjectSnapshots(childrenToUnparent);
+            int count = 0;
+            for (int i = 0; i < childrenToUnparent.Count; i++)
+            {
+                GameObject child = childrenToUnparent[i];
+                if (child == null || child.transform.parent == null) continue;
                 GameObject oldParent = child.transform.parent.gameObject;
                 child.transform.SetParent(null, true);
-
                 RecalculateParentChildCount(oldParent);
                 StudioGizmoController.InvalidateCachedCenter(child);
-
-                UndoHistory.Push(new HistoryRecord
-                {
-                    ActionType = HistoryActionType.Parenting,
-                    TargetObject = child,
-                    PreviousParent = oldParent,
-                    NewParent = null
-                });
-
                 count++;
             }
 
+            if (count > 0) RecordSelectedObjectChange("Unparent selection", before, HistoryActionType.Parenting);
             ParentingChildTarget = null;
-            RedoHistory.Clear();
             StudioUIManager.RefreshHierarchy();
             ShowNotification(count > 0 ? $"Unparented {count} object(s) to root [Alt+P]" : "Selected objects are already at root.");
         }
@@ -671,37 +659,43 @@ namespace DeadCoreEditor
                 : ((SelectedObject != null) ? SelectedObject.transform.position : LevelSpawnPosition) + new Vector3(2.5f, 0f, 2.5f);
 
             SelectedObjects.Clear();
+            List<GameObject> createdObjects = new List<GameObject>();
+            List<EditorObjectSnapshot> beforeSnapshots = new List<EditorObjectSnapshot>();
 
             for (int i = 0; i < Clipboard.Count; i++)
             {
                 ClipboardItem item = Clipboard[i];
                 Vector3 spawnPos = pasteOrigin + item.RelativeOffset;
+                HashSet<GameObject> existingObjects = new HashSet<GameObject>(PlacedObjects);
 
                 GameObject pasted = SpawnAssetByName(item.AssetName, spawnPos, item.Scale, item.Rotation);
                 if (pasted != null)
                 {
                     if (item.EntityData != null)
-                    {
                         ApplyEntityData(pasted, item.EntityData.Clone());
-                    }
 
-                    RegisterPlacedObject(pasted);
+                    if (!PlacedObjects.Contains(pasted))
+                        RegisterPlacedObject(pasted);
                     SelectedObjects.Add(pasted);
+                }
 
-                    UndoHistory.Push(new HistoryRecord
-                    {
-                        ActionType = HistoryActionType.Placement,
-                        TargetObject = pasted,
-                        AssetName = item.AssetName,
-                        Position = spawnPos,
-                        Rotation = item.Rotation,
-                        Scale = item.Scale.x,
-                        ScaleVector = item.Scale,
-                        EntityDataSnapshot = item.EntityData?.Clone()
-                    });
+                List<GameObject> newlyAdded = GetPlacedObjectsAddedSince(existingObjects);
+                for (int n = 0; n < newlyAdded.Count; n++)
+                {
+                    GameObject created = newlyAdded[n];
+                    if (created == null || createdObjects.Contains(created)) continue;
+                    EditorObjectSnapshot absent = CreateAbsentObjectSnapshot(created);
+                    if (absent != null) beforeSnapshots.Add(absent);
+                    createdObjects.Add(created);
                 }
             }
 
+            if (createdObjects.Count > 0)
+            {
+                List<EditorObjectSnapshot> afterSnapshots = CaptureObjectSnapshots(createdObjects);
+                RecordObjectSnapshotTransition("Paste objects (" + createdObjects.Count + ")", beforeSnapshots, afterSnapshots, HistoryActionType.Placement);
+            }
+            if (RedoHistory == null) RedoHistory = new Stack<HistoryRecord>();
             RedoHistory.Clear();
             SelectedObject = SelectedObjects.Count > 0 ? SelectedObjects[SelectedObjects.Count - 1] : null;
 
@@ -728,37 +722,43 @@ namespace DeadCoreEditor
             Vector3 pasteOrigin = basePos + offset;
 
             SelectedObjects.Clear();
+            List<GameObject> createdObjects = new List<GameObject>();
+            List<EditorObjectSnapshot> beforeSnapshots = new List<EditorObjectSnapshot>();
 
             for (int i = 0; i < dupList.Count; i++)
             {
                 ClipboardItem item = dupList[i];
                 Vector3 spawnPos = pasteOrigin + item.RelativeOffset;
+                HashSet<GameObject> existingObjects = new HashSet<GameObject>(PlacedObjects);
 
                 GameObject pasted = SpawnAssetByName(item.AssetName, spawnPos, item.Scale, item.Rotation);
                 if (pasted != null)
                 {
                     if (item.EntityData != null)
-                    {
                         ApplyEntityData(pasted, item.EntityData.Clone());
-                    }
 
-                    RegisterPlacedObject(pasted);
+                    if (!PlacedObjects.Contains(pasted))
+                        RegisterPlacedObject(pasted);
                     SelectedObjects.Add(pasted);
+                }
 
-                    UndoHistory.Push(new HistoryRecord
-                    {
-                        ActionType = HistoryActionType.Placement,
-                        TargetObject = pasted,
-                        AssetName = item.AssetName,
-                        Position = spawnPos,
-                        Rotation = item.Rotation,
-                        Scale = item.Scale.x,
-                        ScaleVector = item.Scale,
-                        EntityDataSnapshot = item.EntityData?.Clone()
-                    });
+                List<GameObject> newlyAdded = GetPlacedObjectsAddedSince(existingObjects);
+                for (int n = 0; n < newlyAdded.Count; n++)
+                {
+                    GameObject created = newlyAdded[n];
+                    if (created == null || createdObjects.Contains(created)) continue;
+                    EditorObjectSnapshot absent = CreateAbsentObjectSnapshot(created);
+                    if (absent != null) beforeSnapshots.Add(absent);
+                    createdObjects.Add(created);
                 }
             }
 
+            if (createdObjects.Count > 0)
+            {
+                List<EditorObjectSnapshot> afterSnapshots = CaptureObjectSnapshots(createdObjects);
+                RecordObjectSnapshotTransition("Duplicate objects (" + createdObjects.Count + ")", beforeSnapshots, afterSnapshots, HistoryActionType.Placement);
+            }
+            if (RedoHistory == null) RedoHistory = new Stack<HistoryRecord>();
             RedoHistory.Clear();
             SelectedObject = SelectedObjects.Count > 0 ? SelectedObjects[SelectedObjects.Count - 1] : null;
 
@@ -770,34 +770,57 @@ namespace DeadCoreEditor
 
         public static void DeleteSelectedObjects()
         {
-            if (SelectedObjects.Count == 0) return;
+            if (SelectedObjects == null || SelectedObjects.Count == 0) return;
 
-            var toDelete = new List<GameObject>(SelectedObjects);
-            for (int i = 0; i < toDelete.Count; i++)
+            var selectionSnapshot = new List<GameObject>(SelectedObjects);
+            List<GameObject> deleteTargets = new List<GameObject>();
+            HashSet<GameObject> uniqueDeleteTargets = new HashSet<GameObject>();
+            HashSet<GameObject> pathOwnersHandled = new HashSet<GameObject>();
+            int removedPathCount = 0;
+
+            for (int i = 0; i < selectionSnapshot.Count; i++)
             {
-                GameObject target = toDelete[i];
+                GameObject target = selectionSnapshot[i];
                 if (target == null) continue;
 
-                if (ProceduralCableService.IsCableHandle(target, out GameObject cOwner, out _))
+                if (ProceduralCableService.IsCableHandle(target, out GameObject cableOwner, out _))
+                    target = cableOwner;
+                else if (StructuralTrussService.IsTrussHandle(target, out GameObject trussOwner, out _))
+                    target = trussOwner;
+                else if (IsWaypointMarker(target, out GameObject pathOwner, out _))
                 {
-                    target = cOwner;
-                }
-                else if (StructuralTrussService.IsTrussHandle(target, out GameObject tOwner, out _))
-                {
-                    target = tOwner;
-                }
-                else if (IsWaypointMarker(target, out GameObject owner, out _))
-                {
-                    if (owner != null)
+                    if (pathOwner != null && pathOwnersHandled.Add(pathOwner))
                     {
-                        MotionPaths.Remove(owner);
-                        DestroyWaypointVisuals(owner);
-                        ShowNotification($"Removed motion path from '{owner.name}'");
+                        List<EditorObjectSnapshot> beforePath = CaptureObjectSnapshots(new List<GameObject> { pathOwner });
+                        MotionPaths.Remove(pathOwner);
+                        DestroyWaypointVisuals(pathOwner);
+                        if (EntityRegistry.TryGetValue(pathOwner, out EditorEntityData pathEntityData) && pathEntityData != null)
+                            pathEntityData.Remove<ObjectMotionPath>();
+                        RecordSelectedObjectChange("Remove motion path: " + pathOwner.name, beforePath, HistoryActionType.MotionPath);
+                        removedPathCount++;
                     }
                     continue;
                 }
 
-                DeleteSpecifiedObject(target);
+                if (target != null && PlacedObjects.Contains(target) && uniqueDeleteTargets.Add(target))
+                    deleteTargets.Add(target);
+            }
+
+            // Multi-delete is one atomic history entry. The before/after snapshots also
+            // preserve each object's parent, editor component state, and registration.
+            if (deleteTargets.Count > 0)
+            {
+                List<EditorObjectSnapshot> beforeDeletes = CaptureObjectSnapshots(deleteTargets);
+                for (int i = 0; i < deleteTargets.Count; i++)
+                {
+                    GameObject target = deleteTargets[i];
+                    if (target == null) continue;
+                    RemovePlacedObjectFromTracking(target);
+                    target.SetActive(false);
+                    if (LastPlacedObject == target) LastPlacedObject = null;
+                }
+                List<EditorObjectSnapshot> afterDeletes = CaptureObjectSnapshots(deleteTargets);
+                RecordObjectSnapshotTransition("Delete selection (" + deleteTargets.Count + ")", beforeDeletes, afterDeletes, HistoryActionType.Deletion);
             }
 
             SelectedObjects.Clear();
@@ -805,7 +828,10 @@ namespace DeadCoreEditor
             UpdateSelectionHighlight();
             StudioUIManager.NotifyObjectSelected(null);
             StudioUIManager.RefreshHierarchy();
-            ShowNotification($"Deleted {toDelete.Count} object(s) [Supr]");
+
+            string summary = "Deleted " + deleteTargets.Count + " object(s)";
+            if (removedPathCount > 0) summary += "; removed " + removedPathCount + " motion path(s)";
+            ShowNotification(summary + " [Supr]");
         }
 
         // =========================================================================
@@ -1816,7 +1842,8 @@ namespace DeadCoreEditor
             {
                 Position = obj.transform.position,
                 Rotation = obj.transform.rotation,
-                LocalScale = obj.transform.localScale
+                LocalScale = obj.transform.localScale,
+                ActiveSelf = obj.activeSelf
             };
 
             string low = obj.name.ToLower();
@@ -1991,7 +2018,7 @@ namespace DeadCoreEditor
             StudioUIManager.RefreshHierarchy();
         }
 
-        public static void DeleteSpecifiedObject(GameObject target)
+        public static void DeleteSpecifiedObject(GameObject target, bool recordHistory = true)
         {
             if (target == null) return;
 
@@ -2006,22 +2033,15 @@ namespace DeadCoreEditor
 
             if (target != null)
             {
-                EditorEntityData dataSnapshot = ExtractEntityData(target);
+                string deletedName = target.name;
+                List<EditorObjectSnapshot> before = recordHistory
+                    ? CaptureObjectSnapshots(new List<GameObject> { target })
+                    : null;
                 RemovePlacedObjectFromTracking(target);
                 target.SetActive(false);
 
-                UndoHistory.Push(new HistoryRecord
-                {
-                    ActionType = HistoryActionType.Deletion,
-                    TargetObject = target,
-                    AssetName = target.name.StartsWith("Custom_") ? target.name.Substring(7) : target.name,
-                    Position = target.transform.position,
-                    Rotation = target.transform.rotation,
-                    ScaleVector = target.transform.localScale,
-                    EntityDataSnapshot = dataSnapshot
-                });
-                RedoHistory.Clear();
-
+                if (recordHistory)
+                    RecordSelectedObjectChange("Delete " + deletedName, before, HistoryActionType.Deletion);
                 if (LastPlacedObject == target) LastPlacedObject = null;
             }
         }
@@ -2119,15 +2139,505 @@ namespace DeadCoreEditor
         // SECTION 8: UNDO / REDO SYSTEM
         // =========================================================================
 
+        private const int MaxUndoHistoryEntries = 100;
+        private const float HistoryCoalesceWindowSeconds = 0.75f;
+
+        public static void PushUndoHistory(HistoryRecord record)
+        {
+            if (record == null) return;
+            if (UndoHistory == null) UndoHistory = new Stack<HistoryRecord>();
+
+            // Keep the newest entries while bounding memory use in long editing sessions.
+            if (UndoHistory.Count >= MaxUndoHistoryEntries)
+            {
+                HistoryRecord[] existing = UndoHistory.ToArray(); // newest first
+                UndoHistory.Clear();
+                for (int i = existing.Length - 2; i >= 0; i--)
+                    UndoHistory.Push(existing[i]);
+            }
+
+            UndoHistory.Push(record);
+        }
+
+        public static List<EditorObjectSnapshot> CaptureSelectedObjectSnapshots()
+        {
+            List<GameObject> targets = new List<GameObject>();
+            HashSet<GameObject> seen = new HashSet<GameObject>();
+
+            if (SelectedObjects != null)
+            {
+                for (int i = 0; i < SelectedObjects.Count; i++)
+                {
+                    GameObject target = SelectedObjects[i];
+                    if (target == null) continue;
+                    if (IsWaypointMarker(target, out GameObject owner, out _)) target = owner;
+                    if (target != null && PlacedObjects.Contains(target) && seen.Add(target))
+                        targets.Add(target);
+                }
+            }
+
+            if (targets.Count == 0 && SelectedObject != null)
+            {
+                GameObject target = SelectedObject;
+                if (IsWaypointMarker(target, out GameObject owner, out _)) target = owner;
+                if (target != null && PlacedObjects.Contains(target) && seen.Add(target))
+                    targets.Add(target);
+            }
+
+            return CaptureObjectSnapshots(targets);
+        }
+
+        public static List<EditorObjectSnapshot> CaptureObjectSnapshots(List<GameObject> targets)
+        {
+            List<EditorObjectSnapshot> snapshots = new List<EditorObjectSnapshot>();
+            if (targets == null) return snapshots;
+
+            HashSet<GameObject> seen = new HashSet<GameObject>();
+            for (int i = 0; i < targets.Count; i++)
+            {
+                GameObject obj = targets[i];
+                if (obj == null) continue;
+
+                // Waypoint handles are only visual proxies. History must snapshot the owning
+                // moving object so PointA/PointB and its generated handles are restored together.
+                if (IsWaypointMarker(obj, out GameObject waypointOwner, out _))
+                    obj = waypointOwner;
+                if (obj == null || !seen.Add(obj)) continue;
+
+                Rigidbody rb = obj.GetComponent<Rigidbody>();
+                bool hasObjectType = PlacedObjectTypes.TryGetValue(obj, out PlacedObjectType objectType);
+                snapshots.Add(new EditorObjectSnapshot
+                {
+                    TargetObject = obj,
+                    ObjectName = obj.name,
+                    LocalPosition = obj.transform.localPosition,
+                    LocalRotation = obj.transform.localRotation,
+                    LocalScale = obj.transform.localScale,
+                    ParentObject = obj.transform.parent != null ? obj.transform.parent.gameObject : null,
+                    ActiveSelf = obj.activeSelf,
+                    IsRegistered = PlacedObjects.Contains(obj),
+                    IsLocked = StudioUIManager.LockedObjects.Contains(obj),
+                    HasPlacedObjectType = hasObjectType,
+                    ObjectType = objectType,
+                    HadRigidbody = rb != null,
+                    RigidbodyIsKinematic = rb != null && rb.isKinematic,
+                    RigidbodyUseGravity = rb != null && rb.useGravity,
+                    RigidbodyDetectCollisions = rb != null && rb.detectCollisions,
+                    RigidbodyMass = rb != null ? rb.mass : 1f,
+                    RigidbodyDrag = rb != null ? rb.drag : 0f,
+                    RigidbodyAngularDrag = rb != null ? rb.angularDrag : 0.05f,
+                    RigidbodyConstraintFlags = rb != null ? rb.constraints : UnityEngine.RigidbodyConstraints.None,
+                    EntityData = ExtractEntityData(obj)
+                });
+            }
+
+            return snapshots;
+        }
+
+        // Creates the "before" state for a newly spawned object without mutating the live
+        // object. This also works for procedural and prefab-instance spawners that register
+        // themselves before returning.
+        public static EditorObjectSnapshot CreateAbsentObjectSnapshot(GameObject obj)
+        {
+            if (obj == null) return null;
+            List<EditorObjectSnapshot> captured = CaptureObjectSnapshots(new List<GameObject> { obj });
+            if (captured.Count == 0) return null;
+
+            EditorObjectSnapshot snapshot = captured[0].Clone();
+            snapshot.ActiveSelf = false;
+            snapshot.IsRegistered = false;
+            snapshot.IsLocked = false;
+            snapshot.HasPlacedObjectType = false;
+            snapshot.ObjectType = PlacedObjectType.Generic;
+            snapshot.EntityData = new EditorEntityData();
+            return snapshot;
+        }
+
+        public static List<GameObject> GetPlacedObjectsAddedSince(HashSet<GameObject> existingObjects)
+        {
+            List<GameObject> added = new List<GameObject>();
+            for (int i = 0; i < PlacedObjects.Count; i++)
+            {
+                GameObject obj = PlacedObjects[i];
+                if (obj != null && (existingObjects == null || !existingObjects.Contains(obj)))
+                    added.Add(obj);
+            }
+            return added;
+        }
+
+        public static void RecordCreatedObjects(string description, List<GameObject> createdObjects)
+        {
+            if (createdObjects == null || createdObjects.Count == 0) return;
+            List<GameObject> validObjects = new List<GameObject>();
+            List<EditorObjectSnapshot> beforeSnapshots = new List<EditorObjectSnapshot>();
+            HashSet<GameObject> seen = new HashSet<GameObject>();
+            for (int i = 0; i < createdObjects.Count; i++)
+            {
+                GameObject obj = createdObjects[i];
+                if (obj == null || !seen.Add(obj) || !PlacedObjects.Contains(obj)) continue;
+                EditorObjectSnapshot absent = CreateAbsentObjectSnapshot(obj);
+                if (absent == null) continue;
+                beforeSnapshots.Add(absent);
+                validObjects.Add(obj);
+            }
+            if (validObjects.Count == 0) return;
+            List<EditorObjectSnapshot> afterSnapshots = CaptureObjectSnapshots(validObjects);
+            RecordObjectSnapshotTransition(description, beforeSnapshots, afterSnapshots, HistoryActionType.Placement);
+        }
+
+        private static List<EditorObjectSnapshot> CaptureObjectSnapshotsFrom(List<EditorObjectSnapshot> source)
+        {
+            List<GameObject> targets = new List<GameObject>();
+            if (source != null)
+            {
+                for (int i = 0; i < source.Count; i++)
+                    if (source[i] != null && source[i].TargetObject != null)
+                        targets.Add(source[i].TargetObject);
+            }
+            return CaptureObjectSnapshots(targets);
+        }
+
+        private static string BuildEntityDataSignature(EditorEntityData data)
+        {
+            if (data == null || data.Components == null || data.Components.Count == 0) return string.Empty;
+
+            List<string> keys = new List<string>(data.Components.Keys);
+            keys.Sort(StringComparer.OrdinalIgnoreCase);
+            string signature = string.Empty;
+            for (int i = 0; i < keys.Count; i++)
+            {
+                if (!data.Components.TryGetValue(keys[i], out IEditorComponent component) || component == null) continue;
+                string serialized = string.Empty;
+                try { serialized = component.Serialize() ?? string.Empty; }
+                catch { serialized = component.GetType().FullName ?? component.GetType().Name; }
+                signature += keys[i] + "=" + serialized + "|";
+            }
+            return signature;
+        }
+
+        private static bool ObjectSnapshotsDiffer(EditorObjectSnapshot before, EditorObjectSnapshot after)
+        {
+            if (before == null || after == null) return before != after;
+            if (before.TargetObject != after.TargetObject) return true;
+            if (!string.Equals(before.ObjectName, after.ObjectName, StringComparison.Ordinal)) return true;
+            if (before.ActiveSelf != after.ActiveSelf) return true;
+            if (before.IsRegistered != after.IsRegistered || before.IsLocked != after.IsLocked) return true;
+            if (before.HasPlacedObjectType != after.HasPlacedObjectType || (before.HasPlacedObjectType && before.ObjectType != after.ObjectType)) return true;
+            if (before.HadRigidbody != after.HadRigidbody || before.RigidbodyIsKinematic != after.RigidbodyIsKinematic ||
+                before.RigidbodyUseGravity != after.RigidbodyUseGravity || before.RigidbodyDetectCollisions != after.RigidbodyDetectCollisions ||
+                !Mathf.Approximately(before.RigidbodyMass, after.RigidbodyMass) || !Mathf.Approximately(before.RigidbodyDrag, after.RigidbodyDrag) ||
+                !Mathf.Approximately(before.RigidbodyAngularDrag, after.RigidbodyAngularDrag) || before.RigidbodyConstraintFlags != after.RigidbodyConstraintFlags) return true;
+            if (before.ParentObject != after.ParentObject) return true;
+            if ((before.LocalPosition - after.LocalPosition).sqrMagnitude > 0.000001f) return true;
+            if (Quaternion.Angle(before.LocalRotation, after.LocalRotation) > 0.01f) return true;
+            if ((before.LocalScale - after.LocalScale).sqrMagnitude > 0.000001f) return true;
+            return !string.Equals(BuildEntityDataSignature(before.EntityData), BuildEntityDataSignature(after.EntityData), StringComparison.Ordinal);
+        }
+
+        public static void RecordObjectSnapshotTransition(string description, List<EditorObjectSnapshot> beforeSnapshots,
+            List<EditorObjectSnapshot> afterSnapshots, HistoryActionType actionType = HistoryActionType.ComponentChange)
+        {
+            if (beforeSnapshots == null || beforeSnapshots.Count == 0 || afterSnapshots == null || afterSnapshots.Count == 0)
+                return;
+
+            bool changed = beforeSnapshots.Count != afterSnapshots.Count;
+            int compareCount = Math.Min(beforeSnapshots.Count, afterSnapshots.Count);
+            for (int i = 0; !changed && i < compareCount; i++)
+                changed = ObjectSnapshotsDiffer(beforeSnapshots[i], afterSnapshots[i]);
+            if (!changed) return;
+
+            if (RedoHistory == null) RedoHistory = new Stack<HistoryRecord>();
+            RedoHistory.Clear();
+
+            string safeDescription = string.IsNullOrWhiteSpace(description) ? "Editor change" : description.Trim();
+            PushUndoHistory(new HistoryRecord
+            {
+                ActionType = actionType,
+                Description = safeDescription,
+                AssetName = safeDescription,
+                TargetObject = beforeSnapshots[0]?.TargetObject ?? afterSnapshots[0]?.TargetObject,
+                PreviousObjectSnapshots = beforeSnapshots,
+                NextObjectSnapshots = afterSnapshots,
+                LastChangeTime = Time.unscaledTime
+            });
+        }
+
+        public static void RecordSelectedObjectChange(string description, List<EditorObjectSnapshot> beforeSnapshots, HistoryActionType actionType = HistoryActionType.ParameterChange)
+        {
+            if (beforeSnapshots == null || beforeSnapshots.Count == 0) return;
+            List<EditorObjectSnapshot> afterSnapshots = CaptureObjectSnapshotsFrom(beforeSnapshots);
+            if (afterSnapshots.Count == 0) return;
+
+            bool changed = false;
+            int compareCount = Math.Min(beforeSnapshots.Count, afterSnapshots.Count);
+            for (int i = 0; i < compareCount; i++)
+            {
+                if (ObjectSnapshotsDiffer(beforeSnapshots[i], afterSnapshots[i]))
+                {
+                    changed = true;
+                    break;
+                }
+            }
+            if (!changed) return;
+
+            if (RedoHistory == null) RedoHistory = new Stack<HistoryRecord>();
+            RedoHistory.Clear();
+
+            string safeDescription = string.IsNullOrWhiteSpace(description) ? "Inspector change" : description.Trim();
+            string coalesceKey = actionType + ":" + safeDescription;
+            for (int i = 0; i < beforeSnapshots.Count; i++)
+                if (beforeSnapshots[i]?.TargetObject != null)
+                    coalesceKey += ":" + beforeSnapshots[i].TargetObject.GetInstanceID();
+
+            // Slider drags and color controls emit many callbacks. Keep their initial state
+            // and update only the latest after-state while the same control is being dragged.
+            if (UndoHistory != null && UndoHistory.Count > 0)
+            {
+                HistoryRecord previous = UndoHistory.Peek();
+                if (previous != null && previous.ActionType == actionType &&
+                    previous.CoalesceKey == coalesceKey &&
+                    Time.unscaledTime - previous.LastChangeTime <= HistoryCoalesceWindowSeconds)
+                {
+                    previous.NextObjectSnapshots = afterSnapshots;
+                    previous.LastChangeTime = Time.unscaledTime;
+                    return;
+                }
+            }
+
+            PushUndoHistory(new HistoryRecord
+            {
+                ActionType = actionType,
+                Description = safeDescription,
+                AssetName = safeDescription,
+                TargetObject = beforeSnapshots[0].TargetObject,
+                PreviousObjectSnapshots = beforeSnapshots,
+                NextObjectSnapshots = afterSnapshots,
+                CoalesceKey = coalesceKey,
+                LastChangeTime = Time.unscaledTime
+            });
+        }
+
+        private static void ClearManagedEntityStateForRestore(GameObject obj)
+        {
+            if (obj == null) return;
+            EntityRegistry.Remove(obj);
+            PlacedJumpers.Remove(obj);
+            PlacedTurbines.Remove(obj);
+            CachedHelixScripts.Remove(obj);
+            PlacedRotatingLasers.Remove(obj);
+            int laserIndex = PlacedLaserBarriers.IndexOf(obj);
+            if (laserIndex >= 0)
+            {
+                PlacedLaserBarriers.RemoveAt(laserIndex);
+                if (laserIndex < PlacedLaserColliders.Count) PlacedLaserColliders.RemoveAt(laserIndex);
+            }
+            CheckPointScript checkpoint = obj.GetComponentInChildren<CheckPointScript>(true);
+            if (checkpoint != null) PlacedCheckpoints.Remove(checkpoint);
+            if (PlacedGoalGate == obj) PlacedGoalGate = null;
+            JumperForces.Remove(obj);
+            JumperReactivateDelays.Remove(obj);
+            JumperActiveStates.Remove(obj);
+            TurbineSpeeds.Remove(obj);
+            TurretFireDelays.Remove(obj);
+            LaserRotationSpeeds.Remove(obj);
+            PlacedLights.Remove(obj);
+            PlacedNeonConfigs.Remove(obj);
+            MotionPaths.Remove(obj);
+            PlacedCablesRemoveForHistory(obj);
+            ProceduralCableService.DestroyCableHandles(obj);
+            SwitchService.PlacedSwitches.Remove(obj);
+            GravityAreaService.PlacedGravityConfigs.Remove(obj);
+            GravityAreaService.PlacedGravityAreas.Remove(obj);
+            MapAudioService.PlacedAudioConfigs.Remove(obj);
+            StructuralTrussService.PlacedTrusses.Remove(obj);
+            StructuralTrussService.DestroyTrussHandles(obj);
+            DestroyWaypointVisuals(obj);
+        }
+
+        private static void PlacedCablesRemoveForHistory(GameObject obj)
+        {
+            ProceduralCableService.PlacedCables.Remove(obj);
+        }
+
+        private static void RestoreEditorEntityData(GameObject obj, EditorEntityData snapshot)
+        {
+            if (obj == null) return;
+            ClearManagedEntityStateForRestore(obj);
+            if (snapshot == null) return;
+
+            EditorEntityData restored = snapshot.Clone();
+            ApplyEntityData(obj, restored);
+            if (restored.TryGetComponent<ObjectMotionPath>(out ObjectMotionPath path) && path != null && path.IsActive)
+            {
+                MotionPaths[obj] = path.Clone();
+                UpdateWaypointVisuals(obj, path);
+            }
+
+            // ApplyCableConfig / ApplyTrussConfig rebuild the procedural meshes and
+            // dictionaries. Their editor endpoint handles are separate transient
+            // objects, so recreate them after the history restore while in edit mode.
+            if (IsEditModeActive)
+            {
+                if (restored.TryGetComponent<CableConfig>(out CableConfig cableConfig) && cableConfig != null)
+                    ProceduralCableService.UpdateCableVisualHandles(obj);
+                if (restored.TryGetComponent<TrussConfig>(out TrussConfig trussConfig) && trussConfig != null)
+                    StructuralTrussService.UpdateTrussVisualHandles(obj);
+            }
+        }
+
+        private static void RestoreObjectSnapshots(List<EditorObjectSnapshot> snapshots)
+        {
+            if (snapshots == null) return;
+            for (int i = 0; i < snapshots.Count; i++)
+            {
+                EditorObjectSnapshot snapshot = snapshots[i];
+                GameObject obj = snapshot != null ? snapshot.TargetObject : null;
+                if (obj == null) continue;
+
+                GameObject previousParentObject = obj.transform.parent != null ? obj.transform.parent.gameObject : null;
+                Transform parent = snapshot.ParentObject != null ? snapshot.ParentObject.transform : null;
+                if (obj.transform.parent != parent)
+                    obj.transform.SetParent(parent, false);
+
+                if (snapshot.ObjectName != null && obj.name != snapshot.ObjectName)
+                    obj.name = snapshot.ObjectName;
+
+                obj.transform.localPosition = snapshot.LocalPosition;
+                obj.transform.localRotation = snapshot.LocalRotation;
+                obj.transform.localScale = snapshot.LocalScale;
+
+                if (obj.activeSelf != snapshot.ActiveSelf)
+                    obj.SetActive(snapshot.ActiveSelf);
+
+                EditorEntityData currentData = ExtractEntityData(obj);
+                if (!string.Equals(BuildEntityDataSignature(currentData), BuildEntityDataSignature(snapshot.EntityData), StringComparison.Ordinal))
+                    RestoreEditorEntityData(obj, snapshot.EntityData);
+
+                // Visibility is independent from registry membership. A hidden placed object
+                // remains part of the level and must not disappear from save/validation lists.
+                if (snapshot.IsRegistered && !PlacedObjects.Contains(obj))
+                    RegisterPlacedObject(obj);
+                else if (!snapshot.IsRegistered && PlacedObjects.Contains(obj))
+                    RemovePlacedObjectFromTracking(obj);
+
+                if (snapshot.HasPlacedObjectType) PlacedObjectTypes[obj] = snapshot.ObjectType;
+                else PlacedObjectTypes.Remove(obj);
+
+                // Rebuild the runtime lists that are not represented directly by EntityData.
+                if (snapshot.IsRegistered) RebuildRuntimeTrackingForSnapshot(obj, snapshot);
+
+                if (snapshot.IsLocked) StudioUIManager.LockedObjects.Add(obj);
+                else StudioUIManager.LockedObjects.Remove(obj);
+
+                RestoreRigidbodySnapshot(obj, snapshot);
+
+                if (previousParentObject != null) RecalculateParentChildCount(previousParentObject);
+                if (snapshot.ParentObject != null) RecalculateParentChildCount(snapshot.ParentObject);
+                StudioGizmoController.InvalidateCachedCenter(obj);
+            }
+            RecalculateVoidDeathY();
+        }
+
+        private static void RestoreRigidbodySnapshot(GameObject obj, EditorObjectSnapshot snapshot)
+        {
+            if (obj == null || snapshot == null) return;
+            Rigidbody rb = obj.GetComponent<Rigidbody>();
+            if (!snapshot.HadRigidbody)
+            {
+                if (rb != null) GameObject.Destroy(rb);
+                return;
+            }
+
+            if (rb == null) rb = obj.AddComponent<Rigidbody>();
+            rb.isKinematic = snapshot.RigidbodyIsKinematic;
+            rb.useGravity = snapshot.RigidbodyUseGravity;
+            rb.detectCollisions = snapshot.RigidbodyDetectCollisions;
+            rb.mass = Mathf.Max(0.0001f, snapshot.RigidbodyMass);
+            rb.drag = Mathf.Max(0f, snapshot.RigidbodyDrag);
+            rb.angularDrag = Mathf.Max(0f, snapshot.RigidbodyAngularDrag);
+            rb.constraints = snapshot.RigidbodyConstraintFlags;
+        }
+
+        private static void RebuildRuntimeTrackingForSnapshot(GameObject obj, EditorObjectSnapshot snapshot)
+        {
+            if (obj == null || snapshot == null || !snapshot.HasPlacedObjectType) return;
+            switch (snapshot.ObjectType)
+            {
+                case PlacedObjectType.Jumper:
+                    if (!PlacedJumpers.Contains(obj)) PlacedJumpers.Add(obj);
+                    break;
+                case PlacedObjectType.Turbine:
+                    if (!PlacedTurbines.Contains(obj)) PlacedTurbines.Add(obj);
+                    Helix helix = obj.GetComponentInChildren<Helix>(true);
+                    if (helix != null) CachedHelixScripts[obj] = helix;
+                    break;
+                case PlacedObjectType.RotatingLaser:
+                    if (!PlacedRotatingLasers.Contains(obj)) PlacedRotatingLasers.Add(obj);
+                    AddLaserTrackingForSnapshot(obj, true);
+                    break;
+                case PlacedObjectType.Laser:
+                    AddLaserTrackingForSnapshot(obj, false);
+                    break;
+                case PlacedObjectType.Checkpoint:
+                    CheckPointScript cp = obj.GetComponentInChildren<CheckPointScript>(true);
+                    if (cp != null && !PlacedCheckpoints.Contains(cp)) PlacedCheckpoints.Add(cp);
+                    break;
+                case PlacedObjectType.GoalGate:
+                    PlacedGoalGate = obj;
+                    break;
+                case PlacedObjectType.Switch:
+                    if (!SwitchService.PlacedSwitches.ContainsKey(obj)) SwitchService.PlacedSwitches[obj] = new SwitchConfig();
+                    break;
+                case PlacedObjectType.GravityArea:
+                    if (!GravityAreaService.PlacedGravityAreas.Contains(obj)) GravityAreaService.PlacedGravityAreas.Add(obj);
+                    break;
+            }
+        }
+
+        private static void AddLaserTrackingForSnapshot(GameObject obj, bool rotating)
+        {
+            if (obj == null || PlacedLaserBarriers.Contains(obj)) return;
+            PlacedLaserBarriers.Add(obj);
+            BoxCollider collider = obj.transform.Find("Beam")?.GetComponent<BoxCollider>();
+            if (collider == null)
+            {
+                BoxCollider[] colliders = obj.GetComponentsInChildren<BoxCollider>(true);
+                for (int i = 0; i < colliders.Length; i++)
+                {
+                    if (colliders[i] != null && colliders[i].gameObject.name != "Editor_Snapping_Proxy")
+                    {
+                        collider = colliders[i];
+                        break;
+                    }
+                }
+            }
+            PlacedLaserColliders.Add(collider);
+        }
+
         public static void PerformUndo()
         {
-            if (UndoHistory.Count == 0)
+            if (UndoHistory == null || UndoHistory.Count == 0)
             {
                 ShowNotification("Nothing to undo.");
                 return;
             }
 
             var record = UndoHistory.Pop();
+            if (record == null)
+            {
+                ShowNotification("Undo entry was invalid.");
+                return;
+            }
+
+            if (record.PreviousObjectSnapshots != null && record.NextObjectSnapshots != null)
+            {
+                RestoreObjectSnapshots(record.PreviousObjectSnapshots);
+                RedoHistory.Push(record);
+                ShowNotification($"Undid {record.Description ?? record.AssetName ?? record.ActionType.ToString()}");
+                StudioUIManager.RefreshHierarchy();
+                StudioUIManager.NotifyObjectSelected(SelectedObject);
+                return;
+            }
 
             if (record.ActionType == HistoryActionType.Placement)
             {
@@ -2177,19 +2687,54 @@ namespace DeadCoreEditor
                 RedoHistory.Push(record);
                 ShowNotification("Undid Transform change");
             }
+            else if (record.ActionType == HistoryActionType.MotionPath || record.ActionType == HistoryActionType.ParameterChange || record.ActionType == HistoryActionType.ComponentChange)
+            {
+                if (record.TargetObject != null)
+                {
+                    if (record.PreviousMotionPath != null)
+                    {
+                        MotionPaths[record.TargetObject] = record.PreviousMotionPath.Clone();
+                        UpdateWaypointVisuals(record.TargetObject, record.PreviousMotionPath);
+                    }
+                    else
+                    {
+                        MotionPaths.Remove(record.TargetObject);
+                        DestroyWaypointVisuals(record.TargetObject);
+                    }
+                    if (record.EntityDataSnapshot != null)
+                        RestoreEditorEntityData(record.TargetObject, record.EntityDataSnapshot);
+                }
+                RedoHistory.Push(record);
+                ShowNotification($"Undid {record.Description ?? record.ActionType.ToString()}");
+            }
             StudioUIManager.RefreshHierarchy();
             StudioUIManager.RefreshInspectorValues();
         }
 
         public static void PerformRedo()
         {
-            if (RedoHistory.Count == 0)
+            if (RedoHistory == null || RedoHistory.Count == 0)
             {
                 ShowNotification("Nothing to redo.");
                 return;
             }
 
             var record = RedoHistory.Pop();
+            if (record == null)
+            {
+                ShowNotification("Redo entry was invalid.");
+                return;
+            }
+
+            if (record.PreviousObjectSnapshots != null && record.NextObjectSnapshots != null)
+            {
+                RestoreObjectSnapshots(record.NextObjectSnapshots);
+                PushUndoHistory(record);
+                ShowNotification($"Redid {record.Description ?? record.AssetName ?? record.ActionType.ToString()}");
+                StudioUIManager.RefreshHierarchy();
+                StudioUIManager.NotifyObjectSelected(SelectedObject);
+                return;
+            }
 
             if (record.ActionType == HistoryActionType.Placement)
             {
@@ -2200,7 +2745,7 @@ namespace DeadCoreEditor
                     if (record.EntityDataSnapshot != null)
                         ApplyEntityData(record.TargetObject, record.EntityDataSnapshot);
                 }
-                UndoHistory.Push(record);
+                PushUndoHistory(record);
                 ShowNotification($"Redid placement of {record.AssetName}");
             }
             else if (record.ActionType == HistoryActionType.Deletion)
@@ -2210,7 +2755,7 @@ namespace DeadCoreEditor
                     record.TargetObject.SetActive(false);
                     RemovePlacedObjectFromTracking(record.TargetObject);
                 }
-                UndoHistory.Push(record);
+                PushUndoHistory(record);
                 ShowNotification($"Re-deleted {record.AssetName}");
             }
             else if (record.ActionType == HistoryActionType.Parenting)
@@ -2224,7 +2769,7 @@ namespace DeadCoreEditor
                     if (record.NewParent != null) RecalculateParentChildCount(record.NewParent);
                     StudioGizmoController.InvalidateCachedCenter(record.TargetObject);
                 }
-                UndoHistory.Push(record);
+                PushUndoHistory(record);
                 ShowNotification("Redid Parenting");
             }
             else if (record.ActionType == HistoryActionType.Reposition)
@@ -2236,8 +2781,28 @@ namespace DeadCoreEditor
                     record.TargetObject.transform.localScale = record.NewScale;
                     StudioGizmoController.InvalidateCachedCenter(record.TargetObject);
                 }
-                UndoHistory.Push(record);
+                PushUndoHistory(record);
                 ShowNotification("Redid Transform change");
+            }
+            else if (record.ActionType == HistoryActionType.MotionPath || record.ActionType == HistoryActionType.ParameterChange || record.ActionType == HistoryActionType.ComponentChange)
+            {
+                if (record.TargetObject != null)
+                {
+                    if (record.NewMotionPath != null)
+                    {
+                        MotionPaths[record.TargetObject] = record.NewMotionPath.Clone();
+                        UpdateWaypointVisuals(record.TargetObject, record.NewMotionPath);
+                    }
+                    else
+                    {
+                        MotionPaths.Remove(record.TargetObject);
+                        DestroyWaypointVisuals(record.TargetObject);
+                    }
+                    if (record.EntityDataSnapshot != null)
+                        RestoreEditorEntityData(record.TargetObject, record.EntityDataSnapshot);
+                }
+                PushUndoHistory(record);
+                ShowNotification($"Redid {record.Description ?? record.ActionType.ToString()}");
             }
             StudioUIManager.RefreshHierarchy();
             StudioUIManager.RefreshInspectorValues();

@@ -1,7 +1,8 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Globalization;
 using UnityEngine;
+using MelonLoader;
 using Il2Cpp;
 
 using File = System.IO.File;
@@ -407,89 +408,218 @@ namespace DeadCoreEditor
 
     public static class LevelPersistenceService
     {
-        public static void SaveLevel(string filename)
+        // New fields are introduced additively. The loader continues to accept older files
+        // that do not contain a format marker (treated as version 1).
+        public const int CurrentFormatVersion = 3;
+
+        public static bool SaveLevel(string filename)
         {
-            string saveDir = MapBrowserService.MyLevelsDir;
-            if (!Directory.Exists(saveDir)) Directory.CreateDirectory(saveDir);
+            try
+            {
+                string saveDir = MapBrowserService.MyLevelsDir;
+                if (!Directory.Exists(saveDir)) Directory.CreateDirectory(saveDir);
 
-            string cleanName = Path.GetFileNameWithoutExtension(filename);
-            if (string.IsNullOrWhiteSpace(cleanName)) cleanName = "Default_Level";
+                string cleanName = Path.GetFileNameWithoutExtension(filename);
+                if (string.IsNullOrWhiteSpace(cleanName)) cleanName = "Default_Level";
 
-            string path = Path.Combine(saveDir, $"{cleanName}.txt");
-            SaveLevelToPath(path, true, path);
+                string path = Path.Combine(saveDir, $"{cleanName}.txt");
+                if (File.Exists(path))
+                {
+                    string preserved = LevelRecoveryService.PreserveExistingFileBeforeOverwrite(path);
+                    if (string.IsNullOrWhiteSpace(preserved))
+                    {
+                        EditorSessionManager.ShowNotification("Save cancelled: could not create a safety backup of the existing level.");
+                        MelonLogger.Warning("[Persistence] Refusing to overwrite without a recovery snapshot: " + path);
+                        return false;
+                    }
+                }
+
+                bool saved = SaveLevelToPath(path, true, path);
+                if (!saved)
+                    EditorSessionManager.ShowNotification("Save failed. The previous file was preserved when possible.");
+                return saved;
+            }
+            catch (Exception ex)
+            {
+                MelonLogger.Error("[Persistence] Save failed: " + ex);
+                EditorSessionManager.ShowNotification("Save failed. Check the MelonLoader log for details.");
+                return false;
+            }
         }
 
-        public static void SaveLevelToPath(string path, bool makeActive, string metadataSourcePath = null)
+        /// <summary>
+        /// Saves the current in-memory level under a new name. Returns null when the
+        /// destination exists and overwrite was not explicitly allowed.
+        /// </summary>
+        public static string NormalizeLevelName(string filename)
         {
-            if (string.IsNullOrWhiteSpace(path)) return;
-            string saveDir = Path.GetDirectoryName(path);
-            if (!string.IsNullOrEmpty(saveDir) && !Directory.Exists(saveDir)) Directory.CreateDirectory(saveDir);
+            string cleanName = Path.GetFileNameWithoutExtension(filename ?? string.Empty).Trim();
+            char[] invalid = Path.GetInvalidFileNameChars();
+            for (int i = 0; i < invalid.Length; i++) cleanName = cleanName.Replace(invalid[i], '_');
+            cleanName = cleanName.Trim().Trim('.');
+            return cleanName;
+        }
 
-            List<string> lines = new List<string>();
-            var inv = PersistenceUtility.Inv;
-
-            string cleanName = Path.GetFileNameWithoutExtension(path);
-            string metadataPath = string.IsNullOrWhiteSpace(metadataSourcePath) ? path : metadataSourcePath;
-            LevelMetadata existingMeta = NativeLogsMenuHijacker.ReadLevelMetadata(metadataPath, cleanName);
-            lines.Add($"#TITLE: {existingMeta.Title}");
-            lines.Add($"#AUTHOR: {existingMeta.Author}");
-            lines.Add($"#DIFFICULTY: {existingMeta.Difficulty}");
-            lines.Add($"#DESC: {existingMeta.Description}");
-            lines.Add($"#SCENE: {MapBrowserService.SelectedStagingScene}");
-
-            for (int i = 0; i < EditorSessionManager.PlacedObjects.Count; i++)
+        public static string SaveLevelAs(string filename, bool makeActive, bool overwrite)
+        {
+            try
             {
-                GameObject obj = EditorSessionManager.PlacedObjects[i];
-                if (obj == null || !obj.activeSelf) continue;
+                string cleanName = NormalizeLevelName(filename);
+                if (string.IsNullOrWhiteSpace(cleanName)) return null;
 
-                Vector3 pos = EditorSessionManager.MotionPaths.ContainsKey(obj)
-                    ? EditorSessionManager.MotionPaths[obj].PointA
-                    : obj.transform.position;
+                if (!Directory.Exists(MapBrowserService.MyLevelsDir))
+                    Directory.CreateDirectory(MapBrowserService.MyLevelsDir);
 
-                Quaternion rot = obj.transform.rotation;
-                Vector3 scl = obj.transform.localScale;
-                string name = obj.name.StartsWith("Custom_") ? obj.name.Substring(7) : obj.name;
-
-                int parentIdx = -1;
-                if (obj.transform.parent != null && EditorSessionManager.PlacedObjects.Contains(obj.transform.parent.gameObject))
+                string path = Path.Combine(MapBrowserService.MyLevelsDir, cleanName + ".txt");
+                if (File.Exists(path) && !overwrite) return null;
+                if (File.Exists(path) && overwrite)
                 {
-                    parentIdx = EditorSessionManager.PlacedObjects.IndexOf(obj.transform.parent.gameObject);
+                    string preserved = LevelRecoveryService.PreserveExistingFileBeforeOverwrite(path);
+                    if (string.IsNullOrWhiteSpace(preserved)) return null;
                 }
 
-                float legacyParam = 0f;
-                EditorEntityData data = EditorSessionManager.ExtractEntityData(obj);
+                string metadataSource = (File.Exists(path) && overwrite)
+                    ? path
+                    : (!string.IsNullOrWhiteSpace(MapBrowserService.SelectedMapPath) && File.Exists(MapBrowserService.SelectedMapPath)
+                        ? MapBrowserService.SelectedMapPath
+                        : path);
 
-                if (data.Has<JumperConfig>()) legacyParam = data.Get<JumperConfig>().Force;
-                else if (data.Has<TurbineConfig>()) legacyParam = data.Get<TurbineConfig>().Speed;
-                else if (data.Has<TurretConfig>()) legacyParam = data.Get<TurretConfig>().FireDelay;
-                else if (data.Has<LaserConfig>()) legacyParam = data.Get<LaserConfig>().RotationSpeed;
-                else if (data.Has<LightConfig>()) legacyParam = data.Get<LightConfig>().Intensity;
-                else if (data.Has<GravityConfig>()) legacyParam = data.Get<GravityConfig>().GravityForce;
-
-                string line = $"{name};{pos.x.ToString("F4", inv)};{pos.y.ToString("F4", inv)};{pos.z.ToString("F4", inv)};" +
-                              $"{scl.x.ToString("F4", inv)};{rot.x.ToString("F4", inv)};{rot.y.ToString("F4", inv)};{rot.z.ToString("F4", inv)};{rot.w.ToString("F4", inv)};" +
-                              $"{legacyParam.ToString("F2", inv)}";
-
-                foreach (var comp in data.Components.Values)
+                if (!SaveLevelToPath(path, makeActive, metadataSource)) return null;
+                if (makeActive)
                 {
-                    line += $";COMP:{comp.ComponentTag}:{comp.Serialize()}";
+                    MapBrowserService.SelectedMapPath = path;
+                    MapBrowserService.SelectedMapName = cleanName;
+                    MapBrowserService.RefreshFiles();
                 }
-
-                line += $";PARENT:{parentIdx}";
-                line += $";SCALE3:{scl.x.ToString("F4", inv)}:{scl.y.ToString("F4", inv)}:{scl.z.ToString("F4", inv)}";
-
-                lines.Add(line);
+                return path;
             }
-
-            File.WriteAllLines(path, lines.ToArray());
-            ThumbnailCaptureService.CaptureLevelThumbnail(path, EditorSessionManager.PlacedObjects, EditorSessionManager.LevelSpawnPosition);
-
-            if (makeActive)
+            catch (Exception ex)
             {
-                EditorSessionManager.ShowNotification($"Saved {lines.Count - 5} objects to {cleanName}.txt!");
-                MapBrowserService.SelectedMapPath = path;
-                MapBrowserService.SelectedMapName = cleanName;
-                MapBrowserService.RefreshFiles();
+                MelonLogger.Error("[Persistence] Save As failed: " + ex);
+                EditorSessionManager.ShowNotification("Save As failed. Check the MelonLoader log for details.");
+                return null;
+            }
+        }
+
+        public static string GetUniqueLevelName(string requestedName)
+        {
+            string baseName = NormalizeLevelName(requestedName);
+            if (string.IsNullOrWhiteSpace(baseName)) baseName = "Level_Copy";
+
+            if (!Directory.Exists(MapBrowserService.MyLevelsDir))
+                Directory.CreateDirectory(MapBrowserService.MyLevelsDir);
+
+            string candidate = baseName;
+            int suffix = 2;
+            while (File.Exists(Path.Combine(MapBrowserService.MyLevelsDir, candidate + ".txt")))
+            {
+                candidate = baseName + "_" + suffix;
+                suffix++;
+            }
+            return candidate;
+        }
+
+        public static bool SaveLevelToPath(string path, bool makeActive, string metadataSourcePath = null)
+        {
+            if (string.IsNullOrWhiteSpace(path)) return false;
+            try
+            {
+                string saveDir = Path.GetDirectoryName(path);
+                if (!string.IsNullOrEmpty(saveDir) && !Directory.Exists(saveDir)) Directory.CreateDirectory(saveDir);
+
+                List<string> lines = new List<string>();
+                var inv = PersistenceUtility.Inv;
+
+                string cleanName = Path.GetFileNameWithoutExtension(path);
+                string metadataPath = string.IsNullOrWhiteSpace(metadataSourcePath) ? path : metadataSourcePath;
+                LevelMetadata existingMeta = NativeLogsMenuHijacker.ReadLevelMetadata(metadataPath, cleanName);
+                lines.Add($"#FORMAT_VERSION: {CurrentFormatVersion}");
+                lines.Add($"#TITLE: {existingMeta.Title}");
+                lines.Add($"#AUTHOR: {existingMeta.Author}");
+                lines.Add($"#DIFFICULTY: {existingMeta.Difficulty}");
+                lines.Add($"#DESC: {existingMeta.Description}");
+                lines.Add($"#SCENE: {MapBrowserService.SelectedStagingScene}");
+
+                for (int i = 0; i < EditorSessionManager.PlacedObjects.Count; i++)
+                {
+                    GameObject obj = EditorSessionManager.PlacedObjects[i];
+                    if (obj == null) continue;
+
+                    Vector3 pos = EditorSessionManager.MotionPaths.ContainsKey(obj)
+                        ? EditorSessionManager.MotionPaths[obj].PointA
+                        : obj.transform.position;
+
+                    Quaternion rot = obj.transform.rotation;
+                    Vector3 scl = obj.transform.localScale;
+                    string name = obj.name.StartsWith("Custom_") ? obj.name.Substring(7) : obj.name;
+
+                    int parentIdx = -1;
+                    Transform serializedParent = obj.transform.parent;
+                    if (serializedParent != null && EditorSessionManager.PlacedObjects.Contains(serializedParent.gameObject))
+                        parentIdx = EditorSessionManager.PlacedObjects.IndexOf(serializedParent.gameObject);
+
+                    // Version 3 stores hierarchy-relative transforms explicitly. Earlier
+                    // versions wrote localScale but restored it as though it were worldScale.
+                    Vector3 savedLocalPosition = serializedParent != null && parentIdx >= 0
+                        ? serializedParent.InverseTransformPoint(pos)
+                        : pos;
+                    Quaternion savedLocalRotation = serializedParent != null && parentIdx >= 0
+                        ? Quaternion.Inverse(serializedParent.rotation) * rot
+                        : rot;
+                    Vector3 savedScale = parentIdx >= 0 ? obj.transform.localScale : obj.transform.lossyScale;
+
+                    float legacyParam = 0f;
+                    EditorEntityData data = EditorSessionManager.ExtractEntityData(obj);
+
+                    if (data.Has<JumperConfig>()) legacyParam = data.Get<JumperConfig>().Force;
+                    else if (data.Has<TurbineConfig>()) legacyParam = data.Get<TurbineConfig>().Speed;
+                    else if (data.Has<TurretConfig>()) legacyParam = data.Get<TurretConfig>().FireDelay;
+                    else if (data.Has<LaserConfig>()) legacyParam = data.Get<LaserConfig>().RotationSpeed;
+                    else if (data.Has<LightConfig>()) legacyParam = data.Get<LightConfig>().Intensity;
+                    else if (data.Has<GravityConfig>()) legacyParam = data.Get<GravityConfig>().GravityForce;
+
+                    string line = $"{name};{pos.x.ToString("F4", inv)};{pos.y.ToString("F4", inv)};{pos.z.ToString("F4", inv)};" +
+                                  $"{scl.x.ToString("F4", inv)};{rot.x.ToString("F4", inv)};{rot.y.ToString("F4", inv)};{rot.z.ToString("F4", inv)};{rot.w.ToString("F4", inv)};" +
+                                  $"{legacyParam.ToString("F2", inv)}";
+
+                    foreach (var comp in data.Components.Values)
+                        line += $";COMP:{comp.ComponentTag}:{comp.Serialize()}";
+
+                    line += $";PARENT:{parentIdx}";
+                    line += $";SCALE3:{savedScale.x.ToString("F4", inv)}:{savedScale.y.ToString("F4", inv)}:{savedScale.z.ToString("F4", inv)}";
+                    line += $";LOCALPOS:{savedLocalPosition.x.ToString("F4", inv)}:{savedLocalPosition.y.ToString("F4", inv)}:{savedLocalPosition.z.ToString("F4", inv)}";
+                    line += $";LOCALROT:{savedLocalRotation.x.ToString("F5", inv)}:{savedLocalRotation.y.ToString("F5", inv)}:{savedLocalRotation.z.ToString("F5", inv)}:{savedLocalRotation.w.ToString("F5", inv)}";
+                    line += $";ACTIVE:{(obj.activeSelf ? 1 : 0)}";
+                    lines.Add(line);
+                }
+
+                File.WriteAllLines(path, lines.ToArray());
+                if (!File.Exists(path) || new System.IO.FileInfo(path).Length == 0)
+                    throw new System.IO.IOException("The level file was not written successfully.");
+
+                try
+                {
+                    ThumbnailCaptureService.CaptureLevelThumbnail(path, EditorSessionManager.PlacedObjects, EditorSessionManager.LevelSpawnPosition);
+                }
+                catch (Exception thumbnailEx)
+                {
+                    MelonLogger.Warning("[Persistence] Level saved, but thumbnail capture failed: " + thumbnailEx.Message);
+                }
+
+                if (makeActive)
+                {
+                    EditorSessionManager.ShowNotification($"Saved {lines.Count - 6} objects to {cleanName}.txt!");
+                    MapBrowserService.SelectedMapPath = path;
+                    MapBrowserService.SelectedMapName = cleanName;
+                    MapBrowserService.RefreshFiles();
+                }
+
+                return true;
+            }
+            catch (Exception ex)
+            {
+                MelonLogger.Error("[Persistence] Could not write '" + path + "': " + ex);
+                return false;
             }
         }
 
@@ -518,7 +648,22 @@ namespace DeadCoreEditor
 
             List<int> loadedParentIndices = new List<int>();
             List<Vector3> loadedScales = new List<Vector3>();
+            List<Vector3> loadedLocalPositions = new List<Vector3>();
+            List<Quaternion> loadedLocalRotations = new List<Quaternion>();
+            List<bool> hasLocalTransforms = new List<bool>();
             int count = 0;
+            int fileFormatVersion = 1;
+            for (int i = 0; i < lines.Length; i++)
+            {
+                string header = lines[i] != null ? lines[i].Trim() : string.Empty;
+                if (header.StartsWith("#FORMAT_VERSION:", StringComparison.OrdinalIgnoreCase))
+                {
+                    fileFormatVersion = PersistenceUtility.ParseInt(header.Substring("#FORMAT_VERSION:".Length), 1);
+                    break;
+                }
+            }
+            if (fileFormatVersion > CurrentFormatVersion)
+                MelonLogger.Warning($"[Persistence] Level format v{fileFormatVersion} is newer than this editor (v{CurrentFormatVersion}); attempting backward-compatible load.");
 
             foreach (string line in lines)
             {
@@ -589,7 +734,30 @@ namespace DeadCoreEditor
                     loadedParentIndices.Add(pIndex);
                     loadedScales.Add(scaleVec);
 
+                    string localPosData = PersistenceUtility.ExtractSubTagData(trimmed, ";LOCALPOS:");
+                    string localRotData = PersistenceUtility.ExtractSubTagData(trimmed, ";LOCALROT:");
+                    bool hasLocalTransform = !string.IsNullOrEmpty(localPosData) && !string.IsNullOrEmpty(localRotData);
+                    Vector3 localPos = Vector3.zero;
+                    Quaternion localRot = Quaternion.identity;
+                    if (hasLocalTransform)
+                    {
+                        string[] lp = localPosData.Split(':');
+                        string[] lr = localRotData.Split(':');
+                        if (lp.Length >= 3 && lr.Length >= 4)
+                        {
+                            localPos = PersistenceUtility.ParseVector3(lp[0], lp[1], lp[2]);
+                            localRot = PersistenceUtility.ParseQuaternion(lr[0], lr[1], lr[2], lr[3]);
+                        }
+                        else hasLocalTransform = false;
+                    }
+                    loadedLocalPositions.Add(localPos);
+                    loadedLocalRotations.Add(localRot);
+                    hasLocalTransforms.Add(hasLocalTransform);
+
                     EditorSessionManager.RegisterPlacedObject(obj);
+                    string activeTag = PersistenceUtility.ExtractSubTagData(trimmed, ";ACTIVE:");
+                    if (!string.IsNullOrEmpty(activeTag) && PersistenceUtility.ParseInt(activeTag, 1) == 0)
+                        obj.SetActive(false);
                     count++;
                 }
             }
@@ -602,23 +770,27 @@ namespace DeadCoreEditor
                     GameObject parent = EditorSessionManager.PlacedObjects[loadedParentIndices[i]];
                     if (child != null && parent != null && child != parent)
                     {
-                        Vector3 desiredWorldPos = child.transform.position;
-                        Quaternion desiredWorldRot = child.transform.rotation;
-
-                        child.transform.SetParent(parent.transform, true);
-
-                        if (i < loadedScales.Count)
+                        if (i < hasLocalTransforms.Count && hasLocalTransforms[i])
                         {
-                            Vector3 pScale = parent.transform.lossyScale;
-                            child.transform.localScale = new Vector3(
-                                loadedScales[i].x / (Mathf.Abs(pScale.x) > 0.0001f ? pScale.x : 1f),
-                                loadedScales[i].y / (Mathf.Abs(pScale.y) > 0.0001f ? pScale.y : 1f),
-                                loadedScales[i].z / (Mathf.Abs(pScale.z) > 0.0001f ? pScale.z : 1f)
-                            );
+                            // New-format levels restore the complete local transform.
+                            // SetParent(false) avoids Unity preserving a temporary world
+                            // transform and then multiplying the parent's scale again.
+                            child.transform.SetParent(parent.transform, false);
+                            child.transform.localPosition = loadedLocalPositions[i];
+                            child.transform.localRotation = loadedLocalRotations[i];
+                            child.transform.localScale = i < loadedScales.Count ? loadedScales[i] : Vector3.one;
                         }
-
-                        child.transform.position = desiredWorldPos;
-                        child.transform.rotation = desiredWorldRot;
+                        else
+                        {
+                            // Legacy files stored world position/rotation and local scale.
+                            // Preserve those values without dividing localScale by lossyScale.
+                            Vector3 desiredWorldPos = child.transform.position;
+                            Quaternion desiredWorldRot = child.transform.rotation;
+                            child.transform.SetParent(parent.transform, true);
+                            child.transform.position = desiredWorldPos;
+                            child.transform.rotation = desiredWorldRot;
+                            if (i < loadedScales.Count) child.transform.localScale = loadedScales[i];
+                        }
 
                         EditorSessionManager.RecalculateParentChildCount(parent);
                     }

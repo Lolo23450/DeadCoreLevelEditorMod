@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.IO;
 using System.Text;
 using System.Collections;
@@ -8,11 +8,12 @@ using System.Diagnostics;
 using System.Runtime.InteropServices;
 using MelonLoader;
 using UnityEngine;
-using UnityEngine.Networking;
 using UnityEngine.SceneManagement;
 using Il2Cpp;
 using Il2CppInterop.Runtime;
 using Il2CppInterop.Runtime.InteropTypes.Arrays;
+using Fmod = Il2CppFMOD;
+using FmodUnity = Il2CppFMODUnity;
 
 namespace DeadCoreEditor
 {
@@ -32,8 +33,21 @@ namespace DeadCoreEditor
         public static readonly Dictionary<string, AudioClip> CustomClips = new Dictionary<string, AudioClip>(StringComparer.OrdinalIgnoreCase);
         public static readonly Dictionary<GameObject, AudioConfig> PlacedAudioConfigs = new Dictionary<GameObject, AudioConfig>();
 
+        // Custom files are loaded by the game's existing FMOD system. This avoids
+        // UnityWebRequestMultimedia.GetAudioClip, whose DownloadHandlerAudioClip
+        // constructor is unavailable in this game's generated IL2CPP bindings.
+        private static readonly Dictionary<string, Fmod.Sound> CustomFmodSounds = new Dictionary<string, Fmod.Sound>(StringComparer.OrdinalIgnoreCase);
+        private static readonly Dictionary<string, bool> CustomFmodSoundIsMusic = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
+        private static readonly Dictionary<string, float> CustomFmodSoundDurations = new Dictionary<string, float>(StringComparer.OrdinalIgnoreCase);
+        private static Fmod.Channel _customFmodMusicChannel;
+        private static Fmod.Channel _customFmodAmbienceChannel;
+        private static Fmod.Channel _customFmodPreviewChannel;
+        private static string _activeMusicTrackId = "";
+        private static string _activeAmbientTrackId = "";
+
         private static GameObject _audioHost = null;
         private static AudioSource _unityMusicSource = null;
+        private static AudioSource _unityAmbienceSource = null;
         private static AudioSource _unityPreviewSource = null;
 
         public static string CurrentlyPreviewingTrackId = "";
@@ -50,6 +64,11 @@ namespace DeadCoreEditor
             _unityMusicSource.playOnAwake = false;
             _unityMusicSource.loop = true;
             _unityMusicSource.spatialBlend = 0f;
+
+            _unityAmbienceSource = _audioHost.AddComponent<AudioSource>();
+            _unityAmbienceSource.playOnAwake = false;
+            _unityAmbienceSource.loop = true;
+            _unityAmbienceSource.spatialBlend = 0f;
 
             _unityPreviewSource = _audioHost.AddComponent<AudioSource>();
             _unityPreviewSource.playOnAwake = false;
@@ -273,6 +292,8 @@ namespace DeadCoreEditor
             if (!CustomClips.ContainsKey(name)) CustomClips[name] = clip;
 
             RegisterTrack(name, name, false, clip.length >= 15f);
+            if (AvailableTracks.TryGetValue(name, out TrackItem registeredClip))
+                registeredClip.Duration = clip.length;
         }
 
         private static void ScanCustomAudioFolder(Action onComplete)
@@ -304,36 +325,129 @@ namespace DeadCoreEditor
                 string name = Path.GetFileNameWithoutExtension(file);
                 string trackId = "[Custom] " + name;
 
-                if (CustomClips.ContainsKey(trackId)) continue;
+                // Re-register already-loaded sounds after a manual rescan.
+                if (CustomFmodSounds.ContainsKey(trackId))
+                {
+                    bool wasMusic = CustomFmodSoundIsMusic.TryGetValue(trackId, out bool cachedMusic) && cachedMusic;
+                    RegisterTrack(trackId, "[Custom] " + name, false, wasMusic);
+                    if (AvailableTracks.TryGetValue(trackId, out TrackItem cachedItem) && CustomFmodSoundDurations.TryGetValue(trackId, out float cachedDuration))
+                        cachedItem.Duration = cachedDuration;
+                    continue;
+                }
 
-                AudioType aType = file.EndsWith(".ogg", StringComparison.OrdinalIgnoreCase) ? AudioType.OGGVORBIS : AudioType.WAV;
-                UnityWebRequest req = UnityWebRequestMultimedia.GetAudioClip("file://" + file, aType);
                 try
                 {
-                    yield return req.SendWebRequest();
+                    // DeadCore already runs FMOD. Use its low-level system to stream
+                    // the local file directly instead of Unity's unavailable audio handler.
+                    Fmod.System fmodSystem = FmodUnity.RuntimeManager.LowlevelSystem;
+                    Fmod.Sound sound;
+                    Fmod.RESULT result = fmodSystem.createStream(
+                        Path.GetFullPath(file),
+                        (Fmod.MODE)0,
+                        out sound
+                    );
 
-                    if (string.IsNullOrEmpty(req.error))
+                    if ((int)result != 0)
                     {
-                        AudioClip clip = DownloadHandlerAudioClip.GetContent(req);
-                        if (clip != null)
-                        {
-                            clip.name = trackId;
-                            CustomClips[trackId] = clip;
-                            DiscoveredClips[trackId] = clip;
-                            RegisterTrack(trackId, "[Custom] " + name, false, clip.length >= 15f);
-                        }
+                        MelonLogger.Warning($"[Audio] FMOD could not load '{name}': {result}");
+                        continue;
                     }
+
+                    uint durationMs = 0;
+                    try
+                    {
+                        sound.getLength(out durationMs, (Fmod.TIMEUNIT)1); // TIMEUNIT.MS
+                    }
+                    catch (Exception durationError)
+                    {
+                        MelonLogger.Warning($"[Audio] Could not read duration for '{name}': {durationError.Message}");
+                    }
+
+                    bool isMusic = durationMs >= 15000u;
+                    CustomFmodSounds[trackId] = sound;
+                    CustomFmodSoundIsMusic[trackId] = isMusic;
+                    CustomFmodSoundDurations[trackId] = durationMs / 1000f;
+                    RegisterTrack(trackId, "[Custom] " + name, false, isMusic);
+                    if (AvailableTracks.TryGetValue(trackId, out TrackItem trackItem))
+                        trackItem.Duration = durationMs / 1000f;
+                    MelonLogger.Msg($"[Audio] Loaded custom file through FMOD: '{name}' ({durationMs / 1000f:0.0}s)");
                 }
-                finally
+                catch (Exception ex)
                 {
-                    req.Dispose();
+                    MelonLogger.Error($"[Audio] Could not load custom file '{name}' through FMOD: {ex}");
                 }
+
+                // Yield between files so a folder with many tracks does not block a frame.
+                yield return null;
             }
+
             onComplete?.Invoke();
         }
 
+        private static bool TryPlayCustomFmodTrack(string trackId, float volume, bool loop, float pitch, bool preview, bool ambience)
+        {
+            if (!CustomFmodSounds.TryGetValue(trackId, out Fmod.Sound sound))
+                return false;
+
+            try
+            {
+                Fmod.System fmodSystem = FmodUnity.RuntimeManager.LowlevelSystem;
+                Fmod.Channel channel;
+                Fmod.RESULT result = fmodSystem.playSound(
+                    sound,
+                    default(Fmod.ChannelGroup),
+                    false,
+                    out channel
+                );
+
+                if ((int)result != 0)
+                {
+                    MelonLogger.Warning($"[Audio] FMOD could not play '{trackId}': {result}");
+                    return false;
+                }
+
+                channel.setVolume(Mathf.Clamp01(volume));
+                channel.setPitch(Mathf.Clamp(pitch, 0.25f, 4f));
+                channel.setMode(loop ? (Fmod.MODE)2 : (Fmod.MODE)0); // LOOP_NORMAL or DEFAULT
+
+                if (preview)
+                    _customFmodPreviewChannel = channel;
+                else if (ambience)
+                    _customFmodAmbienceChannel = channel;
+                else
+                    _customFmodMusicChannel = channel;
+
+                return true;
+            }
+            catch (Exception ex)
+            {
+                MelonLogger.Error($"[Audio] FMOD playback failed for '{trackId}': {ex}");
+                return false;
+            }
+        }
+
+        private static void UpdateCustomFmodChannel(Fmod.Channel channel, float volume, float pitch, bool loop)
+        {
+            try
+            {
+                channel.setVolume(Mathf.Clamp01(volume));
+                channel.setPitch(Mathf.Clamp(pitch, 0.25f, 4f));
+                channel.setMode(loop ? (Fmod.MODE)2 : (Fmod.MODE)0);
+            }
+            catch (Exception ex)
+            {
+                MelonLogger.Warning("[Audio] Could not update active FMOD channel: " + ex.Message);
+            }
+        }
+
+        private static void StopCustomFmodChannel(ref Fmod.Channel channel)
+        {
+            try { channel.stop(); } catch { }
+            channel = default(Fmod.Channel);
+        }
+
         // =========================================================================
-        // PLAYBACK ENGINE
+        // PLAYBACK ENGINE: INDEPENDENT MUSIC + AMBIENCE LANES
         // =========================================================================
 
         public static void ApplyAudioConfig(GameObject controllerObj, AudioConfig cfg)
@@ -343,41 +457,148 @@ namespace DeadCoreEditor
 
             PlacedAudioConfigs[controllerObj] = cfg.Clone();
             bool shouldPlay = !EditorSessionManager.IsEditModeActive || cfg.PlayInEditMode;
-
-            if (shouldPlay && !string.IsNullOrEmpty(cfg.MusicTrackName))
+            if (!shouldPlay)
             {
-                PlayTrack(cfg.MusicTrackName, cfg.MusicVolume);
-            }
-            else
-            {
-                StopAllAudio();
-            }
-        }
-
-        private static void PlayTrack(string trackId, float volume)
-        {
-            if (string.IsNullOrEmpty(trackId)) return;
-
-            // 1. Try DeadCore Native Music / Scene Emitter Hook
-            if (TryPlaySpecificDeadCoreTrack(trackId, volume))
-            {
+                StopMusicLane();
+                StopAmbienceLane();
                 return;
             }
 
-            // 2. Custom Audio File
-            if (CustomClips.TryGetValue(trackId, out AudioClip clip) && clip != null)
+            ApplyConfiguredLane(cfg.MusicTrackName, cfg.MusicVolume, cfg.MusicPitch, cfg.Loop, false);
+            ApplyConfiguredLane(cfg.AmbientTrackName, cfg.AmbientVolume, cfg.AmbientPitch, cfg.AmbientLoop, true);
+        }
+
+        private static void ApplyConfiguredLane(string trackId, float volume, float pitch, bool loop, bool ambience)
+        {
+            trackId = (trackId ?? "").Trim();
+            string activeId = ambience ? _activeAmbientTrackId : _activeMusicTrackId;
+            bool changed = !string.Equals(activeId, trackId, StringComparison.OrdinalIgnoreCase);
+
+            if (string.IsNullOrEmpty(trackId))
             {
-                StopAllAudio();
-                _unityMusicSource.clip = clip;
-                _unityMusicSource.volume = volume;
-                _unityMusicSource.Play();
+                if (ambience) StopAmbienceLane(); else StopMusicLane();
+                return;
             }
+
+            if (!changed)
+            {
+                if (CustomFmodSounds.ContainsKey(trackId))
+                {
+                    if (ambience) UpdateCustomFmodChannel(_customFmodAmbienceChannel, volume, pitch, loop);
+                    else UpdateCustomFmodChannel(_customFmodMusicChannel, volume, pitch, loop);
+                }
+                else if (CustomClips.TryGetValue(trackId, out AudioClip currentClip) && currentClip != null)
+                {
+                    AudioSource source = ambience ? _unityAmbienceSource : _unityMusicSource;
+                    if (source != null)
+                    {
+                        source.volume = Mathf.Clamp01(volume);
+                        source.pitch = Mathf.Clamp(pitch, 0.25f, 4f);
+                        source.loop = loop;
+                    }
+                }
+                return;
+            }
+
+            if (ambience) StopAmbienceLane(); else StopMusicLane();
+
+            bool started = false;
+            if (CustomFmodSounds.ContainsKey(trackId))
+            {
+                started = TryPlayCustomFmodTrack(trackId, volume, loop, pitch, false, ambience);
+            }
+            else if (CustomClips.TryGetValue(trackId, out AudioClip clip) && clip != null)
+            {
+                AudioSource source = ambience ? _unityAmbienceSource : _unityMusicSource;
+                if (source != null)
+                {
+                    source.Stop();
+                    source.clip = clip;
+                    source.volume = Mathf.Clamp01(volume);
+                    source.pitch = Mathf.Clamp(pitch, 0.25f, 4f);
+                    source.loop = loop;
+                    source.Play();
+                    started = true;
+                }
+            }
+            else
+            {
+                // Native DeadCore event emitters own their internal mixer settings.
+                // They can be triggered here, but custom file tracks provide the
+                // independent volume/pitch/loop controls exposed by Studio.
+                started = TryPlaySpecificDeadCoreTrack(trackId, volume);
+            }
+
+            if (started)
+            {
+                if (ambience) _activeAmbientTrackId = trackId;
+                else _activeMusicTrackId = trackId;
+            }
+        }
+
+        private static void StopSpecificNativeEmitter(string trackId)
+        {
+            if (string.IsNullOrWhiteSpace(trackId)) return;
+            try
+            {
+                GameObject target = GameObject.Find(trackId);
+                if (target == null) return;
+                Component emitter = GetIl2CppComponent(target, "FMOD_StudioEventEmitter");
+                if (emitter != null) InvokeIl2CppMethod(emitter, "Stop");
+            }
+            catch (Exception ex)
+            {
+                MelonLogger.Warning("[Audio] Could not stop native emitter '" + trackId + "': " + ex.Message);
+            }
+        }
+
+        private static void StopNativeMusicTrack(string trackId)
+        {
+            if (string.IsNullOrWhiteSpace(trackId)) return;
+            StopSpecificNativeEmitter(trackId);
+            try
+            {
+                GameObject manager = GameObject.Find("MusicManager");
+                if (manager != null)
+                {
+                    Component musicManager = GetIl2CppComponent(manager, "MusicManagerScript");
+                    if (musicManager != null) InvokeIl2CppMethod(musicManager, "Stop");
+                }
+            }
+            catch (Exception ex)
+            {
+                MelonLogger.Warning("[Audio] Could not stop native music lane: " + ex.Message);
+            }
+        }
+
+        private static void StopMusicLane()
+        {
+            StopCustomFmodChannel(ref _customFmodMusicChannel);
+            if (_unityMusicSource != null) _unityMusicSource.Stop();
+            if (!string.IsNullOrEmpty(_activeMusicTrackId) && !CustomFmodSounds.ContainsKey(_activeMusicTrackId) && !CustomClips.ContainsKey(_activeMusicTrackId))
+                StopNativeMusicTrack(_activeMusicTrackId);
+            _activeMusicTrackId = "";
+        }
+
+        private static void StopAmbienceLane()
+        {
+            StopCustomFmodChannel(ref _customFmodAmbienceChannel);
+            if (_unityAmbienceSource != null) _unityAmbienceSource.Stop();
+            if (!string.IsNullOrEmpty(_activeAmbientTrackId) && !CustomFmodSounds.ContainsKey(_activeAmbientTrackId) && !CustomClips.ContainsKey(_activeAmbientTrackId))
+                StopSpecificNativeEmitter(_activeAmbientTrackId);
+            _activeAmbientTrackId = "";
         }
 
         public static void StopAllAudio()
         {
+            StopMusicLane();
+            StopAmbienceLane();
+            StopCustomFmodChannel(ref _customFmodPreviewChannel);
+            if (_unityPreviewSource != null) _unityPreviewSource.Stop();
+            CurrentlyPreviewingTrackId = "";
+            // A final native stop catches any scene emitters that were started outside
+            // the editor's two managed audio lanes.
             StopDeadCoreMusic();
-            if (_unityMusicSource != null) _unityMusicSource.Stop();
         }
 
         public static void StopLevelAudio() => StopAllAudio();
@@ -385,7 +606,6 @@ namespace DeadCoreEditor
         public static void PreviewTrack(string trackId)
         {
             EnsureAudioHost();
-
             if (CurrentlyPreviewingTrackId == trackId)
             {
                 StopPreview();
@@ -394,29 +614,43 @@ namespace DeadCoreEditor
 
             StopPreview();
             CurrentlyPreviewingTrackId = trackId;
-
             MelonLogger.Msg($"[Audio Preview] Starting preview for '{trackId}'...");
 
-            // 1. Play Specific DeadCore Native Track
-            if (TryPlaySpecificDeadCoreTrack(trackId, 0.9f))
+            if (CustomFmodSounds.ContainsKey(trackId))
             {
+                if (TryPlayCustomFmodTrack(trackId, 0.85f, false, 1f, true, false))
+                    MelonLogger.Msg($"[Audio Preview] Playing Custom File through FMOD: '{trackId}'");
                 return;
             }
 
-            // 2. Custom Audio Clip
             if (CustomClips.TryGetValue(trackId, out AudioClip clip) && clip != null)
             {
                 _unityPreviewSource.clip = clip;
                 _unityPreviewSource.volume = 0.85f;
+                _unityPreviewSource.pitch = 1f;
+                _unityPreviewSource.loop = false;
                 _unityPreviewSource.Play();
-                MelonLogger.Msg($"[Audio Preview] Playing Custom File: '{trackId}'");
+                MelonLogger.Msg($"[Audio Preview] Playing AudioClip: '{trackId}'");
+                return;
             }
+
+            // Native emitters use DeadCore's own global event system and cannot be
+            // previewed independently of the native game music bus.
+            if (TryPlaySpecificDeadCoreTrack(trackId, 0.9f))
+                MelonLogger.Msg($"[Audio Preview] Triggered native DeadCore track: '{trackId}'");
         }
 
         public static void StopPreview()
         {
-            StopDeadCoreMusic();
+            StopCustomFmodChannel(ref _customFmodPreviewChannel);
             if (_unityPreviewSource != null) _unityPreviewSource.Stop();
+            if (!string.IsNullOrEmpty(CurrentlyPreviewingTrackId) && !CustomFmodSounds.ContainsKey(CurrentlyPreviewingTrackId) && !CustomClips.ContainsKey(CurrentlyPreviewingTrackId))
+            {
+                if (CurrentlyPreviewingTrackId.StartsWith("Music_TrackList_", StringComparison.OrdinalIgnoreCase))
+                    StopNativeMusicTrack(CurrentlyPreviewingTrackId);
+                else
+                    StopSpecificNativeEmitter(CurrentlyPreviewingTrackId);
+            }
             CurrentlyPreviewingTrackId = "";
         }
 

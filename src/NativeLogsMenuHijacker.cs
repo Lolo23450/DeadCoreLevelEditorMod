@@ -142,6 +142,7 @@ namespace DeadCoreEditor
 
                 List<string> finalLines = new List<string>
                 {
+                    $"#FORMAT_VERSION: {LevelPersistenceService.CurrentFormatVersion}",
                     $"#TITLE: {title}",
                     $"#AUTHOR: {author}",
                     $"#DIFFICULTY: {diff}",

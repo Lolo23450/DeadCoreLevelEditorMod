@@ -5,7 +5,7 @@ using System.Globalization;
 using MelonLoader;
 using UnityEngine;
 
-[assembly: MelonInfo(typeof(DeadCoreEditor.DeadCoreLevelEditorMod), "DeadCore Level Editor Suite - Studio Edition", "9.6.1", "Trufa")]
+[assembly: MelonInfo(typeof(DeadCoreEditor.DeadCoreLevelEditorMod), "DeadCore Level Editor Suite - Studio Edition", "9.8.2", "Trufa")]
 [assembly: MelonGame(null, null)]
 
 namespace DeadCoreEditor
@@ -149,7 +149,7 @@ namespace DeadCoreEditor
             var clone = new EditorEntityData();
             foreach (var kvp in Components)
             {
-                clone.Components[kvp.Key] = kvp.Value.Clone();
+                clone.Components[kvp.Key] = kvp.Value != null ? kvp.Value.Clone() : null;
             }
             return clone;
         }
@@ -513,6 +513,8 @@ namespace DeadCoreEditor
         public bool PlayInEditMode = false;
         public string AmbientTrackName = "";
         public float AmbientVolume = 0.50f;
+        public float AmbientPitch = 1.0f;
+        public bool AmbientLoop = true;
 
         public AudioConfig Clone()
         {
@@ -524,7 +526,9 @@ namespace DeadCoreEditor
                 Loop = this.Loop,
                 PlayInEditMode = this.PlayInEditMode,
                 AmbientTrackName = this.AmbientTrackName,
-                AmbientVolume = this.AmbientVolume
+                AmbientVolume = this.AmbientVolume,
+                AmbientPitch = this.AmbientPitch,
+                AmbientLoop = this.AmbientLoop
             };
         }
 
@@ -538,7 +542,8 @@ namespace DeadCoreEditor
             string safeAmb = (AmbientTrackName ?? "").Replace(":", "%3A");
 
             return $"{safeMusic}:{MusicVolume.ToString("F2", inv)}:{MusicPitch.ToString("F2", inv)}:" +
-                   $"{(Loop ? 1 : 0)}:{(PlayInEditMode ? 1 : 0)}:{safeAmb}:{AmbientVolume.ToString("F2", inv)}";
+                   $"{(Loop ? 1 : 0)}:{(PlayInEditMode ? 1 : 0)}:{safeAmb}:{AmbientVolume.ToString("F2", inv)}:" +
+                   $"{(AmbientLoop ? 1 : 0)}:{AmbientPitch.ToString("F2", inv)}";
         }
 
         public void Deserialize(string rawData)
@@ -554,6 +559,8 @@ namespace DeadCoreEditor
             if (p.Length >= 5) PlayInEditMode = p[4] == "1";
             if (p.Length >= 6) AmbientTrackName = p[5].Replace("%3A", ":");
             if (p.Length >= 7) AmbientVolume = PersistenceUtility.ParseFloat(p[6], 0.50f);
+            if (p.Length >= 8) AmbientLoop = p[7] == "1";
+            if (p.Length >= 9) AmbientPitch = Mathf.Clamp(PersistenceUtility.ParseFloat(p[8], 1.0f), 0.25f, 4.0f);
         }
     }
 
@@ -917,12 +924,71 @@ namespace DeadCoreEditor
     // SECTION 6: HISTORY ACTION RECORD
     // =========================================================================
 
+    public class EditorObjectSnapshot
+    {
+        public GameObject TargetObject;
+        public string ObjectName;
+        public Vector3 LocalPosition;
+        public Quaternion LocalRotation;
+        public Vector3 LocalScale;
+        public GameObject ParentObject;
+        public bool ActiveSelf;
+        public bool IsRegistered;
+        public bool IsLocked;
+        public bool HasPlacedObjectType;
+        public PlacedObjectType ObjectType;
+        public bool HadRigidbody;
+        public bool RigidbodyIsKinematic;
+        public bool RigidbodyUseGravity;
+        public bool RigidbodyDetectCollisions;
+        public float RigidbodyMass;
+        public float RigidbodyDrag;
+        public float RigidbodyAngularDrag;
+        public RigidbodyConstraints RigidbodyConstraintFlags;
+        public EditorEntityData EntityData;
+
+        public EditorObjectSnapshot Clone()
+        {
+            return new EditorObjectSnapshot
+            {
+                TargetObject = TargetObject,
+                ObjectName = ObjectName,
+                LocalPosition = LocalPosition,
+                LocalRotation = LocalRotation,
+                LocalScale = LocalScale,
+                ParentObject = ParentObject,
+                ActiveSelf = ActiveSelf,
+                IsRegistered = IsRegistered,
+                IsLocked = IsLocked,
+                HasPlacedObjectType = HasPlacedObjectType,
+                ObjectType = ObjectType,
+                HadRigidbody = HadRigidbody,
+                RigidbodyIsKinematic = RigidbodyIsKinematic,
+                RigidbodyUseGravity = RigidbodyUseGravity,
+                RigidbodyDetectCollisions = RigidbodyDetectCollisions,
+                RigidbodyMass = RigidbodyMass,
+                RigidbodyDrag = RigidbodyDrag,
+                RigidbodyAngularDrag = RigidbodyAngularDrag,
+                RigidbodyConstraintFlags = RigidbodyConstraintFlags,
+                EntityData = EntityData != null ? EntityData.Clone() : null
+            };
+        }
+    }
+
     public class HistoryRecord
     {
         public HistoryActionType ActionType;
         public GameObject TargetObject;
         public CatalogAsset Asset;
         public string AssetName;
+        public string Description;
+        public string CoalesceKey;
+        public float LastChangeTime;
+
+        // Grouped before/after snapshots let one inspector edit affect multiple selected objects
+        // while remaining a single undo step.
+        public List<EditorObjectSnapshot> PreviousObjectSnapshots;
+        public List<EditorObjectSnapshot> NextObjectSnapshots;
 
         public Vector3 Position;
         public Quaternion Rotation;

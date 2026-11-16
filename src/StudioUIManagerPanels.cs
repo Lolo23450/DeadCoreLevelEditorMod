@@ -1297,28 +1297,47 @@ namespace DeadCoreEditor
                 return;
             }
 
-            Vector3 centroid = Vector3.zero;
+            List<GameObject> groupChildren = new List<GameObject>();
             for (int i = 0; i < EditorSessionManager.SelectedObjects.Count; i++)
-                centroid += EditorSessionManager.SelectedObjects[i].transform.position;
-            centroid /= EditorSessionManager.SelectedObjects.Count;
+            {
+                GameObject selected = EditorSessionManager.SelectedObjects[i];
+                if (selected == null) continue;
+                if (ProceduralCableService.IsCableHandle(selected, out GameObject cableOwner, out _)) selected = cableOwner;
+                else if (StructuralTrussService.IsTrussHandle(selected, out GameObject trussOwner, out _)) selected = trussOwner;
+                else if (EditorSessionManager.IsWaypointMarker(selected, out GameObject pathOwner, out _)) selected = pathOwner;
+                if (selected != null && EditorSessionManager.PlacedObjects.Contains(selected) && !groupChildren.Contains(selected))
+                    groupChildren.Add(selected);
+            }
+            if (groupChildren.Count == 0) return;
+
+            List<EditorObjectSnapshot> beforeSnapshots = EditorSessionManager.CaptureObjectSnapshots(groupChildren);
+            Vector3 centroid = Vector3.zero;
+            for (int i = 0; i < groupChildren.Count; i++)
+                centroid += groupChildren[i].transform.position;
+            centroid /= groupChildren.Count;
 
             GameObject groupObj = new GameObject("Custom_Group_Container");
             groupObj.transform.position = centroid;
             groupObj.transform.rotation = Quaternion.identity;
             groupObj.transform.localScale = Vector3.one;
-
+            groupObj.SetActive(false);
+            EditorObjectSnapshot absentGroup = EditorSessionManager.CreateAbsentObjectSnapshot(groupObj);
+            groupObj.SetActive(true);
             EditorSessionManager.RegisterPlacedObject(groupObj);
 
-            for (int i = 0; i < EditorSessionManager.SelectedObjects.Count; i++)
+            for (int i = 0; i < groupChildren.Count; i++)
             {
-                var o = EditorSessionManager.SelectedObjects[i];
-                if (o != null && o != groupObj)
-                {
-                    o.transform.SetParent(groupObj.transform, true);
-                }
+                GameObject child = groupChildren[i];
+                if (child != null && child != groupObj)
+                    child.transform.SetParent(groupObj.transform, true);
             }
 
             EditorSessionManager.RecalculateParentChildCount(groupObj);
+            beforeSnapshots.Add(absentGroup);
+            List<GameObject> afterTargets = new List<GameObject>(groupChildren) { groupObj };
+            List<EditorObjectSnapshot> afterSnapshots = EditorSessionManager.CaptureObjectSnapshots(afterTargets);
+            EditorSessionManager.RecordObjectSnapshotTransition("Group objects (" + groupChildren.Count + ")", beforeSnapshots, afterSnapshots, HistoryActionType.Parenting);
+
             RefreshHierarchy();
             EditorSessionManager.SelectObject(groupObj);
             SetNotificationText("Group container created.");
@@ -1612,6 +1631,8 @@ namespace DeadCoreEditor
 
             lkBtn.onClick.AddListener((Action)(() =>
             {
+                if (captured == null || !captured || captured.Equals(null)) return;
+                List<EditorObjectSnapshot> before = EditorSessionManager.CaptureObjectSnapshots(new List<GameObject> { captured });
                 if (LockedObjects.Contains(captured))
                 {
                     LockedObjects.Remove(captured);
@@ -1626,6 +1647,7 @@ namespace DeadCoreEditor
                     lkTxt.color = new Color(1f, 0.8f, 0.2f);
                     SetNotificationText($"Locked: {captured.name}");
                 }
+                EditorSessionManager.RecordSelectedObjectChange("Lock state: " + captured.name, before, HistoryActionType.ComponentChange);
             }));
 
             GameObject eyeBtnObj = new GameObject("Btn_Eye", Il2CppType.Of<RectTransform>());
@@ -1648,12 +1670,14 @@ namespace DeadCoreEditor
                 if (captured == null || !captured || captured.Equals(null)) return;
                 try
                 {
+                    List<EditorObjectSnapshot> before = EditorSessionManager.CaptureObjectSnapshots(new List<GameObject> { captured });
                     captured.SetActive(!captured.activeSelf);
                     if (eyeTxt != null)
                     {
                         eyeTxt.text = captured.activeSelf ? "V" : "-";
                         eyeTxt.color = captured.activeSelf ? new Color(0.3f, 0.9f, 1f) : Color.gray;
                     }
+                    EditorSessionManager.RecordSelectedObjectChange("Visibility: " + captured.name, before, HistoryActionType.ComponentChange);
                 }
                 catch { }
             }));
@@ -1789,23 +1813,33 @@ namespace DeadCoreEditor
                     {
                         if (dropTarget != _dragCandidateNode && !EditorSessionManager.IsDescendantOf(_dragCandidateNode, dropTarget))
                         {
-                            GameObject prevParent = _dragCandidateNode.transform.parent != null
-                                ? _dragCandidateNode.transform.parent.gameObject : null;
+                            GameObject draggedObject = _dragCandidateNode;
+                            List<EditorObjectSnapshot> beforeSnapshots = EditorSessionManager.CaptureObjectSnapshots(
+                                new List<GameObject> { draggedObject });
+                            GameObject prevParent = draggedObject.transform.parent != null
+                                ? draggedObject.transform.parent.gameObject : null;
 
-                            _dragCandidateNode.transform.SetParent(dropTarget.transform, true);
+                            draggedObject.transform.SetParent(dropTarget.transform, true);
 
                             if (prevParent != null) EditorSessionManager.RecalculateParentChildCount(prevParent);
                             EditorSessionManager.RecalculateParentChildCount(dropTarget);
+                            EditorSessionManager.RecordSelectedObjectChange(
+                                "Reparent " + draggedObject.name, beforeSnapshots, HistoryActionType.Parenting);
 
                             RefreshHierarchy();
                         }
                     }
                     else if (IsMouseOverHierarchyPanel() && _dragCandidateNode.transform.parent != null)
                     {
-                        GameObject oldParent = _dragCandidateNode.transform.parent.gameObject;
-                        _dragCandidateNode.transform.SetParent(null, true);
+                        GameObject draggedObject = _dragCandidateNode;
+                        List<EditorObjectSnapshot> beforeSnapshots = EditorSessionManager.CaptureObjectSnapshots(
+                            new List<GameObject> { draggedObject });
+                        GameObject oldParent = draggedObject.transform.parent.gameObject;
+                        draggedObject.transform.SetParent(null, true);
 
                         EditorSessionManager.RecalculateParentChildCount(oldParent);
+                        EditorSessionManager.RecordSelectedObjectChange(
+                            "Unparent " + draggedObject.name, beforeSnapshots, HistoryActionType.Parenting);
                         RefreshHierarchy();
                     }
 
@@ -2021,6 +2055,20 @@ namespace DeadCoreEditor
         }
 
         private static void RebuildModularInspectorCards(GameObject obj)
+        {
+            bool wasCapturing = _captureInspectorMutationActions;
+            _captureInspectorMutationActions = true;
+            try
+            {
+                BuildModularInspectorCardsInternal(obj);
+            }
+            finally
+            {
+                _captureInspectorMutationActions = wasCapturing;
+            }
+        }
+
+        private static void BuildModularInspectorCardsInternal(GameObject obj)
         {
             for (int i = 0; i < _activeInspectorCards.Count; i++)
             {
@@ -2531,6 +2579,23 @@ namespace DeadCoreEditor
                     MapAudioService.ApplyAudioConfig(obj, ac);
                 });
 
+                AddSliderRow(card.transform, "Ambience Pitch", 0.5f, 2.0f, ac.AmbientPitch, "{0:F2}x", (v) =>
+                {
+                    ac.AmbientPitch = v;
+                    MapAudioService.ApplyAudioConfig(obj, ac);
+                });
+
+                AddToggleRow(card.transform, "Loop Ambience", ac.AmbientLoop, (val) =>
+                {
+                    ac.AmbientLoop = val;
+                    MapAudioService.ApplyAudioConfig(obj, ac);
+                });
+
+                CreateTextPrimitive(card.transform,
+                    "Custom FMOD files support independent music and ambience volume, pitch and looping. Native game emitters retain their authored mixer settings.",
+                    Vector2.zero, Vector2.one, Vector2.zero, Vector2.zero, 9f, FontStyles.Italic,
+                    new Color(0.62f, 0.68f, 0.78f), TextAlignmentOptions.TopLeft);
+
                 _activeInspectorCards.Add(card);
             }
 
@@ -2899,6 +2964,7 @@ namespace DeadCoreEditor
             if (_suppressInspectorCallbacks || EditorSessionManager.SelectedObject == null) return;
 
             GameObject primary = EditorSessionManager.SelectedObject;
+            List<EditorObjectSnapshot> beforeSnapshots = EditorSessionManager.CaptureObjectSnapshots(new List<GameObject> { primary });
             Vector3 curPos = _useWorldCoordinates ? primary.transform.position : primary.transform.localPosition;
             Vector3 curRot = _useWorldCoordinates ? primary.transform.eulerAngles : primary.transform.localEulerAngles;
 
@@ -2938,21 +3004,7 @@ namespace DeadCoreEditor
                            Quaternion.Angle(primary.transform.rotation, previousRotation) > 0.01f ||
                            (primary.transform.localScale - previousScale).sqrMagnitude > 0.000001f;
             if (changed)
-            {
-                EditorSessionManager.UndoHistory.Push(new HistoryRecord
-                {
-                    ActionType = HistoryActionType.Reposition,
-                    TargetObject = primary,
-                    PreviousPosition = previousPosition,
-                    NewPosition = primary.transform.position,
-                    PreviousRotation = previousRotation,
-                    NewRotation = primary.transform.rotation,
-                    PreviousScale = previousScale,
-                    NewScale = primary.transform.localScale,
-                    EntityDataSnapshot = EditorSessionManager.ExtractEntityData(primary)
-                });
-                EditorSessionManager.RedoHistory.Clear();
-            }
+                EditorSessionManager.RecordSelectedObjectChange("Inspector Transform", beforeSnapshots, HistoryActionType.Reposition);
 
             StudioGizmoController.InvalidateCachedCenter(primary);
             EditorSessionManager.UpdateSelectionHighlight();
@@ -2973,17 +3025,24 @@ namespace DeadCoreEditor
                 for (int i = 0; i < EditorSessionManager.SelectedObjects.Count; i++)
                 {
                     GameObject o = EditorSessionManager.SelectedObjects[i];
-                    if (o != null && !toSwap.Contains(o)) toSwap.Add(o);
+                    if (o != null && EditorSessionManager.PlacedObjects.Contains(o) && !toSwap.Contains(o))
+                        toSwap.Add(o);
                 }
             }
-            else if (EditorSessionManager.SelectedObject != null)
+            else if (EditorSessionManager.SelectedObject != null && EditorSessionManager.PlacedObjects.Contains(EditorSessionManager.SelectedObject))
             {
                 toSwap.Add(EditorSessionManager.SelectedObject);
             }
 
             if (toSwap.Count == 0) return;
 
-            EditorSessionManager.SelectedObjects.Clear();
+            // A prop replacement is one logical operation. Capture the old props, create all
+            // replacements, then record one transition that can restore the complete swap.
+            List<EditorObjectSnapshot> beforeSnapshots = EditorSessionManager.CaptureObjectSnapshots(toSwap);
+            List<GameObject> replacementObjects = new List<GameObject>();
+            List<EditorObjectSnapshot> absentReplacementSnapshots = new List<EditorObjectSnapshot>();
+            List<GameObject> successfulOldObjects = new List<GameObject>();
+            Dictionary<GameObject, GameObject> replacementByOriginal = new Dictionary<GameObject, GameObject>();
 
             for (int i = 0; i < toSwap.Count; i++)
             {
@@ -2996,25 +3055,72 @@ namespace DeadCoreEditor
                 Transform parent = old.transform.parent;
 
                 GameObject swapped = EditorSessionManager.SpawnCatalogObject(newAsset, pos, scale, rot);
-                if (swapped != null)
-                {
-                    if (parent != null)
-                    {
-                        swapped.transform.SetParent(parent, true);
-                        EditorSessionManager.RecalculateParentChildCount(parent.gameObject);
-                    }
+                if (swapped == null) continue;
 
-                    EditorSessionManager.RegisterPlacedObject(swapped);
-                    EditorSessionManager.SelectedObjects.Add(swapped);
+                if (parent != null)
+                {
+                    swapped.transform.SetParent(parent, true);
+                    EditorSessionManager.RecalculateParentChildCount(parent.gameObject);
                 }
 
-                EditorSessionManager.DeleteSpecifiedObject(old);
+                if (!EditorSessionManager.PlacedObjects.Contains(swapped))
+                    EditorSessionManager.RegisterPlacedObject(swapped);
+
+                EditorObjectSnapshot absent = EditorSessionManager.CreateAbsentObjectSnapshot(swapped);
+                if (absent != null)
+                {
+                    absentReplacementSnapshots.Add(absent);
+                    replacementObjects.Add(swapped);
+                    successfulOldObjects.Add(old);
+                    replacementByOriginal[old] = swapped;
+                }
+                else
+                {
+                    // Do not remove the original if a replacement cannot be represented in history.
+                    EditorSessionManager.DeleteSpecifiedObject(swapped, false);
+                }
             }
 
-            EditorSessionManager.SelectedObject = EditorSessionManager.SelectedObjects.Count > 0 ? EditorSessionManager.SelectedObjects[0] : null;
+            if (replacementObjects.Count == 0)
+            {
+                EditorSessionManager.ShowNotification("No props were replaced. The original objects were kept.");
+                return;
+            }
+
+            // Preserve hierarchy relationships when both a parent and one of its children
+            // are included in the replacement selection.
+            for (int i = 0; i < successfulOldObjects.Count; i++)
+            {
+                GameObject old = successfulOldObjects[i];
+                if (old == null || !replacementByOriginal.TryGetValue(old, out GameObject replacement) || replacement == null)
+                    continue;
+                Transform originalParent = old.transform.parent;
+                if (originalParent != null && replacementByOriginal.TryGetValue(originalParent.gameObject, out GameObject replacementParent) && replacementParent != null)
+                {
+                    replacement.transform.SetParent(replacementParent.transform, true);
+                    EditorSessionManager.RecalculateParentChildCount(replacementParent);
+                }
+            }
+
+            for (int i = 0; i < successfulOldObjects.Count; i++)
+                EditorSessionManager.DeleteSpecifiedObject(successfulOldObjects[i], false);
+
+            List<EditorObjectSnapshot> combinedBefore = new List<EditorObjectSnapshot>(beforeSnapshots);
+            combinedBefore.AddRange(absentReplacementSnapshots);
+
+            List<GameObject> afterTargets = new List<GameObject>(toSwap);
+            afterTargets.AddRange(replacementObjects);
+            List<EditorObjectSnapshot> afterSnapshots = EditorSessionManager.CaptureObjectSnapshots(afterTargets);
+            EditorSessionManager.RecordObjectSnapshotTransition(
+                "Replace " + successfulOldObjects.Count + " prop(s) with " + newAsset.DisplayName,
+                combinedBefore, afterSnapshots, HistoryActionType.ComponentChange);
+
+            EditorSessionManager.SelectedObjects.Clear();
+            EditorSessionManager.SelectedObjects.AddRange(replacementObjects);
+            EditorSessionManager.SelectedObject = replacementObjects.Count > 0 ? replacementObjects[0] : null;
             RefreshHierarchy();
             NotifyObjectSelected(EditorSessionManager.SelectedObject);
-            SetNotificationText($"Swapped {toSwap.Count} prop(s) with '{newAsset.DisplayName}'");
+            SetNotificationText($"Swapped {replacementObjects.Count} prop(s) with '{newAsset.DisplayName}'. One Undo restores the originals.");
         }
 
         // =========================================================================
@@ -3176,6 +3282,7 @@ namespace DeadCoreEditor
         {
             if (EditorSessionManager.SelectedObjects == null || EditorSessionManager.SelectedObjects.Count == 0) return;
             if (Mathf.Abs(factor - 1.0f) < 0.001f) return;
+            List<EditorObjectSnapshot> beforeSnapshots = EditorSessionManager.CaptureSelectedObjectSnapshots();
 
             Vector3 centroid = Vector3.zero;
             for (int i = 0; i < EditorSessionManager.SelectedObjects.Count; i++)
@@ -3205,6 +3312,7 @@ namespace DeadCoreEditor
                 StudioGizmoController.InvalidateCachedCenter(obj);
             }
 
+            EditorSessionManager.RecordSelectedObjectChange("Uniform scale x" + factor.ToString("F2", CultureInfo.InvariantCulture), beforeSnapshots, HistoryActionType.Reposition);
             RefreshInspectorValues();
             EditorSessionManager.UpdateSelectionHighlight();
         }
@@ -3255,20 +3363,39 @@ namespace DeadCoreEditor
             Vector3 origin = src.transform.position;
 
             int spawned = 0;
+            List<GameObject> spawnedObjects = new List<GameObject>();
+            List<EditorObjectSnapshot> beforeSnapshots = new List<EditorObjectSnapshot>();
             for (int x = 0; x < _arrayCountX; x++)
             {
                 for (int z = 0; z < _arrayCountZ; z++)
                 {
                     if (x == 0 && z == 0) continue;
                     Vector3 p = origin + new Vector3(x * _arraySpacingX, 0f, z * _arraySpacingZ);
+                    HashSet<GameObject> existingObjects = new HashSet<GameObject>(EditorSessionManager.PlacedObjects);
                     GameObject clone = EditorSessionManager.SpawnAssetByName(rawName, p, src.transform.localScale, src.transform.rotation);
                     if (clone != null)
                     {
                         EditorSessionManager.ApplyEntityData(clone, data.Clone());
-                        EditorSessionManager.RegisterPlacedObject(clone);
-                        spawned++;
+                        if (!EditorSessionManager.PlacedObjects.Contains(clone))
+                            EditorSessionManager.RegisterPlacedObject(clone);
+                        List<GameObject> newlyAdded = EditorSessionManager.GetPlacedObjectsAddedSince(existingObjects);
+                        for (int n = 0; n < newlyAdded.Count; n++)
+                        {
+                            GameObject created = newlyAdded[n];
+                            if (created == null || spawnedObjects.Contains(created)) continue;
+                            EditorObjectSnapshot absent = EditorSessionManager.CreateAbsentObjectSnapshot(created);
+                            if (absent != null) beforeSnapshots.Add(absent);
+                            spawnedObjects.Add(created);
+                            spawned++;
+                        }
                     }
                 }
+            }
+
+            if (spawnedObjects.Count > 0)
+            {
+                List<EditorObjectSnapshot> afterSnapshots = EditorSessionManager.CaptureObjectSnapshots(spawnedObjects);
+                EditorSessionManager.RecordObjectSnapshotTransition("Generate matrix clones (" + spawned + ")", beforeSnapshots, afterSnapshots, HistoryActionType.Placement);
             }
 
             RefreshHierarchy();
@@ -3283,7 +3410,10 @@ namespace DeadCoreEditor
                 return;
             }
 
+            List<EditorObjectSnapshot> beforeSnapshots = EditorSessionManager.CaptureSelectedObjectSnapshots();
             var list = new List<GameObject>(EditorSessionManager.SelectedObjects);
+            list.RemoveAll(obj => obj == null);
+            if (list.Count < 3) return;
             list.Sort((a, b) =>
             {
                 float valA = axis == 0 ? a.transform.position.x : (axis == 1 ? a.transform.position.y : a.transform.position.z);
@@ -3306,6 +3436,7 @@ namespace DeadCoreEditor
                 StudioGizmoController.InvalidateCachedCenter(list[i]);
             }
 
+            EditorSessionManager.RecordSelectedObjectChange("Distribute selection on " + (axis == 0 ? "X" : axis == 1 ? "Y" : "Z"), beforeSnapshots, HistoryActionType.Reposition);
             RefreshInspectorValues();
             EditorSessionManager.UpdateSelectionHighlight();
         }
@@ -3444,6 +3575,24 @@ namespace DeadCoreEditor
             }
         }
 
+        public static void OpenAudioPickerForSelection(bool browseAmbience)
+        {
+            GameObject selected = EditorSessionManager.SelectedObject;
+            if (selected == null)
+            {
+                EditorSessionManager.ShowNotification("Select an object first, then open the audio browser.");
+                return;
+            }
+
+            EditorEntityData data = EditorSessionManager.ExtractEntityData(selected);
+            AudioConfig cfg = data.GetOrCreate<AudioConfig>();
+            EditorSessionManager.ApplyEntityData(selected, data);
+            MapAudioService.PlacedAudioConfigs[selected] = cfg.Clone();
+            _isBrowsingAmbient = browseAmbience;
+            OpenAudioPicker(cfg, selected);
+            StudioUIManager.RefreshHierarchy();
+        }
+
         public static void OpenAudioPicker(AudioConfig cfg, GameObject obj)
         {
             _currentEditingAudioConfig = cfg;
@@ -3537,11 +3686,11 @@ namespace DeadCoreEditor
                 row.transform.SetParent(_audioPickerContent, false);
 
                 RectTransform rrt = row.GetComponent<RectTransform>();
-                rrt.sizeDelta = new Vector2(700f, 34f);
+                rrt.sizeDelta = new Vector2(700f, 42f);
 
                 LayoutElement le = row.AddComponent<LayoutElement>();
-                le.preferredHeight = 34f;
-                le.minHeight = 34f;
+                le.preferredHeight = 42f;
+                le.minHeight = 42f;
 
                 bool isSelected = (_isBrowsingAmbient && _currentEditingAudioConfig?.AmbientTrackName == track.Id) ||
                                   (!_isBrowsingAmbient && _currentEditingAudioConfig?.MusicTrackName == track.Id);
@@ -3549,8 +3698,9 @@ namespace DeadCoreEditor
                 Image bg = row.AddComponent<Image>();
                 bg.color = isSelected ? new Color(0.18f, 0.52f, 0.88f, 0.85f) : new Color(0.12f, 0.14f, 0.18f, 0.85f);
 
-                string tag = track.IsFMOD ? (track.IsMusic ? "<color=#00E5FF>[OST]</color> " : "<color=#B388FF>[AMB]</color> ") : "<color=#69F0AE>[FILE]</color> ";
-                CreateTextPrimitive(row.transform, tag + track.DisplayName, new Vector2(0f, 0f), new Vector2(0.68f, 1f), new Vector2(8f, 0f), Vector2.zero, 11f, FontStyles.Bold, Color.white, TextAlignmentOptions.MidlineLeft);
+                string tag = track.IsFMOD ? (track.IsMusic ? "<color=#00D8F0>[OST]</color> " : "<color=#B88CFF>[AMB]</color> ") : "<color=#72DFA5>[FILE]</color> ";
+                string durationText = track.Duration > 0.05f ? $"  <color=#92A5BC>{track.Duration:0.0}s</color>" : "";
+                CreateTextPrimitive(row.transform, tag + track.DisplayName + durationText, new Vector2(0f, 0f), new Vector2(0.68f, 1f), new Vector2(10f, 0f), Vector2.zero, 12f, FontStyles.Bold, Color.white, TextAlignmentOptions.MidlineLeft);
 
                 bool isPlayingThis = MapAudioService.IsPreviewPlaying(track.Id);
                 Button prevBtn = CreateButtonPrimitive(row.transform, "Btn_Prev_" + i, isPlayingThis ? "⏹ Stop" : "▶ Play", 80f, () =>
@@ -3563,7 +3713,7 @@ namespace DeadCoreEditor
                 prt.anchorMax = new Vector2(1f, 0.5f);
                 prt.pivot = new Vector2(1f, 0.5f);
                 prt.anchoredPosition = new Vector2(-90f, 0f);
-                prt.sizeDelta = new Vector2(75f, 24f);
+                prt.sizeDelta = new Vector2(78f, 30f);
 
                 Button selBtn = CreateButtonPrimitive(row.transform, "Btn_Sel_" + i, "Select", 75f, () =>
                 {
@@ -3583,7 +3733,7 @@ namespace DeadCoreEditor
                 srt.anchorMax = new Vector2(1f, 0.5f);
                 srt.pivot = new Vector2(1f, 0.5f);
                 srt.anchoredPosition = new Vector2(-6f, 0f);
-                srt.sizeDelta = new Vector2(75f, 24f);
+                srt.sizeDelta = new Vector2(78f, 30f);
             }
 
             LayoutRebuilder.ForceRebuildLayoutImmediate(_audioPickerContent);
@@ -3713,11 +3863,13 @@ namespace DeadCoreEditor
                 if (EditorSessionManager.SelectedObjects != null && _batchRenameInput != null && !string.IsNullOrWhiteSpace(_batchRenameInput.text))
                 {
                     string baseName = _batchRenameInput.text.Trim();
+                    List<EditorObjectSnapshot> beforeSnapshots = EditorSessionManager.CaptureSelectedObjectSnapshots();
                     for (int i = 0; i < EditorSessionManager.SelectedObjects.Count; i++)
                     {
                         GameObject o = EditorSessionManager.SelectedObjects[i];
                         if (o != null) o.name = $"Custom_{baseName} ({i + 1})";
                     }
+                    EditorSessionManager.RecordSelectedObjectChange("Batch rename objects", beforeSnapshots, HistoryActionType.ComponentChange);
                     RefreshHierarchy();
                     NotifyObjectSelected(EditorSessionManager.SelectedObject);
                     _batchRenamerWin.Hide();
@@ -3735,11 +3887,13 @@ namespace DeadCoreEditor
                 {
                     string find = _replaceFindInput.text;
                     string rep = _replaceWithInput != null ? _replaceWithInput.text : "";
+                    List<EditorObjectSnapshot> beforeSnapshots = EditorSessionManager.CaptureSelectedObjectSnapshots();
                     for (int i = 0; i < EditorSessionManager.SelectedObjects.Count; i++)
                     {
                         GameObject o = EditorSessionManager.SelectedObjects[i];
                         if (o != null) o.name = o.name.Replace(find, rep);
                     }
+                    EditorSessionManager.RecordSelectedObjectChange("Batch replace object names", beforeSnapshots, HistoryActionType.ComponentChange);
                     RefreshHierarchy();
                     NotifyObjectSelected(EditorSessionManager.SelectedObject);
                     _batchRenamerWin.Hide();

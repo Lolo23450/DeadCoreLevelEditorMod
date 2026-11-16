@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Text;
 using System.Collections.Generic;
 using System.Globalization;
@@ -659,6 +659,12 @@ namespace DeadCoreEditor
         private static GameObject _notificationBanner = null;
         private static TMP_Text _notificationText = null;
         private static float _notificationTimer = 0f;
+        private static bool _captureInspectorMutationActions = false;
+        private static readonly List<Texture2D> _recoveryPreviewTextures = new List<Texture2D>();
+        private static readonly List<Sprite> _recoveryPreviewSprites = new List<Sprite>();
+        private static GameObject _recoveryBrowserRoot = null;
+        private static GameObject _validationWindowRoot = null;
+        private static GameObject _historyWindowRoot = null;
 
         // Auto-Save System
         private static float _autoSaveTimer = 0f;
@@ -718,9 +724,17 @@ namespace DeadCoreEditor
                 string backupDir = Path.Combine(MapBrowserService.MyLevelsDir, "Backups");
                 if (!Directory.Exists(backupDir)) Directory.CreateDirectory(backupDir);
 
-                string timestamp = DateTime.Now.ToString("yyyyMMdd_HHmmss", CultureInfo.InvariantCulture);
-                string backupPath = Path.Combine(backupDir, $"{baseName}_{timestamp}.txt");
-                LevelPersistenceService.SaveLevelToPath(backupPath, false, MapBrowserService.SelectedMapPath);
+                DateTime timestamp = DateTime.Now;
+                string backupPath;
+                do
+                {
+                    string stamp = timestamp.ToString("yyyyMMdd_HHmmss", CultureInfo.InvariantCulture);
+                    backupPath = Path.Combine(backupDir, $"{baseName}_{stamp}.txt");
+                    timestamp = timestamp.AddSeconds(1);
+                }
+                while (File.Exists(backupPath));
+                if (!LevelPersistenceService.SaveLevelToPath(backupPath, false, MapBrowserService.SelectedMapPath))
+                    throw new System.IO.IOException("The autosave snapshot could not be written.");
                 PruneAutoSaveBackups(backupDir, baseName, 20);
                 SetNotificationText($"[Auto-Save] Snapshot created at {DateTime.Now:HH:mm:ss}");
             }
@@ -920,29 +934,34 @@ namespace DeadCoreEditor
         {
             _toolbarPanel = CreatePanelPrimitive(_canvasRoot.transform, "Top_Toolbar",
                 new Vector2(0f, 1f), new Vector2(1f, 1f),
-                new Vector2(0f, -18f), new Vector2(0f, 36f),
-                new Color(0.09f, 0.10f, 0.13f, 0.98f));
+                new Vector2(0f, -23f), new Vector2(0f, 46f),
+                new Color(0.055f, 0.07f, 0.095f, 0.985f));
 
             HorizontalLayoutGroup hlg = _toolbarPanel.AddComponent<HorizontalLayoutGroup>();
-            hlg.padding = new RectOffset(8, 8, 4, 4);
-            hlg.spacing = 6f;
+            hlg.padding = new RectOffset(12, 12, 6, 6);
+            hlg.spacing = 7f;
             hlg.childControlWidth = true;
             hlg.childControlHeight = true;
             hlg.childForceExpandWidth = false;
             hlg.childForceExpandHeight = true;
 
             // Options Dropdown
-            CreateDropdownMenuButton(_toolbarPanel.transform, "Options", 80f, (anchor) =>
+            CreateDropdownMenuButton(_toolbarPanel.transform, "File", 72f, (anchor) =>
             {
                 OpenDropdownMenu(anchor, new List<DropdownItem>
                 {
-                    new DropdownItem("Preferences & Settings", () => _preferencesWin?.Toggle()),
                     new DropdownItem("Save Level", () => LevelPersistenceService.SaveLevel(MapBrowserService.SelectedMapName), null, GetShortcutHint("SaveLevel")),
+                    new DropdownItem("Save As / Duplicate...", () => OpenSaveAsModal()),
+                    new DropdownItem("Load Level", () => LevelPersistenceService.LoadLevel(MapBrowserService.SelectedMapName), null, GetShortcutHint("LoadLevel")),
+                    new DropdownItem("--- RECOVERY & VALIDATION ---", null, new Color(0.35f, 0.72f, 0.95f)),
+                    new DropdownItem("Backup Recovery Browser...", () => OpenRecoveryBrowserModal()),
+                    new DropdownItem("Validate Current Level...", () => OpenLevelValidationModal(false)),
+                    new DropdownItem("--- PROJECT ---", null, new Color(0.35f, 0.72f, 0.95f)),
+                    new DropdownItem("Preferences & Settings", () => _preferencesWin?.Toggle()),
                     new DropdownItem("Publish to Community", () =>
                     {
                         OpenPublishPreflightModal();
                     }, new Color(0.3f, 0.95f, 0.5f)),
-                    new DropdownItem("Load Level", () => LevelPersistenceService.LoadLevel(MapBrowserService.SelectedMapName), null, GetShortcutHint("LoadLevel")),
                     new DropdownItem("Capture Snapshot", () =>
                         ThumbnailCaptureService.CaptureViewportSnapshot(MapBrowserService.SelectedMapPath)
                     ),
@@ -969,6 +988,7 @@ namespace DeadCoreEditor
                             : EditorSessionManager.LevelSpawnPosition;
 
                         GameObject cable = ProceduralCableService.CreateProceduralCable(camPos, new Vector3(-4f, 1f, 0f), new Vector3(4f, -0.5f, 0f));
+                        EditorSessionManager.RecordCreatedObjects("Create procedural cable", new List<GameObject> { cable });
                         EditorSessionManager.SelectObject(cable);
                         RefreshHierarchy();
                     }),
@@ -979,6 +999,7 @@ namespace DeadCoreEditor
                             : EditorSessionManager.LevelSpawnPosition;
 
                         GameObject truss = StructuralTrussService.CreateProceduralTruss(camPos, new Vector3(-5f, 0f, 0f), new Vector3(5f, 0f, 0f));
+                        EditorSessionManager.RecordCreatedObjects("Create procedural space truss", new List<GameObject> { truss });
                         EditorSessionManager.SelectObject(truss);
                         RefreshHierarchy();
                     }),
@@ -990,6 +1011,7 @@ namespace DeadCoreEditor
             {
                 var editItems = new List<DropdownItem>
                 {
+                    new DropdownItem("History...", () => OpenHistoryPanelModal()),
                     new DropdownItem("Undo", () => EditorSessionManager.PerformUndo(), null, GetShortcutHint("Undo")),
                     new DropdownItem("Redo", () => EditorSessionManager.PerformRedo(), null, GetShortcutHint("Redo")),
                     new DropdownItem("Duplicate", () => EditorSessionManager.DuplicateSelectedObjects(), null, GetShortcutHint("Duplicate")),
@@ -1009,9 +1031,11 @@ namespace DeadCoreEditor
                     {
                         var rec = stackArr[h];
                         string desc = $"{rec.ActionType}: {rec.AssetName ?? "Object"}";
+                        int stepsToUndo = h + 1;
                         editItems.Add(new DropdownItem($"[{h + 1}] {desc}", () =>
                         {
-                            EditorSessionManager.PerformUndo();
+                            for (int step = 0; step < stepsToUndo && EditorSessionManager.UndoHistory.Count > 0; step++)
+                                EditorSessionManager.PerformUndo();
                         }, new Color(0.6f, 0.75f, 0.9f)));
                     }
                 }
@@ -1019,12 +1043,46 @@ namespace DeadCoreEditor
                 OpenDropdownMenu(anchor, editItems);
             });
 
+            // Audio tools are grouped separately from general editor tools.
+            CreateDropdownMenuButton(_toolbarPanel.transform, "Audio", 72f, (anchor) =>
+            {
+                OpenDropdownMenu(anchor, new List<DropdownItem>
+                {
+                    new DropdownItem("Browse Music for Selected Object...", () => OpenAudioPickerForSelection(false)),
+                    new DropdownItem("Browse Ambience for Selected Object...", () => OpenAudioPickerForSelection(true)),
+                    new DropdownItem("Scan Audio Library", () => MapAudioService.ScanGameAudioClips(() => EditorSessionManager.ShowNotification("Audio library scan complete."))),
+                    new DropdownItem("Open CustomAudio Folder", () => MapAudioService.OpenCustomAudioFolder()),
+                    new DropdownItem("Stop Editor Audio", () => MapAudioService.StopAllAudio(), new Color(0.95f, 0.55f, 0.45f))
+                });
+            });
+
+            CreateDropdownMenuButton(_toolbarPanel.transform, "View", 72f, (anchor) =>
+            {
+                OpenDropdownMenu(anchor, new List<DropdownItem>
+                {
+                    new DropdownItem("Toggle Hierarchy Panel", () => { if (_hierarchyPanel != null) _hierarchyPanel.SetActive(!_hierarchyPanel.activeSelf); }),
+                    new DropdownItem("Toggle Inspector Panel", () => { if (_inspectorPanel != null) _inspectorPanel.SetActive(!_inspectorPanel.activeSelf); }),
+                    new DropdownItem("Toggle Asset Browser", () => { if (_assetBrowserPanel != null) _assetBrowserPanel.SetActive(!_assetBrowserPanel.activeSelf); }),
+                    new DropdownItem("Toggle Category Dock", () => { if (_floatingCategoryDock != null) _floatingCategoryDock.SetActive(!_floatingCategoryDock.activeSelf); }),
+                    new DropdownItem("Show All Editor Panels", () =>
+                    {
+                        if (_hierarchyPanel != null) _hierarchyPanel.SetActive(true);
+                        if (_inspectorPanel != null) _inspectorPanel.SetActive(true);
+                        if (_assetBrowserPanel != null) _assetBrowserPanel.SetActive(true);
+                        if (_floatingCategoryDock != null) _floatingCategoryDock.SetActive(true);
+                    })
+                });
+            });
+
             CreateToolbarDivider(_toolbarPanel.transform);
 
-            // Direct Transform Buttons
-            CreateButtonPrimitive(_toolbarPanel.transform, "Btn_Translate", "Move", 70f, () => SetGizmoMode(EditorGizmoMode.Translate));
-            CreateButtonPrimitive(_toolbarPanel.transform, "Btn_Rotate", "Rotate", 70f, () => SetGizmoMode(EditorGizmoMode.Rotate));
-            CreateButtonPrimitive(_toolbarPanel.transform, "Btn_Scale", "Scale", 70f, () => SetGizmoMode(EditorGizmoMode.Scale));
+            // Direct transform controls use the same height and visual weight as the menus.
+            Button moveButton = CreateButtonPrimitive(_toolbarPanel.transform, "Btn_Translate", "Move", 66f, () => SetGizmoMode(EditorGizmoMode.Translate));
+            Button rotateButton = CreateButtonPrimitive(_toolbarPanel.transform, "Btn_Rotate", "Rotate", 66f, () => SetGizmoMode(EditorGizmoMode.Rotate));
+            Button scaleButton = CreateButtonPrimitive(_toolbarPanel.transform, "Btn_Scale", "Scale", 66f, () => SetGizmoMode(EditorGizmoMode.Scale));
+            StyleToolbarButton(moveButton, new Color(0.13f, 0.24f, 0.34f, 1f));
+            StyleToolbarButton(rotateButton, new Color(0.20f, 0.19f, 0.33f, 1f));
+            StyleToolbarButton(scaleButton, new Color(0.26f, 0.20f, 0.13f, 1f));
 
             CreateToolbarDivider(_toolbarPanel.transform);
 
@@ -1058,6 +1116,7 @@ namespace DeadCoreEditor
                 }
             });
             _surfaceAlignBtnText = alignBtn.GetComponentInChildren<TMP_Text>();
+            StyleToolbarButton(alignBtn, new Color(0.12f, 0.16f, 0.22f, 1f));
 
             // Multi-Axis Snapping Matrix Popover
             Button snapBtn = CreateButtonPrimitive(_toolbarPanel.transform, "Btn_GridSnap", "Snap: 1.0m", 95f, () =>
@@ -1080,6 +1139,7 @@ namespace DeadCoreEditor
                 }
             });
             _gridSnapBtnText = snapBtn.GetComponentInChildren<TMP_Text>();
+            StyleToolbarButton(snapBtn, new Color(0.12f, 0.16f, 0.22f, 1f));
 
             GameObject spacer = new GameObject("Spacer", Il2CppType.Of<RectTransform>());
             spacer.transform.SetParent(_toolbarPanel.transform, false);
@@ -1087,12 +1147,13 @@ namespace DeadCoreEditor
             sle.flexibleWidth = 1f;
 
             // Header Publish
-            CreateButtonPrimitive(_toolbarPanel.transform, "Btn_HeaderPublish", "PUBLISH", 90f, () =>
+            Button publishButton = CreateButtonPrimitive(_toolbarPanel.transform, "Btn_HeaderPublish", "PUBLISH", 90f, () =>
             {
                 OpenPublishPreflightModal();
-            }, new Color(0.18f, 0.65f, 0.35f, 1f));
-
-            CreateButtonPrimitive(_toolbarPanel.transform, "Btn_Playtest", "PLAYTEST (F1)", 125f, () => EditorSessionManager.ToggleEditMode(), new Color(0.18f, 0.65f, 0.32f));
+            }, new Color(0.11f, 0.43f, 0.30f, 1f));
+            Button playtestButton = CreateButtonPrimitive(_toolbarPanel.transform, "Btn_Playtest", "PLAYTEST (F1)", 125f, () => EditorSessionManager.ToggleEditMode(), new Color(0.11f, 0.40f, 0.27f, 1f));
+            StyleToolbarButton(publishButton, new Color(0.11f, 0.43f, 0.30f, 1f));
+            StyleToolbarButton(playtestButton, new Color(0.11f, 0.40f, 0.27f, 1f));
         }
 
         private static void SetSnapTranslate(float snap)
@@ -1177,11 +1238,13 @@ namespace DeadCoreEditor
         public static void ExecuteSnap90()
         {
             if (EditorSessionManager.SelectedObject == null) return;
+            List<EditorObjectSnapshot> before = EditorSessionManager.CaptureSelectedObjectSnapshots();
             Vector3 e = EditorSessionManager.SelectedObject.transform.eulerAngles;
             e.x = Mathf.Round(e.x / 90f) * 90f;
             e.y = Mathf.Round(e.y / 90f) * 90f;
             e.z = Mathf.Round(e.z / 90f) * 90f;
             EditorSessionManager.SelectedObject.transform.rotation = Quaternion.Euler(e);
+            EditorSessionManager.RecordSelectedObjectChange("Snap rotation to 90°", before, HistoryActionType.Reposition);
             StudioGizmoController.InvalidateCachedCenter(EditorSessionManager.SelectedObject);
             RefreshInspectorValues();
         }
@@ -1189,7 +1252,9 @@ namespace DeadCoreEditor
         public static void ExecuteResetRotation()
         {
             if (EditorSessionManager.SelectedObject == null) return;
+            List<EditorObjectSnapshot> before = EditorSessionManager.CaptureSelectedObjectSnapshots();
             EditorSessionManager.SelectedObject.transform.rotation = Quaternion.identity;
+            EditorSessionManager.RecordSelectedObjectChange("Reset rotation", before, HistoryActionType.Reposition);
             StudioGizmoController.InvalidateCachedCenter(EditorSessionManager.SelectedObject);
             RefreshInspectorValues();
         }
@@ -1214,56 +1279,436 @@ namespace DeadCoreEditor
 
         private static void OpenPublishPreflightModal()
         {
-            var modal = StudioFloatingWindow.Create(_canvasRoot.transform, "Win_PublishPreflight", "Publish Sanity Check", new Vector2(400f, 290f), Vector2.zero);
+            OpenLevelValidationModal(true);
+        }
 
-            VerticalLayoutGroup vlg = modal.ContentRt.gameObject.AddComponent<VerticalLayoutGroup>();
-            vlg.spacing = 8f;
-            vlg.childControlWidth = true;
-            vlg.childControlHeight = false;
-            vlg.childForceExpandWidth = true;
-            vlg.childForceExpandHeight = false;
+        private static void OpenLevelValidationModal(bool publishing)
+        {
+            if (_validationWindowRoot != null) GameObject.Destroy(_validationWindowRoot);
+            List<LevelValidationIssue> issues = LevelValidationService.ValidateCurrentLevel();
+            int errors = LevelValidationService.CountSeverity(issues, LevelValidationSeverity.Error);
+            int warnings = LevelValidationService.CountSeverity(issues, LevelValidationSeverity.Warning);
 
-            bool hasSpawn = false;
-            bool hasGoal = false;
-            for (int i = 0; i < EditorSessionManager.PlacedObjects.Count; i++)
+            var modal = StudioFloatingWindow.Create(_canvasRoot.transform,
+                publishing ? "Win_PublishPreflight" : "Win_LevelValidation",
+                publishing ? "Publish Validation" : "Level Validation",
+                new Vector2(590f, 490f), Vector2.zero);
+            _validationWindowRoot = modal.WindowRoot;
+
+            int placedCount = EditorSessionManager.PlacedObjects != null ? EditorSessionManager.PlacedObjects.Count : 0;
+            string status = errors > 0
+                ? $"<color=#FF6666>FAIL: {errors} errors</color>  |  <color=#E7B85C>{warnings} warnings</color>  |  {placedCount} placed objects"
+                : (warnings > 0
+                    ? $"<color=#E7B85C>PASS WITH WARNINGS</color>  |  {warnings} warnings  |  {placedCount} placed objects"
+                    : $"<color=#6EDB91>PASS</color>  |  0 warnings  |  {placedCount} placed objects");
+            CreateTextPrimitive(modal.ContentRt, status,
+                new Vector2(0f, 1f), new Vector2(1f, 1f), new Vector2(0f, -18f), new Vector2(0f, 28f),
+                11f, FontStyles.Bold, Color.white, TextAlignmentOptions.MidlineLeft);
+
+            RectTransform issueContent;
+            CreateScrollViewPrimitive(modal.ContentRt, "ValidationIssues_Scroll",
+                Vector2.zero, Vector2.one, Vector2.zero, new Vector2(0f, -88f), out issueContent);
+
+            if (issues.Count == 0)
             {
-                var o = EditorSessionManager.PlacedObjects[i];
-                if (o == null) continue;
-                if (EditorSessionManager.PlacedObjectTypes.TryGetValue(o, out var t))
+                CreateTextPrimitive(issueContent, "No issues found.", Vector2.zero, Vector2.one, Vector2.zero, new Vector2(0f, 24f),
+                    10f, FontStyles.Normal, Color.green, TextAlignmentOptions.MidlineLeft);
+            }
+            else
+            {
+                for (int i = 0; i < issues.Count; i++)
                 {
-                    if (t == PlacedObjectType.SpawnGate) hasSpawn = true;
-                    if (t == PlacedObjectType.GoalGate) hasGoal = true;
+                    LevelValidationIssue issue = issues[i];
+                    if (issue == null) continue;
+
+                    GameObject row = CreateRowContainerPrimitive(issueContent, "ValidationIssue_" + i, 40f);
+                    SetupRowHorizontalLayoutPrimitive(row, 6f);
+
+                    Color issueColor = issue.Severity == LevelValidationSeverity.Error
+                        ? new Color(1f, 0.38f, 0.38f)
+                        : (issue.Severity == LevelValidationSeverity.Warning ? new Color(1f, 0.76f, 0.28f) : new Color(0.42f, 0.9f, 0.62f));
+
+                    GameObject textColumn = new GameObject("IssueText", Il2CppType.Of<RectTransform>());
+                    textColumn.transform.SetParent(row.transform, false);
+                    LayoutElement textLayout = textColumn.AddComponent<LayoutElement>();
+                    textLayout.flexibleWidth = 1f;
+                    textLayout.minWidth = 250f;
+                    VerticalLayoutGroup textLayoutGroup = textColumn.AddComponent<VerticalLayoutGroup>();
+                    textLayoutGroup.spacing = 1f;
+                    textLayoutGroup.childControlWidth = true;
+                    textLayoutGroup.childControlHeight = true;
+                    textLayoutGroup.childForceExpandWidth = true;
+                    textLayoutGroup.childForceExpandHeight = false;
+
+                    string prefix = issue.Severity == LevelValidationSeverity.Error ? "ERROR" :
+                                    (issue.Severity == LevelValidationSeverity.Warning ? "WARNING" : "INFO");
+                    TMP_Text titleText = CreateTextPrimitive(textColumn.transform, prefix + "  " + issue.Code,
+                        Vector2.zero, Vector2.one, Vector2.zero, new Vector2(0f, 16f), 8.5f, FontStyles.Bold, issueColor, TextAlignmentOptions.MidlineLeft);
+                    TMP_Text messageText = CreateTextPrimitive(textColumn.transform, issue.Message,
+                        Vector2.zero, Vector2.one, Vector2.zero, new Vector2(0f, 22f), 9f, FontStyles.Normal, Color.white, TextAlignmentOptions.MidlineLeft);
+                    if (messageText != null) messageText.enableWordWrapping = true;
+
+                    if (issue.TargetObject != null)
+                    {
+                        GameObject capturedTarget = issue.TargetObject;
+                        CreateButtonPrimitive(row.transform, "Btn_SelectIssue_" + i, "Select", 66f, () =>
+                        {
+                            modal.Hide();
+                            EditorSessionManager.SelectObject(capturedTarget);
+                            EditorViewportCamera.FocusOnObject(capturedTarget);
+                        }, new Color(0.18f, 0.42f, 0.68f));
+                    }
                 }
             }
 
-            CreateTextPrimitive(modal.ContentRt, "Pre-Flight Verification Checklist:", Vector2.zero, Vector2.one, Vector2.zero, Vector2.zero, 11f, FontStyles.Bold, Color.white, TextAlignmentOptions.MidlineLeft);
+            GameObject footer = CreateRowContainerPrimitive(modal.ContentRt, "Validation_Footer", 30f);
+            footer.GetComponent<RectTransform>().anchorMin = Vector2.zero;
+            footer.GetComponent<RectTransform>().anchorMax = new Vector2(1f, 0f);
+            SetupRowHorizontalLayoutPrimitive(footer, 8f);
 
-            string spawnStatus = hasSpawn ? "[PASS] Entry Checkpoint present" : "[FAIL] No Entry Checkpoint (Spawn ID 0)";
-            CreateTextPrimitive(modal.ContentRt, spawnStatus, Vector2.zero, Vector2.one, Vector2.zero, Vector2.zero, 10f, FontStyles.Normal, hasSpawn ? new Color(0.2f, 0.9f, 0.4f) : new Color(0.9f, 0.2f, 0.2f), TextAlignmentOptions.MidlineLeft);
-
-            string goalStatus = hasGoal ? "[PASS] Goal Checkpoint present" : "[FAIL] No Goal Checkpoint (Finish ID 9999)";
-            CreateTextPrimitive(modal.ContentRt, goalStatus, Vector2.zero, Vector2.one, Vector2.zero, Vector2.zero, 10f, FontStyles.Normal, hasGoal ? new Color(0.2f, 0.9f, 0.4f) : new Color(0.9f, 0.2f, 0.2f), TextAlignmentOptions.MidlineLeft);
-
-            string countStatus = $"[INFO] Total Placed Entities: {EditorSessionManager.PlacedObjects.Count}";
-            CreateTextPrimitive(modal.ContentRt, countStatus, Vector2.zero, Vector2.one, Vector2.zero, Vector2.zero, 10f, FontStyles.Normal, Color.cyan, TextAlignmentOptions.MidlineLeft);
-
-            GameObject btnRow = CreateRowContainerPrimitive(modal.ContentRt, "Preflight_Btns", 30f);
-            SetupRowHorizontalLayoutPrimitive(btnRow, 8f);
-
-            CreateButtonPrimitive(btnRow.transform, "Btn_CancelPublish", "Cancel", 140f, () => modal.Hide(), new Color(0.35f, 0.38f, 0.45f));
-
-            Button commitBtn = CreateButtonPrimitive(btnRow.transform, "Btn_CommitPublish", "Publish to Cloud", 180f, () =>
+            CreateButtonPrimitive(footer.transform, "Btn_CloseValidation", "Close", 110f, () => modal.Hide(), new Color(0.35f, 0.38f, 0.45f));
+            if (publishing)
             {
-                modal.Hide();
-                LevelPersistenceService.SaveLevel(MapBrowserService.SelectedMapName);
-                CommunityLevelService.PublishCurrentLevel(MapBrowserService.SelectedMapPath);
-            }, hasSpawn && hasGoal ? new Color(0.18f, 0.65f, 0.35f) : new Color(0.5f, 0.2f, 0.2f));
-
-            if (!hasSpawn || !hasGoal)
+                Button publishButton = CreateButtonPrimitive(footer.transform, "Btn_CommitPublish", "Save & Publish", 170f, () =>
+                {
+                    modal.Hide();
+                    bool saved = LevelPersistenceService.SaveLevel(MapBrowserService.SelectedMapName);
+                    if (!saved)
+                    {
+                        SetNotificationText("Publishing cancelled because the level could not be saved safely.");
+                        return;
+                    }
+                    CommunityLevelService.PublishCurrentLevel(MapBrowserService.SelectedMapPath);
+                }, errors == 0 ? new Color(0.18f, 0.65f, 0.35f) : new Color(0.45f, 0.22f, 0.22f));
+                publishButton.interactable = errors == 0;
+            }
+            else
             {
-                commitBtn.interactable = false;
+                CreateButtonPrimitive(footer.transform, "Btn_Revalidate", "Run Again", 110f, () =>
+                {
+                    modal.Hide();
+                    OpenLevelValidationModal(false);
+                }, new Color(0.18f, 0.45f, 0.72f));
             }
 
+            modal.Show();
+        }
+
+        private static void OpenHistoryPanelModal()
+        {
+            if (_historyWindowRoot != null) GameObject.Destroy(_historyWindowRoot);
+
+            var modal = StudioFloatingWindow.Create(_canvasRoot.transform, "Win_EditHistory", "Edit History",
+                new Vector2(620f, 520f), Vector2.zero);
+            _historyWindowRoot = modal.WindowRoot;
+
+            int total = EditorSessionManager.UndoHistory != null ? EditorSessionManager.UndoHistory.Count : 0;
+            CreateTextPrimitive(modal.ContentRt,
+                $"Undo: <color=#69D9FF>{total}</color>    Redo: <color=#69D9FF>{EditorSessionManager.RedoHistory.Count}</color>    Showing newest 20. Select an entry to undo through that edit.",
+                new Vector2(0f, 1f), new Vector2(1f, 1f), new Vector2(0f, -18f), new Vector2(0f, 28f),
+                9.5f, FontStyles.Normal, Color.white, TextAlignmentOptions.MidlineLeft);
+
+            RectTransform historyContent;
+            CreateScrollViewPrimitive(modal.ContentRt, "EditHistory_Scroll",
+                Vector2.zero, Vector2.one, Vector2.zero, new Vector2(0f, -72f), out historyContent);
+
+            if (total == 0)
+            {
+                CreateTextPrimitive(historyContent, "No edits to show yet. Place, move, or modify an object to begin building history.",
+                    Vector2.zero, Vector2.one, Vector2.zero, new Vector2(0f, 42f), 10f, FontStyles.Normal,
+                    new Color(0.75f, 0.8f, 0.88f), TextAlignmentOptions.MidlineLeft);
+            }
+            else
+            {
+                HistoryRecord[] records = EditorSessionManager.UndoHistory.ToArray();
+                int visibleCount = Mathf.Min(records.Length, 20);
+                for (int i = 0; i < visibleCount; i++)
+                {
+                    HistoryRecord record = records[i];
+                    if (record == null) continue;
+
+                    string description = !string.IsNullOrWhiteSpace(record.Description) ? record.Description :
+                        (!string.IsNullOrWhiteSpace(record.AssetName) ? record.AssetName : record.ActionType.ToString());
+                    GameObject row = CreateRowContainerPrimitive(historyContent, "HistoryEntry_" + i, 34f);
+                    SetupRowHorizontalLayoutPrimitive(row, 6f);
+
+                    GameObject textColumn = new GameObject("HistoryEntryText", Il2CppType.Of<RectTransform>());
+                    textColumn.transform.SetParent(row.transform, false);
+                    LayoutElement textLayout = textColumn.AddComponent<LayoutElement>();
+                    textLayout.flexibleWidth = 1f;
+                    textLayout.minWidth = 300f;
+                    VerticalLayoutGroup textGroup = textColumn.AddComponent<VerticalLayoutGroup>();
+                    textGroup.spacing = 0f;
+                    textGroup.childControlWidth = true;
+                    textGroup.childControlHeight = true;
+                    textGroup.childForceExpandWidth = true;
+                    textGroup.childForceExpandHeight = false;
+
+                    string targetName = record.TargetObject != null ? record.TargetObject.name : string.Empty;
+                    CreateTextPrimitive(textColumn.transform,
+                        $"<b>{i + 1:00}. {record.ActionType}</b>  {description}",
+                        Vector2.zero, Vector2.one, Vector2.zero, new Vector2(0f, 17f), 9f,
+                        FontStyles.Normal, new Color(0.86f, 0.9f, 0.96f), TextAlignmentOptions.MidlineLeft);
+                    if (!string.IsNullOrEmpty(targetName))
+                        CreateTextPrimitive(textColumn.transform, targetName,
+                            Vector2.zero, Vector2.one, Vector2.zero, new Vector2(0f, 14f), 8f,
+                            FontStyles.Normal, new Color(0.52f, 0.68f, 0.82f), TextAlignmentOptions.MidlineLeft);
+
+                    int stepsToUndo = i + 1;
+                    CreateButtonPrimitive(row.transform, "Btn_UndoToHistory_" + i, "Undo to here", 104f, () =>
+                    {
+                        modal.Hide();
+                        for (int step = 0; step < stepsToUndo && EditorSessionManager.UndoHistory.Count > 0; step++)
+                            EditorSessionManager.PerformUndo();
+                        RefreshHierarchy();
+                    }, new Color(0.18f, 0.42f, 0.68f));
+                }
+            }
+
+            GameObject footer = CreateRowContainerPrimitive(modal.ContentRt, "History_Footer", 30f);
+            footer.GetComponent<RectTransform>().anchorMin = Vector2.zero;
+            footer.GetComponent<RectTransform>().anchorMax = new Vector2(1f, 0f);
+            SetupRowHorizontalLayoutPrimitive(footer, 8f);
+            CreateButtonPrimitive(footer.transform, "Btn_UndoOne", "Undo", 90f,
+                () => { modal.Hide(); EditorSessionManager.PerformUndo(); }, new Color(0.18f, 0.42f, 0.68f));
+            CreateButtonPrimitive(footer.transform, "Btn_RedoOne", "Redo", 90f,
+                () => { modal.Hide(); EditorSessionManager.PerformRedo(); }, new Color(0.18f, 0.55f, 0.42f));
+            CreateButtonPrimitive(footer.transform, "Btn_CloseHistory", "Close", 90f, () => modal.Hide(), new Color(0.35f, 0.38f, 0.45f));
+            modal.Show();
+        }
+
+        private static void ClearRecoveryPreviewTextures()
+        {
+            for (int i = 0; i < _recoveryPreviewSprites.Count; i++)
+            {
+                if (_recoveryPreviewSprites[i] != null)
+                    GameObject.Destroy(_recoveryPreviewSprites[i]);
+            }
+            _recoveryPreviewSprites.Clear();
+            for (int i = 0; i < _recoveryPreviewTextures.Count; i++)
+            {
+                if (_recoveryPreviewTextures[i] != null)
+                    GameObject.Destroy(_recoveryPreviewTextures[i]);
+            }
+            _recoveryPreviewTextures.Clear();
+        }
+
+        private static void OpenRecoveryBrowserModal()
+        {
+            if (_recoveryBrowserRoot != null) GameObject.Destroy(_recoveryBrowserRoot);
+            _recoveryBrowserRoot = null;
+            ClearRecoveryPreviewTextures();
+            List<BackupSnapshotInfo> backups = LevelRecoveryService.GetBackupsForCurrentLevel();
+            int currentCount = EditorSessionManager.PlacedObjects != null ? EditorSessionManager.PlacedObjects.Count : 0;
+
+            var modal = StudioFloatingWindow.Create(_canvasRoot.transform, "Win_RecoveryBrowser", "Backup Recovery Browser",
+                new Vector2(650f, 520f), Vector2.zero);
+            _recoveryBrowserRoot = modal.WindowRoot;
+            string mapName = string.IsNullOrWhiteSpace(MapBrowserService.SelectedMapName) ? "Untitled Level" : MapBrowserService.SelectedMapName;
+            CreateTextPrimitive(modal.ContentRt,
+                $"Level: <b>{mapName}</b>    Current objects: <color=#69D9FF>{currentCount}</color>    Backups: {backups.Count}",
+                new Vector2(0f, 1f), new Vector2(1f, 1f), new Vector2(0f, -18f), new Vector2(0f, 28f),
+                10f, FontStyles.Normal, Color.white, TextAlignmentOptions.MidlineLeft);
+
+            RectTransform backupContent;
+            CreateScrollViewPrimitive(modal.ContentRt, "RecoveryBackups_Scroll",
+                Vector2.zero, Vector2.one, Vector2.zero, new Vector2(0f, -88f), out backupContent);
+
+            if (backups.Count == 0)
+            {
+                CreateTextPrimitive(backupContent, "No automatic backups were found for this level yet.\nUse 'Create Backup Now' to create a recovery point.",
+                    Vector2.zero, Vector2.one, Vector2.zero, new Vector2(0f, 48f), 10f, FontStyles.Normal,
+                    new Color(0.75f, 0.8f, 0.88f), TextAlignmentOptions.MidlineLeft);
+            }
+            else
+            {
+                for (int i = 0; i < backups.Count; i++)
+                {
+                    BackupSnapshotInfo info = backups[i];
+                    GameObject row = CreateRowContainerPrimitive(backupContent, "BackupRow_" + i, 62f);
+                    SetupRowHorizontalLayoutPrimitive(row, 8f);
+
+                    GameObject preview = new GameObject("BackupThumbnail", Il2CppType.Of<RectTransform>());
+                    preview.transform.SetParent(row.transform, false);
+                    LayoutElement previewLayout = preview.AddComponent<LayoutElement>();
+                    previewLayout.preferredWidth = 88f;
+                    previewLayout.minWidth = 88f;
+                    previewLayout.preferredHeight = 48f;
+                    Image previewImage = preview.AddComponent<Image>();
+                    previewImage.color = new Color(0.11f, 0.14f, 0.19f, 1f);
+
+                    if (!string.IsNullOrWhiteSpace(info.ThumbnailPath) && File.Exists(info.ThumbnailPath))
+                    {
+                        Texture2D thumb = new Texture2D(2, 2, TextureFormat.RGBA32, false);
+                        try
+                        {
+                            if (ImageConversion.LoadImage(thumb, File.ReadAllBytes(info.ThumbnailPath)))
+                            {
+                                _recoveryPreviewTextures.Add(thumb);
+                                Sprite thumbSprite = Sprite.Create(thumb, new Rect(0f, 0f, thumb.width, thumb.height), new Vector2(0.5f, 0.5f));
+                                _recoveryPreviewSprites.Add(thumbSprite);
+                                previewImage.sprite = thumbSprite;
+                                previewImage.preserveAspect = true;
+                            }
+                            else
+                            {
+                                GameObject.Destroy(thumb);
+                            }
+                        }
+                        catch
+                        {
+                            GameObject.Destroy(thumb);
+                        }
+                    }
+
+                    GameObject details = new GameObject("BackupDetails", Il2CppType.Of<RectTransform>());
+                    details.transform.SetParent(row.transform, false);
+                    LayoutElement detailsLayout = details.AddComponent<LayoutElement>();
+                    detailsLayout.flexibleWidth = 1f;
+                    detailsLayout.minWidth = 240f;
+                    VerticalLayoutGroup detailsVlg = details.AddComponent<VerticalLayoutGroup>();
+                    detailsVlg.spacing = 2f;
+                    detailsVlg.childControlWidth = true;
+                    detailsVlg.childControlHeight = true;
+                    detailsVlg.childForceExpandWidth = true;
+                    detailsVlg.childForceExpandHeight = false;
+
+                    int delta = info.ObjectCount - currentCount;
+                    string deltaText = delta == 0 ? "same count" : (delta > 0 ? "+" + delta + " objects" : delta + " objects");
+                    CreateTextPrimitive(details.transform, "<b>" + info.DisplayName + "</b>",
+                        Vector2.zero, Vector2.one, Vector2.zero, new Vector2(0f, 19f), 9.5f, FontStyles.Normal,
+                        new Color(0.36f, 0.86f, 1f), TextAlignmentOptions.MidlineLeft);
+                    CreateTextPrimitive(details.transform,
+                        $"Objects: {info.ObjectCount} ({deltaText} vs current)    Size: {info.FileSizeBytes / 1024f:F1} KB",
+                        Vector2.zero, Vector2.one, Vector2.zero, new Vector2(0f, 19f), 8.5f, FontStyles.Normal,
+                        new Color(0.78f, 0.82f, 0.9f), TextAlignmentOptions.MidlineLeft);
+
+                    string capturedPath = info.FilePath;
+                    CreateButtonPrimitive(row.transform, "Btn_RestoreBackup_" + i, "Restore", 82f, () =>
+                    {
+                        modal.Hide();
+                        OpenBackupRestoreConfirmation(capturedPath);
+                    }, new Color(0.68f, 0.38f, 0.16f));
+                }
+            }
+
+            GameObject footer = CreateRowContainerPrimitive(modal.ContentRt, "Recovery_Footer", 30f);
+            footer.GetComponent<RectTransform>().anchorMin = Vector2.zero;
+            footer.GetComponent<RectTransform>().anchorMax = new Vector2(1f, 0f);
+            SetupRowHorizontalLayoutPrimitive(footer, 6f);
+            CreateButtonPrimitive(footer.transform, "Btn_CreateBackupNow", "Create Backup Now", 150f, () =>
+            {
+                PerformAutoSaveBackup();
+                modal.Hide();
+                OpenRecoveryBrowserModal();
+            }, new Color(0.18f, 0.48f, 0.72f));
+            CreateButtonPrimitive(footer.transform, "Btn_CloseRecovery", "Close", 90f, () => modal.Hide(), new Color(0.35f, 0.38f, 0.45f));
+            modal.Show();
+        }
+
+        private static void OpenBackupRestoreConfirmation(string backupPath)
+        {
+            var modal = StudioFloatingWindow.Create(_canvasRoot.transform, "Win_ConfirmBackupRestore", "Confirm Backup Restore",
+                new Vector2(440f, 190f), Vector2.zero);
+            string fileName = Path.GetFileNameWithoutExtension(backupPath ?? string.Empty);
+            CreateTextPrimitive(modal.ContentRt,
+                "Restore <b>" + fileName + "</b>?\nYour current in-memory level will first be saved as a separate safety snapshot.",
+                Vector2.zero, Vector2.one, new Vector2(0f, 12f), new Vector2(0f, -48f), 10f, FontStyles.Normal,
+                Color.white, TextAlignmentOptions.Center);
+            GameObject buttons = CreateRowContainerPrimitive(modal.ContentRt, "RestoreConfirm_Buttons", 30f);
+            buttons.GetComponent<RectTransform>().anchorMin = Vector2.zero;
+            buttons.GetComponent<RectTransform>().anchorMax = new Vector2(1f, 0f);
+            SetupRowHorizontalLayoutPrimitive(buttons, 8f);
+            CreateButtonPrimitive(buttons.transform, "Btn_CancelRestore", "Cancel", 110f, () => modal.Hide(), new Color(0.35f, 0.38f, 0.45f));
+            CreateButtonPrimitive(buttons.transform, "Btn_ConfirmRestore", "Restore Snapshot", 170f, () =>
+            {
+                modal.Hide();
+                LevelRecoveryService.RestoreBackup(backupPath);
+            }, new Color(0.68f, 0.38f, 0.16f));
+            modal.Show();
+        }
+
+        private static void OpenSaveAsModal()
+        {
+            var modal = StudioFloatingWindow.Create(_canvasRoot.transform, "Win_SaveLevelAs", "Save As / Duplicate Level",
+                new Vector2(460f, 205f), Vector2.zero);
+            CreateTextPrimitive(modal.ContentRt, "Enter a name for the new level file.",
+                new Vector2(0f, 1f), new Vector2(1f, 1f), new Vector2(0f, -18f), new Vector2(0f, 26f),
+                10f, FontStyles.Normal, Color.white, TextAlignmentOptions.MidlineLeft);
+
+            GameObject inputRow = CreateRowContainerPrimitive(modal.ContentRt, "SaveAs_NameRow", 32f);
+            inputRow.GetComponent<RectTransform>().anchorMin = new Vector2(0f, 1f);
+            inputRow.GetComponent<RectTransform>().anchorMax = new Vector2(1f, 1f);
+            inputRow.GetComponent<RectTransform>().anchoredPosition = new Vector2(0f, -58f);
+            inputRow.GetComponent<RectTransform>().sizeDelta = new Vector2(0f, 32f);
+            TMP_InputField nameInput = CreateInputFieldPrimitive(inputRow.transform, "SaveAs_NameInput",
+                Vector2.zero, Vector2.one, Vector2.zero, Vector2.zero, "Level name", null);
+            nameInput.text = (MapBrowserService.SelectedMapName ?? "Untitled_Level") + "_Copy";
+
+            GameObject buttons = CreateRowContainerPrimitive(modal.ContentRt, "SaveAs_Buttons", 30f);
+            buttons.GetComponent<RectTransform>().anchorMin = Vector2.zero;
+            buttons.GetComponent<RectTransform>().anchorMax = new Vector2(1f, 0f);
+            SetupRowHorizontalLayoutPrimitive(buttons, 6f);
+            CreateButtonPrimitive(buttons.transform, "Btn_SaveCopy", "Save Copy", 115f, () =>
+            {
+                string requested = string.IsNullOrWhiteSpace(nameInput.text) ? (MapBrowserService.SelectedMapName + "_Copy") : nameInput.text.Trim();
+                string unique = LevelPersistenceService.GetUniqueLevelName(requested);
+                string saved = LevelPersistenceService.SaveLevelAs(unique, false, false);
+                if (saved != null)
+                {
+                    modal.Hide();
+                    SetNotificationText("Created level copy: " + Path.GetFileNameWithoutExtension(saved));
+                }
+            }, new Color(0.18f, 0.48f, 0.72f));
+            CreateButtonPrimitive(buttons.transform, "Btn_SaveAsSwitch", "Save As", 115f, () =>
+            {
+                string requested = string.IsNullOrWhiteSpace(nameInput.text) ? string.Empty : nameInput.text.Trim();
+                if (string.IsNullOrWhiteSpace(requested))
+                {
+                    SetNotificationText("Enter a level name first.");
+                    return;
+                }
+
+                string saved = LevelPersistenceService.SaveLevelAs(requested, true, false);
+                if (saved == null)
+                {
+                    string target = Path.Combine(MapBrowserService.MyLevelsDir, LevelPersistenceService.NormalizeLevelName(requested) + ".txt");
+                    if (File.Exists(target))
+                    {
+                        modal.Hide();
+                        OpenSaveAsOverwriteConfirmation(requested);
+                    }
+                    else SetNotificationText("Could not save: check the level name.");
+                    return;
+                }
+
+                modal.Hide();
+                SetNotificationText("Saved and switched to " + Path.GetFileNameWithoutExtension(saved));
+            }, new Color(0.18f, 0.65f, 0.35f));
+            CreateButtonPrimitive(buttons.transform, "Btn_CancelSaveAs", "Cancel", 85f, () => modal.Hide(), new Color(0.35f, 0.38f, 0.45f));
+            modal.Show();
+        }
+
+        private static void OpenSaveAsOverwriteConfirmation(string levelName)
+        {
+            var modal = StudioFloatingWindow.Create(_canvasRoot.transform, "Win_ConfirmSaveAsOverwrite", "Confirm Overwrite",
+                new Vector2(420f, 180f), Vector2.zero);
+            CreateTextPrimitive(modal.ContentRt,
+                "The level <b>" + levelName + "</b> already exists.\nOverwrite that file? A copy of the existing file will be kept in Backups first.",
+                Vector2.zero, Vector2.one, new Vector2(0f, 10f), new Vector2(0f, -48f), 10f,
+                FontStyles.Normal, Color.white, TextAlignmentOptions.Center);
+            GameObject buttons = CreateRowContainerPrimitive(modal.ContentRt, "Overwrite_Buttons", 30f);
+            buttons.GetComponent<RectTransform>().anchorMin = Vector2.zero;
+            buttons.GetComponent<RectTransform>().anchorMax = new Vector2(1f, 0f);
+            SetupRowHorizontalLayoutPrimitive(buttons, 8f);
+            CreateButtonPrimitive(buttons.transform, "Btn_CancelOverwrite", "Cancel", 100f, () => modal.Hide(), new Color(0.35f, 0.38f, 0.45f));
+            CreateButtonPrimitive(buttons.transform, "Btn_ConfirmOverwrite", "Back Up & Overwrite", 180f, () =>
+            {
+                modal.Hide();
+                string saved = LevelPersistenceService.SaveLevelAs(levelName, true, true);
+                if (saved != null) SetNotificationText("Overwrote level after preserving the previous file.");
+                else SetNotificationText("Overwrite failed.");
+            }, new Color(0.68f, 0.38f, 0.16f));
             modal.Show();
         }
 
@@ -1286,6 +1731,18 @@ namespace DeadCoreEditor
             }
         }
 
+        private static void StyleToolbarButton(Button button, Color background)
+        {
+            if (button == null) return;
+            RectTransform rt = button.GetComponent<RectTransform>();
+            if (rt != null) rt.sizeDelta = new Vector2(rt.sizeDelta.x, 30f);
+            LayoutElement le = button.GetComponent<LayoutElement>();
+            if (le != null) { le.preferredHeight = 30f; le.minHeight = 30f; }
+            if (button.image != null) button.image.color = background;
+            TMP_Text label = button.GetComponentInChildren<TMP_Text>(true);
+            if (label != null) { label.fontSize = 11.5f; label.fontStyle = FontStyles.Bold; }
+        }
+
         internal static void CreateDropdownMenuButton(Transform parent, string label, float width, Action<RectTransform> onTrigger)
         {
             GameObject btnObj = new GameObject("Btn_" + label.Replace(" ", "_"), Il2CppType.Of<RectTransform>());
@@ -1294,15 +1751,16 @@ namespace DeadCoreEditor
             LayoutElement le = btnObj.AddComponent<LayoutElement>();
             le.preferredWidth = width;
             le.minWidth = width;
-            le.preferredHeight = 24f;
+            le.preferredHeight = 30f;
+            le.minHeight = 30f;
 
             Image img = btnObj.AddComponent<Image>();
-            img.color = new Color(0.16f, 0.18f, 0.24f, 0.95f);
+            img.color = new Color(0.105f, 0.135f, 0.18f, 0.98f);
 
             Button btn = btnObj.AddComponent<Button>();
             btn.targetGraphic = img;
 
-            TMP_Text txt = CreateTextPrimitive(btnObj.transform, label, Vector2.zero, Vector2.one, Vector2.zero, Vector2.zero, 10.5f, FontStyles.Bold, Color.white, TextAlignmentOptions.Center);
+            TMP_Text txt = CreateTextPrimitive(btnObj.transform, label.ToUpperInvariant(), Vector2.zero, Vector2.one, Vector2.zero, Vector2.zero, 11.5f, FontStyles.Bold, new Color(0.88f, 0.93f, 1f), TextAlignmentOptions.Center);
             txt.raycastTarget = false;
 
             RectTransform rt = btnObj.GetComponent<RectTransform>();
@@ -1331,7 +1789,7 @@ namespace DeadCoreEditor
             dmRt.anchorMax = new Vector2(0f, 0f);
             dmRt.pivot = new Vector2(0f, 1f);
             dmRt.anchoredPosition = new Vector2(0f, -4f);
-            dmRt.sizeDelta = new Vector2(250f, items.Count * 28f + 8f);
+            dmRt.sizeDelta = new Vector2(286f, items.Count * 32f + 12f);
 
             Canvas dropCanvas = _activeDropdownMenu.AddComponent<Canvas>();
             dropCanvas.overrideSorting = true;
@@ -1339,11 +1797,11 @@ namespace DeadCoreEditor
             _activeDropdownMenu.AddComponent<GraphicRaycaster>();
 
             Image dmBg = _activeDropdownMenu.AddComponent<Image>();
-            dmBg.color = new Color(0.09f, 0.11f, 0.15f, 0.98f);
+            dmBg.color = new Color(0.055f, 0.075f, 0.105f, 0.995f);
 
             VerticalLayoutGroup vlg = _activeDropdownMenu.AddComponent<VerticalLayoutGroup>();
-            vlg.padding = new RectOffset(4, 4, 4, 4);
-            vlg.spacing = 3f;
+            vlg.padding = new RectOffset(6, 6, 6, 6);
+            vlg.spacing = 4f;
             vlg.childControlWidth = true;
             vlg.childControlHeight = true;
             vlg.childForceExpandWidth = true;
@@ -1356,11 +1814,12 @@ namespace DeadCoreEditor
                 entry.transform.SetParent(_activeDropdownMenu.transform, false);
 
                 LayoutElement ele = entry.AddComponent<LayoutElement>();
-                ele.preferredHeight = 24f;
-                ele.minHeight = 24f;
+                ele.preferredHeight = 28f;
+                ele.minHeight = 28f;
 
                 Image eImg = entry.AddComponent<Image>();
-                eImg.color = new Color(0.15f, 0.18f, 0.24f, 0.95f);
+                bool isSectionLabel = item.Callback == null && item.Label.StartsWith("---", StringComparison.Ordinal);
+                eImg.color = isSectionLabel ? new Color(0.09f, 0.16f, 0.23f, 0.96f) : new Color(0.105f, 0.135f, 0.18f, 0.96f);
 
                 Button eBtn = entry.AddComponent<Button>();
                 eBtn.targetGraphic = eImg;
@@ -1376,7 +1835,8 @@ namespace DeadCoreEditor
                 TMP_Text itemTxt = CreateTextPrimitive(entry.transform, item.Label,
                     Vector2.zero, Vector2.one,
                     Vector2.zero, Vector2.zero,
-                    10.5f, FontStyles.Normal, item.TextColor ?? Color.white, TextAlignmentOptions.MidlineLeft);
+                    isSectionLabel ? 9.5f : 11.5f, isSectionLabel ? FontStyles.Bold : FontStyles.Normal,
+                    item.TextColor ?? (isSectionLabel ? new Color(0.45f, 0.78f, 0.95f) : Color.white), TextAlignmentOptions.MidlineLeft);
 
                 RectTransform itRt = itemTxt.GetComponent<RectTransform>();
                 itRt.offsetMin = new Vector2(10f, 0f);
@@ -1392,7 +1852,7 @@ namespace DeadCoreEditor
 
                     RectTransform scRt = scTxt.GetComponent<RectTransform>();
                     scRt.pivot = new Vector2(1f, 0.5f);
-                    scRt.sizeDelta = new Vector2(70f, 24f);
+                    scRt.sizeDelta = new Vector2(70f, 28f);
                     scRt.anchoredPosition = new Vector2(-10f, 0f);
                     scTxt.raycastTarget = false;
                 }
@@ -1615,7 +2075,19 @@ namespace DeadCoreEditor
             cb.highlightedColor = new Color(1.25f, 1.25f, 1.25f, 1f);
             cb.pressedColor = new Color(0.2f, 0.7f, 1.0f, 1f);
             btn.colors = cb;
-            btn.onClick.AddListener((Action)(() => onClick?.Invoke()));
+            bool trackInspectorMutation = _captureInspectorMutationActions && onClick != null;
+            btn.onClick.AddListener((Action)(() =>
+            {
+                if (!trackInspectorMutation)
+                {
+                    onClick?.Invoke();
+                    return;
+                }
+
+                List<EditorObjectSnapshot> before = EditorSessionManager.CaptureSelectedObjectSnapshots();
+                onClick?.Invoke();
+                EditorSessionManager.RecordSelectedObjectChange(label + " @ " + (parent != null ? parent.name : "Inspector"), before, HistoryActionType.ComponentChange);
+            }));
 
             TMP_Text btnText = CreateTextPrimitive(obj.transform, label, Vector2.zero, Vector2.one, Vector2.zero, Vector2.zero, 10f, FontStyles.Bold, Color.white, TextAlignmentOptions.Center);
             btnText.enableWordWrapping = false;
@@ -1845,10 +2317,20 @@ namespace DeadCoreEditor
             slider.handleRect = hrt;
             slider.targetGraphic = handleImg;
 
+            bool trackInspectorMutation = _captureInspectorMutationActions && onChange != null;
             slider.onValueChanged.AddListener((Action<float>)((v) =>
             {
                 if (valText != null) valText.text = string.Format(CultureInfo.InvariantCulture, format, v);
-                onChange?.Invoke(v);
+                if (trackInspectorMutation)
+                {
+                    List<EditorObjectSnapshot> before = EditorSessionManager.CaptureSelectedObjectSnapshots();
+                    onChange?.Invoke(v);
+                    EditorSessionManager.RecordSelectedObjectChange(label + " @ " + (parent != null ? parent.name : "Inspector"), before, HistoryActionType.ParameterChange);
+                }
+                else
+                {
+                    onChange?.Invoke(v);
+                }
             }));
 
             return row;
@@ -1910,12 +2392,22 @@ namespace DeadCoreEditor
             brt.sizeDelta = new Vector2(60f, 20f);
 
             TMP_Text bText = btn.GetComponentInChildren<TMP_Text>();
+            bool trackInspectorMutation = _captureInspectorMutationActions && onToggle != null;
             btn.onClick.AddListener((Action)(() =>
             {
                 state = !state;
                 bText.text = state ? "ON" : "OFF";
                 btn.image.color = state ? new Color(0.2f, 0.65f, 0.35f) : new Color(0.25f, 0.28f, 0.35f);
-                onToggle?.Invoke(state);
+                if (trackInspectorMutation)
+                {
+                    List<EditorObjectSnapshot> before = EditorSessionManager.CaptureSelectedObjectSnapshots();
+                    onToggle?.Invoke(state);
+                    EditorSessionManager.RecordSelectedObjectChange(label + " @ " + (parent != null ? parent.name : "Inspector"), before, HistoryActionType.ParameterChange);
+                }
+                else
+                {
+                    onToggle?.Invoke(state);
+                }
             }));
         }
 
