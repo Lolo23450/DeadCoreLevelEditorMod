@@ -1318,6 +1318,9 @@ namespace DeadCoreEditor
                 gravAsset.ComputeSizeMetrics();
                 EditorSessionManager.AllAssets.Add(gravAsset);
             }
+
+            if (!EditorSessionManager.AllAssets.Exists(a => a.DisplayName == TriggerVolumeService.AssetName))
+                EditorSessionManager.AllAssets.Add(TriggerVolumeService.MakeCatalogAsset());
         }
 
         private static void HarvestProceduralHazardsAndLights()

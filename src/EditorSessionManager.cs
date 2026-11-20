@@ -223,6 +223,11 @@ namespace DeadCoreEditor
                 data.Set(trussCfg.Clone());
             }
 
+            if (TriggerVolumeService.Configs.TryGetValue(obj, out var trigCfg))
+            {
+                data.Set(trigCfg.Clone());
+            }
+
             if (GravityAreaService.PlacedGravityConfigs.TryGetValue(obj, out var gravCfg))
             {
                 data.Set(gravCfg.Clone());
@@ -343,6 +348,11 @@ namespace DeadCoreEditor
                 StructuralTrussService.ApplyTrussConfig(obj, trc.Clone());
             }
 
+            if (data.TryGetComponent<TriggerVolumeConfig>(out var trigCfg))
+            {
+                TriggerVolumeService.Apply(obj, trigCfg.Clone());
+            }
+
             if (data.TryGetComponent<GravityConfig>(out var gravCfg))
             {
                 GravityAreaService.ApplyGravityConfig(obj, gravCfg.Clone());
@@ -407,6 +417,7 @@ namespace DeadCoreEditor
         public static void CapturePlaytestSnapshots()
         {
             PlaytestSnapshots.Clear();
+            TriggerVolumeService.ResetRuntime();
             for (int i = 0; i < PlacedObjects.Count; i++)
             {
                 GameObject obj = PlacedObjects[i];
@@ -424,6 +435,7 @@ namespace DeadCoreEditor
 
         public static void RestorePlaytestSnapshots()
         {
+            TriggerVolumeService.ResetRuntime();
             if (PlaytestSnapshots.Count == 0) return;
 
             for (int i = 0; i < PlacedObjects.Count; i++)
@@ -1087,11 +1099,6 @@ namespace DeadCoreEditor
             }
             else
             {
-                if (EditorConfigService.Config.AutoSaveOnPlaytest)
-                {
-                    StudioUIManager.PerformAutoSaveBackup();
-                }
-
                 CapturePlaytestSnapshots();
                 SwitchService.ResetAllSwitchesForPlaytest(enteringPlaytest: true);
                 ForceRefreshAllTurbines();
@@ -1374,6 +1381,9 @@ namespace DeadCoreEditor
                 GravityAreaService.UpdateAllGravityRotations();
             }
 
+            if (TriggerVolumeService.PlacedVolumes.Count > 0)
+                TriggerVolumeService.UpdateVisuals(IsEditModeActive);
+
             GameObject player = FindPlayerEntity();
             CharacterController cc = GetPlayerController();
 
@@ -1438,6 +1448,8 @@ namespace DeadCoreEditor
             if (string.IsNullOrEmpty(partialName)) return null;
 
             string clean = partialName.Replace("_", " ").Trim().ToLower();
+            if (clean.Contains("trigger volume"))
+                return TriggerVolumeService.Create(position, scale, customRotation);
             string raw = partialName.Trim().ToLower();
             string normalized = PersistenceUtility.CleanAssetName(partialName).ToLower();
 
@@ -1532,6 +1544,9 @@ namespace DeadCoreEditor
                 Quaternion rot = customRotation ?? GetCurrentCombinedRotation(asset);
                 return PrefabInstanceManager.SpawnInstance(asset.PrefabTemplate, position, rot, scale);
             }
+
+            if (asset.DisplayName == TriggerVolumeService.AssetName)
+                return TriggerVolumeService.Create(position, scale, customRotation ?? GetCurrentCombinedRotation(asset));
 
             if (asset.SourceTemplate == null) return null;
 
@@ -1984,6 +1999,7 @@ namespace DeadCoreEditor
 
             GravityAreaService.PlacedGravityAreas.Remove(target);
             GravityAreaService.PlacedGravityConfigs.Remove(target);
+            TriggerVolumeService.Unregister(target);
             StudioUIManager.LockedObjects.Remove(target);
 
             if (PathEditTarget == target) PathEditTarget = null;
@@ -2086,6 +2102,7 @@ namespace DeadCoreEditor
 
             GravityAreaService.PlacedGravityAreas.Clear();
             GravityAreaService.PlacedGravityConfigs.Clear();
+            TriggerVolumeService.ClearAll();
             StudioUIManager.LockedObjects.Clear();
 
             ActiveCustomCheckpoint = null;
@@ -3657,6 +3674,7 @@ namespace DeadCoreEditor
                     CheckHelixWindPushing(player, cc);
                     CheckLaserBarriers(player, cc);
                     CheckGoalTriggerArrival(player);
+                    TriggerVolumeService.Tick(player, cc, dt);
                     SkyboxControllerService.UpdateTick(dt);
 
                     Vector3 pPos = player.transform.position;
@@ -4097,7 +4115,7 @@ namespace DeadCoreEditor
                 : EditorViewportCamera.ViewportCamera.ScreenPointToRay(Input.mousePosition);
 
             RaycastHit[] hits = Physics.RaycastAll(ray, 2000f, ~0, QueryTriggerInteraction.Collide);
-            if (hits == null || hits.Length == 0) return null;
+            if (hits == null) hits = new RaycastHit[0];
 
             Array.Sort(hits, (a, b) => a.distance.CompareTo(b.distance));
 
@@ -4117,13 +4135,25 @@ namespace DeadCoreEditor
                     return hitGo;
             }
 
-            for (int h = 0; h < hits.Length; h++)
+            // Trigger volumes are picked analytically (see TriggerVolumeService.PickVolume) so they
+            // stay selectable from inside the box and are never lost to physics layers.
+            // Hold Alt while clicking to pick a trigger even when solid objects are in front of / inside it.
+            bool altHeld = Input.GetKey(KeyCode.LeftAlt) || Input.GetKey(KeyCode.RightAlt);
+            GameObject trigger = TriggerVolumeService.PickVolume(ray, 2000f,
+                v => StudioUIManager.LockedObjects.Contains(v), out float triggerDist);
+            if (trigger != null && altHeld) return trigger;
+
+            GameObject solid = null;
+            float solidDist = float.MaxValue;
+
+            for (int h = 0; h < hits.Length && solid == null; h++)
             {
                 Collider col = hits[h].collider;
                 if (col == null || col.gameObject == null) continue;
                 GameObject hitGo = col.gameObject;
 
                 if (hitGo == null) continue;
+                if (TriggerVolumeService.IsTriggerVolume(hitGo)) continue;
 
                 string n = hitGo.name;
                 if (string.IsNullOrEmpty(n)) continue;
@@ -4140,13 +4170,16 @@ namespace DeadCoreEditor
                         if (StudioUIManager.LockedObjects.Contains(curr.gameObject))
                             break;
 
-                        return curr.gameObject;
+                        solid = curr.gameObject;
+                        solidDist = hits[h].distance;
+                        break;
                     }
                     curr = curr.parent;
                 }
             }
 
-            return null;
+            if (trigger != null && (solid == null || triggerDist <= solidDist)) return trigger;
+            return solid;
         }
 
         public static Quaternion GetCurrentCombinedRotation(CatalogAsset asset)

@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Text;
 using System.Collections.Generic;
 using System.Globalization;
@@ -46,10 +46,6 @@ namespace DeadCoreEditor
         public bool ShowSizeBadges = true;
         public float NotificationDuration = 2.5f;
 
-        // Auto-Save & Level Safety
-        public int AutoSaveIntervalMinutes = 5; // 0 = Disabled
-        public bool AutoSaveOnPlaytest = true;
-
         // Dictionaries
         public Dictionary<string, List<string>> CustomCategories = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
         public Dictionary<string, string> Keybindings = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
@@ -96,9 +92,6 @@ namespace DeadCoreEditor
 
             ShowSizeBadges = true;
             NotificationDuration = 2.5f;
-
-            AutoSaveIntervalMinutes = 5;
-            AutoSaveOnPlaytest = true;
 
             SetDefaultKeybindings();
         }
@@ -337,8 +330,6 @@ namespace DeadCoreEditor
             sb.AppendLine($"  \"ShowSizeBadges\": {(data.ShowSizeBadges ? "true" : "false")},");
             sb.AppendLine($"  \"SnappingProxiesVisible\": {(data.SnappingProxiesVisible ? "true" : "false")},");
             sb.AppendLine($"  \"NotificationDuration\": {data.NotificationDuration.ToString("F2", Inv)},");
-            sb.AppendLine($"  \"AutoSaveIntervalMinutes\": {data.AutoSaveIntervalMinutes},");
-            sb.AppendLine($"  \"AutoSaveOnPlaytest\": {(data.AutoSaveOnPlaytest ? "true" : "false")},");
 
             sb.AppendLine("  \"Keybindings\": {");
             int kbCount = 0;
@@ -392,8 +383,6 @@ namespace DeadCoreEditor
             data.ShowSizeBadges = ExtractBool(json, "ShowSizeBadges", true);
             data.SnappingProxiesVisible = ExtractBool(json, "SnappingProxiesVisible", false);
             data.NotificationDuration = ExtractFloat(json, "NotificationDuration", 2.5f);
-            data.AutoSaveIntervalMinutes = ExtractInt(json, "AutoSaveIntervalMinutes", 5);
-            data.AutoSaveOnPlaytest = ExtractBool(json, "AutoSaveOnPlaytest", true);
 
             ExtractDictionary(json, "Keybindings", data.Keybindings);
             ExtractStringListDictionary(json, "CustomCategories", data.CustomCategories);
@@ -667,7 +656,6 @@ namespace DeadCoreEditor
         private static GameObject _historyWindowRoot = null;
 
         // Auto-Save System
-        private static float _autoSaveTimer = 0f;
 
         // Snap Settings Matrix
         public static float SnapTranslate = 1.0f;
@@ -701,22 +689,7 @@ namespace DeadCoreEditor
             }
         }
 
-        public static void UpdateAutoSaveTick(float dt)
-        {
-            if (!EditorSessionManager.IsCustomSessionActive || EditorSessionManager.IsEditModeActive == false) return;
-
-            int minutes = EditorConfigService.Config.AutoSaveIntervalMinutes;
-            if (minutes <= 0) return;
-
-            _autoSaveTimer += dt;
-            if (_autoSaveTimer >= minutes * 60f)
-            {
-                _autoSaveTimer = 0f;
-                PerformAutoSaveBackup();
-            }
-        }
-
-        public static void PerformAutoSaveBackup()
+        public static void CreateManualBackup()
         {
             try
             {
@@ -736,11 +709,11 @@ namespace DeadCoreEditor
                 if (!LevelPersistenceService.SaveLevelToPath(backupPath, false, MapBrowserService.SelectedMapPath))
                     throw new System.IO.IOException("The autosave snapshot could not be written.");
                 PruneAutoSaveBackups(backupDir, baseName, 20);
-                SetNotificationText($"[Auto-Save] Snapshot created at {DateTime.Now:HH:mm:ss}");
+                SetNotificationText($"[Backup] Snapshot created at {DateTime.Now:HH:mm:ss}");
             }
             catch (Exception ex)
             {
-                MelonLogger.Warning($"[Auto-Save] Failed: {ex.Message}");
+                MelonLogger.Warning($"[Backup] Failed: {ex.Message}");
             }
         }
 
@@ -879,6 +852,16 @@ namespace DeadCoreEditor
             {
                 GameObject obj = EditorSessionManager.PlacedObjects[i];
                 if (obj == null) continue;
+
+                if (TriggerVolumeService.IsTriggerVolume(obj))
+                {
+                    BoxCollider triggerCollider = obj.GetComponent<BoxCollider>();
+                    if (triggerCollider == null) triggerCollider = obj.AddComponent<BoxCollider>();
+                    triggerCollider.isTrigger = true;
+                    triggerCollider.enabled = true;
+                    obj.layer = 0;
+                    continue;
+                }
 
                 if (EditorSessionManager.PlacedObjectTypes.TryGetValue(obj, out var pType))
                 {
@@ -1598,7 +1581,7 @@ namespace DeadCoreEditor
             SetupRowHorizontalLayoutPrimitive(footer, 6f);
             CreateButtonPrimitive(footer.transform, "Btn_CreateBackupNow", "Create Backup Now", 150f, () =>
             {
-                PerformAutoSaveBackup();
+                CreateManualBackup();
                 modal.Hide();
                 OpenRecoveryBrowserModal();
             }, new Color(0.18f, 0.48f, 0.72f));

@@ -19,6 +19,8 @@ namespace DeadCoreEditor
 
         private static float _browserScrollTarget = 1.0f;
         private static bool _isBrowserTargetInitialized = false;
+        private static float _hierarchyScrollTarget = 1.0f;
+        private static bool _isHierarchyTargetInitialized = false;
 
         // Hierarchy
         private static GameObject _hierarchyPanel = null;
@@ -144,7 +146,6 @@ namespace DeadCoreEditor
             float dt = Time.unscaledDeltaTime;
             UpdateRebindingTick();
             UpdateNotificationBannerTick(dt);
-            UpdateAutoSaveTick(dt);
 
             if (_assetBrowserScrollRect != null && _assetBrowserPanel != null && _assetBrowserPanel.activeInHierarchy)
             {
@@ -178,6 +179,44 @@ namespace DeadCoreEditor
                         dt * 16f
                     );
                 }
+            }
+
+            // Smooth hierarchy wheel scrolling. Native ScrollRect wheel movement is
+            // disabled below so wheel input updates a target instead of jumping.
+            if (_hierarchyScrollRect != null && _hierarchyPanel != null && _hierarchyPanel.activeInHierarchy)
+            {
+                if (!_isHierarchyTargetInitialized)
+                {
+                    _hierarchyScrollTarget = Mathf.Clamp01(_hierarchyScrollRect.verticalNormalizedPosition);
+                    _isHierarchyTargetInitialized = true;
+                }
+
+                RectTransform hierarchyRt = _hierarchyPanel.GetComponent<RectTransform>();
+                if (hierarchyRt != null && RectTransformUtility.RectangleContainsScreenPoint(hierarchyRt, Input.mousePosition))
+                {
+                    float wheel = Input.GetAxis("Mouse ScrollWheel");
+                    if (Mathf.Abs(wheel) > 0.001f)
+                    {
+                        float contentH = _hierarchyContent != null ? _hierarchyContent.rect.height : 1000f;
+                        float viewH = _hierarchyScrollRect.viewport != null ? _hierarchyScrollRect.viewport.rect.height : 220f;
+                        float scrollableH = Mathf.Max(120f, contentH - viewH);
+                        float step = (105f / scrollableH) * (wheel > 0f ? 1f : -1f);
+                        _hierarchyScrollTarget = Mathf.Clamp01(_hierarchyScrollTarget + step);
+                    }
+                }
+
+                if (Mathf.Abs(_hierarchyScrollRect.verticalNormalizedPosition - _hierarchyScrollTarget) > 0.0005f)
+                {
+                    _hierarchyScrollRect.verticalNormalizedPosition = Mathf.Lerp(
+                        _hierarchyScrollRect.verticalNormalizedPosition,
+                        _hierarchyScrollTarget,
+                        dt * 8f
+                    );
+                }
+            }
+            else if (_hierarchyScrollRect == null || _hierarchyPanel == null || !_hierarchyPanel.activeInHierarchy)
+            {
+                _isHierarchyTargetInitialized = false;
             }
 
             if (_activeDropdownMenu != null && Input.GetMouseButtonDown(0))
@@ -618,23 +657,11 @@ namespace DeadCoreEditor
         {
             var cfg = EditorConfigService.Config;
 
-            var safetyCard = CreateModularSection(content, "AutoSave", "Auto-Save Backups & Crash Prevention");
+            var safetyCard = CreateModularSection(content, "AutoSave", "Manual Backups");
 
-            AddSliderRow(safetyCard.transform, "Auto-Save Interval (Minutes, 0=Off)", 0f, 15f, cfg.AutoSaveIntervalMinutes, "{0:F0} min", (val) =>
+            CreateButtonPrimitive(safetyCard.transform, "Btn_ForceBackupNow", "Create Backup Snapshot Now", 360f, () =>
             {
-                cfg.AutoSaveIntervalMinutes = Mathf.RoundToInt(val);
-                EditorConfigService.SaveConfig();
-            });
-
-            AddToggleRow(safetyCard.transform, "Auto-Save Backup Before Playtesting (F1)", cfg.AutoSaveOnPlaytest, (val) =>
-            {
-                cfg.AutoSaveOnPlaytest = val;
-                EditorConfigService.SaveConfig();
-            });
-
-            CreateButtonPrimitive(safetyCard.transform, "Btn_ForceBackupNow", "Force Auto-Save Backup Now", 360f, () =>
-            {
-                PerformAutoSaveBackup();
+                CreateManualBackup();
             }, new Color(0.18f, 0.52f, 0.88f, 1f));
 
             var toastCard = CreateModularSection(content, "Toast", "User Interface Alerts");
@@ -1228,7 +1255,7 @@ namespace DeadCoreEditor
             CreateHierarchyTypeFilterBtn(filterStrip.transform, "ALL");
             CreateHierarchyTypeFilterBtn(filterStrip.transform, "HAZARD");
             CreateHierarchyTypeFilterBtn(filterStrip.transform, "LIGHT");
-            CreateHierarchyTypeFilterBtn(filterStrip.transform, "GRAV");
+            CreateHierarchyTypeFilterBtn(filterStrip.transform, "TRIG");
 
             GameObject searchRow = CreatePanelPrimitive(_hierarchyPanel.transform, "Hierarchy_SearchRow",
                 new Vector2(0f, 1f), new Vector2(1f, 1f),
@@ -1255,7 +1282,11 @@ namespace DeadCoreEditor
 
                 _hierarchyScrollRect = scrollObj.GetComponent<ScrollRect>();
                 if (_hierarchyScrollRect != null)
+                {
                     _hierarchyScrollRect.movementType = ScrollRect.MovementType.Clamped;
+                    _hierarchyScrollRect.scrollSensitivity = 0f;
+                    _isHierarchyTargetInitialized = false;
+                }
             }
 
             GameObject bottomBar = CreatePanelPrimitive(_hierarchyPanel.transform, "Hierarchy_BottomBar",
@@ -1395,7 +1426,7 @@ namespace DeadCoreEditor
                         EditorSessionManager.PlacedObjectTypes.TryGetValue(obj, out var pt);
                         if (_hierarchyFilterType == "HAZARD" && pt != PlacedObjectType.Laser && pt != PlacedObjectType.RotatingLaser && pt != PlacedObjectType.Turret) continue;
                         if (_hierarchyFilterType == "LIGHT" && pt != PlacedObjectType.Spotlight && pt != PlacedObjectType.Sunlight && pt != PlacedObjectType.SkyboxController) continue;
-                        if (_hierarchyFilterType == "GRAV" && pt != PlacedObjectType.GravityArea) continue;
+                        if (_hierarchyFilterType == "TRIG" && !TriggerVolumeService.IsTriggerVolume(obj)) continue;
                     }
 
                     GameObject parent = (obj.transform.parent != null &&
@@ -1441,6 +1472,13 @@ namespace DeadCoreEditor
             try { n = go.name ?? "Unknown"; } catch { return "Unknown"; }
             if (n.StartsWith("Custom_")) n = n.Substring(7);
             n = n.Replace("_", " ");
+
+            if (TriggerVolumeService.IsTriggerVolume(go))
+            {
+                typeTag = "TRIG";
+                tagColor = new Color(1.0f, 0.6f, 0.1f);
+                return n;
+            }
 
             try
             {
@@ -1974,7 +2012,7 @@ namespace DeadCoreEditor
             _isInspectorExpanded = false;
             _inspectorPanel = CreatePanelPrimitive(_canvasRoot.transform, "Inspector_Panel",
                 new Vector2(1f, 0f), new Vector2(1f, 1f),
-                new Vector2(-140f, -18f), new Vector2(280f, -36f),
+                new Vector2(-160f, -18f), new Vector2(320f, -36f),
                 new Color(0.10f, 0.11f, 0.14f, 0.98f));
             _inspectorPanelRt = _inspectorPanel.GetComponent<RectTransform>();
 
@@ -2018,6 +2056,136 @@ namespace DeadCoreEditor
             CreateVector3Row(transCard.transform, "Position", out _posXInput, out _posYInput, out _posZInput, OnTransformInputChanged);
             CreateVector3Row(transCard.transform, "Rotation", out _rotXInput, out _rotYInput, out _rotZInput, OnTransformInputChanged);
             CreateVector3Row(transCard.transform, "Scale", out _scaleXInput, out _scaleYInput, out _scaleZInput, OnTransformInputChanged);
+            NormalizeInspectorLayout();
+        }
+
+        // =========================================================================
+        // INSPECTOR LAYOUT NORMALIZER
+        // One pass that gives every inspector card the same padding, row height,
+        // font size and control sizes, including raw buttons / inputs / labels that
+        // individual cards add directly instead of going through the row helpers.
+        // =========================================================================
+        private const float InspRowHeight = 28f;
+        private const float InspButtonHeight = 30f;
+        private const float InspHeaderHeight = 26f;
+        private const float InspLabelMinHeight = 20f;
+        private static readonly HashSet<int> _normalizedInspectorCards = new HashSet<int>();
+
+        private static void NormalizeInspectorLayout()
+        {
+            if (_inspectorContent == null) return;
+
+            VerticalLayoutGroup contentLayout = _inspectorContent.GetComponent<VerticalLayoutGroup>();
+            if (contentLayout != null)
+            {
+                contentLayout.padding = new RectOffset(6, 6, 6, 6);
+                contentLayout.spacing = 8f;
+            }
+
+            if (_normalizedInspectorCards.Count > 256) _normalizedInspectorCards.Clear();
+
+            for (int i = 0; i < _inspectorContent.childCount; i++)
+            {
+                Transform card = _inspectorContent.GetChild(i);
+                if (card == null || !card.name.StartsWith("Card_")) continue;
+                if (!_normalizedInspectorCards.Add(card.gameObject.GetInstanceID())) continue;
+                NormalizeInspectorCard(card);
+            }
+        }
+
+        private static void SetFixedHeight(GameObject go, float preferred, float min)
+        {
+            LayoutElement le = go.GetComponent<LayoutElement>();
+            if (le == null) le = go.AddComponent<LayoutElement>();
+            le.preferredHeight = preferred;
+            le.minHeight = min;
+        }
+
+        private static void NormalizeInspectorCard(Transform card)
+        {
+            VerticalLayoutGroup cardLayout = card.GetComponent<VerticalLayoutGroup>();
+            if (cardLayout != null)
+            {
+                cardLayout.padding = new RectOffset(10, 10, 8, 10);
+                cardLayout.spacing = 8f;
+            }
+
+            // One consistent type step up across the whole card.
+            var texts = card.GetComponentsInChildren<TMP_Text>(true);
+            for (int i = 0; i < texts.Length; i++)
+            {
+                if (texts[i] != null) texts[i].fontSize = Mathf.Min(texts[i].fontSize + 1f, 12f);
+            }
+
+            for (int c = 0; c < card.childCount; c++)
+            {
+                Transform ch = card.GetChild(c);
+                if (ch == null) continue;
+                GameObject go = ch.gameObject;
+
+                if (ch.name == "Header")
+                {
+                    SetFixedHeight(go, InspHeaderHeight, InspHeaderHeight);
+                    continue;
+                }
+
+                if (ch.name.StartsWith("Row_"))
+                {
+                    LayoutElement rowLe = go.GetComponent<LayoutElement>();
+                    float h = rowLe != null ? rowLe.preferredHeight : InspRowHeight;
+                    float nh = h <= 24f ? InspRowHeight : h + 4f;
+                    SetFixedHeight(go, nh, nh);
+
+                    // Slider controls
+                    Transform slider = ch.Find("Slider");
+                    if (slider != null)
+                    {
+                        RectTransform srt = slider.GetComponent<RectTransform>();
+                        if (srt != null) srt.sizeDelta = new Vector2(srt.sizeDelta.x, 18f);
+                        Transform track = slider.Find("Track");
+                        if (track != null) { var r = track.GetComponent<RectTransform>(); if (r != null) r.sizeDelta = new Vector2(r.sizeDelta.x, 6f); }
+                        Transform fillArea = slider.Find("FillArea");
+                        if (fillArea != null) { var r = fillArea.GetComponent<RectTransform>(); if (r != null) r.sizeDelta = new Vector2(r.sizeDelta.x, 6f); }
+                        Transform handle = slider.Find("HandleArea/Handle");
+                        if (handle != null) { var r = handle.GetComponent<RectTransform>(); if (r != null) r.sizeDelta = new Vector2(8f, 18f); }
+                    }
+
+                    // ON/OFF toggle button and colour swatch
+                    Transform toggle = ch.Find("ToggleBtn");
+                    if (toggle != null) { var r = toggle.GetComponent<RectTransform>(); if (r != null) r.sizeDelta = new Vector2(64f, 22f); }
+                    Transform swatch = ch.Find("Swatch");
+                    if (swatch != null) { var r = swatch.GetComponent<RectTransform>(); if (r != null) r.sizeDelta = new Vector2(56f, 18f); }
+                    continue;
+                }
+
+                if (go.GetComponent<Button>() != null)
+                {
+                    LayoutElement le = go.GetComponent<LayoutElement>();
+                    if (le == null) le = go.AddComponent<LayoutElement>();
+                    le.preferredHeight = InspButtonHeight;
+                    le.minHeight = InspButtonHeight - 2f;
+                    le.flexibleWidth = 1f;
+                    continue;
+                }
+
+                if (go.GetComponent<TMP_InputField>() != null)
+                {
+                    LayoutElement le = go.GetComponent<LayoutElement>();
+                    if (le == null) le = go.AddComponent<LayoutElement>();
+                    le.preferredHeight = InspRowHeight;
+                    le.minHeight = InspRowHeight;
+                    le.flexibleWidth = 1f;
+                    continue;
+                }
+
+                if (go.GetComponent<TMP_Text>() != null)
+                {
+                    // Plain labels: keep their text-driven height but never collapse below a readable line.
+                    LayoutElement le = go.GetComponent<LayoutElement>();
+                    if (le == null) le = go.AddComponent<LayoutElement>();
+                    le.minHeight = InspLabelMinHeight;
+                }
+            }
         }
 
         private static void ToggleInspectorExpansion()
@@ -2025,7 +2193,7 @@ namespace DeadCoreEditor
             _isInspectorExpanded = !_isInspectorExpanded;
             if (_inspectorPanelRt != null)
             {
-                float w = _isInspectorExpanded ? 380f : 280f;
+                float w = _isInspectorExpanded ? 440f : 320f;
                 _inspectorPanelRt.sizeDelta = new Vector2(w, -36f);
                 _inspectorPanelRt.anchoredPosition = new Vector2(-w * 0.5f, -18f);
             }
@@ -2512,6 +2680,102 @@ namespace DeadCoreEditor
             }
 
             // =========================================================================
+            // TRIGGER VOLUME
+            // =========================================================================
+            if (TriggerVolumeService.Configs.ContainsKey(obj) || data.Has<TriggerVolumeConfig>())
+            {
+                var card = CreateModularSection(_inspectorContent, "TriggerVolume", "Trigger Volume");
+                TriggerVolumeConfig tc = data.GetOrCreate<TriggerVolumeConfig>();
+                if (TriggerVolumeService.Configs.TryGetValue(obj, out var existingTc)) tc = existingTc;
+                Action commit = () =>
+                {
+                    var ts = GetSelectionTargets(obj);
+                    for (int t = 0; t < ts.Count; t++) TriggerVolumeService.Apply(ts[t], t == 0 && ts[t] == obj ? tc : tc.Clone());
+                };
+                Action rebuild = () => { commit(); RebuildModularInspectorCards(obj); };
+
+                AddToggleRow(card.transform, "Active", tc.IsActive, (v) => { tc.IsActive = v; commit(); });
+                CreateButtonPrimitive(card.transform, "Btn_TrigEvent", "Event: " + tc.Event, 360f, () =>
+                { tc.Event = (TriggerEvent)(((int)tc.Event + 1) % 3); rebuild(); }, new Color(0.25f, 0.35f, 0.55f));
+                CreateButtonPrimitive(card.transform, "Btn_TrigAction", "Action: " + tc.Action, 360f, () =>
+                {
+                    TriggerAction[] available = { TriggerAction.Kill, TriggerAction.Teleport, TriggerAction.CompleteLevel, TriggerAction.ToggleObjects, TriggerAction.TimeScale, TriggerAction.ModifyValue };
+                    int current = Array.IndexOf(available, tc.Action);
+                    tc.Action = available[(current + 1 + available.Length) % available.Length];
+                    rebuild();
+                }, new Color(0.7f, 0.4f, 0.1f));
+                AddToggleRow(card.transform, "Fire Only Once", tc.Once, (v) => { tc.Once = v; commit(); });
+                AddSliderRow(card.transform, "Cooldown (s)", 0f, 10f, tc.Cooldown, "{0:F1}s", (v) => { tc.Cooldown = v; commit(); });
+                AddSliderRow(card.transform, "Delay (s)", 0f, 10f, tc.Delay, "{0:F1}s", (v) => { tc.Delay = v; commit(); });
+
+                switch (tc.Action)
+                {
+                    case TriggerAction.Teleport:
+                        CreateTextPrimitive(card.transform, "Target object name (blank = use offset):", Vector2.zero, Vector2.one, Vector2.zero, Vector2.zero, 9.5f, FontStyles.Normal, Color.white, TextAlignmentOptions.MidlineLeft);
+                        CreateInputFieldPrimitive(card.transform, "In_TrigTarget", Vector2.zero, Vector2.one, Vector2.zero, new Vector2(0f, 22f), tc.TargetName, (s) => { tc.TargetName = s; commit(); });
+                        AddSliderRow(card.transform, "Offset X", -100f, 100f, tc.Offset.x, "{0:F1}", (v) => { tc.Offset.x = v; commit(); });
+                        AddSliderRow(card.transform, "Offset Y", -100f, 100f, tc.Offset.y, "{0:F1}", (v) => { tc.Offset.y = v; commit(); });
+                        AddSliderRow(card.transform, "Offset Z", -100f, 100f, tc.Offset.z, "{0:F1}", (v) => { tc.Offset.z = v; commit(); });
+                        break;
+                    case TriggerAction.ToggleObjects:
+                        CreateTextPrimitive(card.transform, "Affect objects whose name contains:", Vector2.zero, Vector2.one, Vector2.zero, Vector2.zero, 9.5f, FontStyles.Normal, Color.white, TextAlignmentOptions.MidlineLeft);
+                        CreateInputFieldPrimitive(card.transform, "In_TrigTarget", Vector2.zero, Vector2.one, Vector2.zero, new Vector2(0f, 22f), tc.TargetName, (s) => { tc.TargetName = s; commit(); });
+                        CreateButtonPrimitive(card.transform, "Btn_TrigToggleMode", "Mode: " + tc.ToggleMode, 360f, () =>
+                        { tc.ToggleMode = (TriggerToggleMode)(((int)tc.ToggleMode + 1) % 3); rebuild(); }, new Color(0.35f, 0.35f, 0.5f));
+                        break;
+                    case TriggerAction.ModifyValue:
+                    {
+                        string[] props = TriggerModifyService.PropertyNames(tc.ModTarget);
+                        tc.ModProp = Mathf.Clamp(tc.ModProp, 0, props.Length - 1);
+                        CreateButtonPrimitive(card.transform, "Btn_ModTarget", "Target: " + tc.ModTarget, 360f, () =>
+                        {
+                            int n = Enum.GetValues(typeof(ModifyTarget)).Length;
+                            tc.ModTarget = (ModifyTarget)(((int)tc.ModTarget + 1) % n);
+                            tc.ModProp = 0;
+                            rebuild();
+                        }, new Color(0.1f, 0.55f, 0.4f));
+                        if (props.Length > 1)
+                            CreateButtonPrimitive(card.transform, "Btn_ModProp", "Property: " + props[tc.ModProp], 360f, () =>
+                            { tc.ModProp = (tc.ModProp + 1) % props.Length; rebuild(); }, new Color(0.15f, 0.45f, 0.5f));
+                        CreateButtonPrimitive(card.transform, "Btn_ModOp", "Mode: " + tc.ModOp, 360f, () =>
+                        { tc.ModOp = (ModifyOp)(((int)tc.ModOp + 1) % 3); rebuild(); }, new Color(0.35f, 0.35f, 0.5f));
+
+                        bool needsName = tc.ModTarget == ModifyTarget.Transform;
+                        CreateTextPrimitive(card.transform, needsName ? "Object names (comma separated, required):" : "Only objects whose name contains (blank = all):", Vector2.zero, Vector2.one, Vector2.zero, Vector2.zero, 9.5f, FontStyles.Normal, Color.white, TextAlignmentOptions.MidlineLeft);
+                        CreateInputFieldPrimitive(card.transform, "In_TrigTarget", Vector2.zero, Vector2.one, Vector2.zero, new Vector2(0f, 22f), tc.TargetName, (s) => { tc.TargetName = s; commit(); });
+
+                        if (TriggerModifyService.IsVectorProperty(tc.ModTarget))
+                        {
+                            string unit = tc.ModProp == 0 ? "Position" : tc.ModProp == 1 ? "Rotation (euler deg)" : "Scale";
+                            CreateTextPrimitive(card.transform, unit + " X / Y / Z:", Vector2.zero, Vector2.one, Vector2.zero, Vector2.zero, 9.5f, FontStyles.Normal, Color.white, TextAlignmentOptions.MidlineLeft);
+                            CreateInputFieldPrimitive(card.transform, "In_ModX", Vector2.zero, Vector2.one, Vector2.zero, new Vector2(0f, 22f), tc.ModVector.x.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture), (s) => { tc.ModVector.x = PersistenceUtility.ParseFloat(s, tc.ModVector.x); commit(); });
+                            CreateInputFieldPrimitive(card.transform, "In_ModY", Vector2.zero, Vector2.one, Vector2.zero, new Vector2(0f, 22f), tc.ModVector.y.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture), (s) => { tc.ModVector.y = PersistenceUtility.ParseFloat(s, tc.ModVector.y); commit(); });
+                            CreateInputFieldPrimitive(card.transform, "In_ModZ", Vector2.zero, Vector2.one, Vector2.zero, new Vector2(0f, 22f), tc.ModVector.z.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture), (s) => { tc.ModVector.z = PersistenceUtility.ParseFloat(s, tc.ModVector.z); commit(); });
+                        }
+                        else if (TriggerModifyService.IsColorProperty(tc.ModTarget, tc.ModProp))
+                        {
+                            AddColorControl(card.transform, "Color", tc.ModColor, (c) => { tc.ModColor = c; commit(); });
+                        }
+                        else
+                        {
+                            CreateTextPrimitive(card.transform, props[tc.ModProp] + " value:", Vector2.zero, Vector2.one, Vector2.zero, Vector2.zero, 9.5f, FontStyles.Normal, Color.white, TextAlignmentOptions.MidlineLeft);
+                            CreateInputFieldPrimitive(card.transform, "In_ModValue", Vector2.zero, Vector2.one, Vector2.zero, new Vector2(0f, 22f), tc.ModValue.ToString("0.####", System.Globalization.CultureInfo.InvariantCulture), (s) => { tc.ModValue = PersistenceUtility.ParseFloat(s, tc.ModValue); commit(); });
+                        }
+
+                        AddSliderRow(card.transform, "Transition (s, 0 = instant)", 0f, 30f, tc.Duration, "{0:F1}s", (v) => { tc.Duration = v; commit(); });
+                        AddToggleRow(card.transform, "Revert when leaving volume", tc.RevertOnExit, (v) => { tc.RevertOnExit = v; commit(); });
+                        break;
+                    }
+                    case TriggerAction.TimeScale:
+                        AddSliderRow(card.transform, "Time Scale", 0.1f, 3f, tc.Value, "{0:F2}x", (v) => { tc.Value = v; commit(); });
+                        AddSliderRow(card.transform, "Duration (s, 0 = until restart)", 0f, 20f, tc.Duration, "{0:F1}s", (v) => { tc.Duration = v; commit(); });
+                        break;
+                }
+
+                _activeInspectorCards.Add(card);
+            }
+
+            // =========================================================================
             // 14. MAP AUDIO & MUSIC CONTROLLER
             // =========================================================================
             bool isAudio = data.Has<AudioConfig>() || type == PlacedObjectType.AudioController || (obj.name != null && obj.name.ToLower().Contains("audio"));
@@ -2930,6 +3194,7 @@ namespace DeadCoreEditor
                 _activeInspectorCards.Add(card);
             }
 
+            NormalizeInspectorLayout();
             LayoutRebuilder.ForceRebuildLayoutImmediate(_inspectorContent);
         }
 
